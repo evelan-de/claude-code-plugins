@@ -4,10 +4,50 @@ Shared Claude Code skills and commands for the Evelan team.
 
 ## Installation
 
-Run in Claude Code:
+### First-time setup
 
+1. Add the Evelan marketplace in Claude Code:
+   ```
+   /plugin marketplace add evelan-de/claude-code-plugins
+   ```
+
+2. Install the plugin:
+   ```
+   /plugin install evelan-tools@evelan-tools
+   ```
+
+### Local testing
+
+To test the plugin locally without installing from GitHub:
+```bash
+claude --plugin-dir /path/to/claude-code-plugins
 ```
-/install-plugin github:evelan/claude-code-plugins
+
+### Auto-prompt for team projects
+
+To have team members automatically prompted to install the plugin when they open a project, add this to the project's `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "evelan-tools": {
+      "source": {
+        "source": "github",
+        "repo": "evelan-de/claude-code-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "evelan-tools@evelan-tools": true
+  }
+}
+```
+
+### Updates
+
+Plugin updates are distributed automatically when the repo is updated. To manually refresh:
+```
+/plugin marketplace update evelan-tools
 ```
 
 ## Skills

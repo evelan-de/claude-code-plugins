@@ -7,14 +7,14 @@ This is a Claude Code plugin repository for sharing team skills and commands.
 ```
 claude-code-plugins/
 ├── .claude-plugin/
-│   └── plugin.json          # Plugin metadata (name, version, author)
+│   ├── plugin.json           # Plugin metadata (name, version, author)
+│   └── marketplace.json      # Marketplace catalog for plugin discovery
 ├── skills/                   # Model-invoked skills (auto-triggered by context)
 │   └── <skill-name>/
 │       └── SKILL.md
 ├── commands/                 # User-invoked slash commands (optional)
 │   └── <command-name>.md
-├── docs/
-│   └── plans/               # Implementation plans
+├── docs/                     # Documentation and diagrams
 └── README.md
 ```
 
@@ -53,8 +53,7 @@ allowed-tools: [Bash, Read, Glob, Grep]
 
 ## Installation
 
-Team members install with: `/install-plugin github:evelan/claude-code-plugins`
+1. Add marketplace: `/plugin marketplace add evelan-de/claude-code-plugins`
+2. Install plugin: `/plugin install evelan-tools@evelan-tools`
 
-## Implementation Plan
-
-See `docs/plans/2025-02-05-evelan-claude-code-plugin.md` for the full setup plan.
+See `README.md` for full installation instructions including auto-prompt setup for team projects.
