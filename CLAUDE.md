@@ -54,6 +54,6 @@ allowed-tools: [Bash, Read, Glob, Grep]
 ## Installation
 
 1. Add marketplace: `/plugin marketplace add evelan-de/claude-code-plugins`
-2. Install plugin: `/plugin install evelan@evelan`
+2. Install plugin: `/plugin install evelan@evelan-plugins`
 
 See `README.md` for full installation instructions including auto-prompt setup for team projects.
