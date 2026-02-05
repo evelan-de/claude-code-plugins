@@ -1,11 +1,11 @@
 {
-  "name": "evelan-tools",
+  "name": "evelan",
   "owner": {
     "name": "Evelan"
   },
   "plugins": [
     {
-      "name": "evelan-tools",
+      "name": "evelan",
       "source": "./",
       "description": "Evelan team skills and commands for Claude Code"
     }

@@ -13,7 +13,7 @@ Shared Claude Code skills and commands for the Evelan team.
 
 2. Install the plugin:
    ```
-   /plugin install evelan-tools@evelan-tools
+   /plugin install evelan@evelan
    ```
 
 ### Local testing
@@ -30,7 +30,7 @@ To have team members automatically prompted to install the plugin when they open
 ```json
 {
   "extraKnownMarketplaces": {
-    "evelan-tools": {
+    "evelan": {
       "source": {
         "source": "github",
         "repo": "evelan-de/claude-code-plugins"
@@ -38,7 +38,7 @@ To have team members automatically prompted to install the plugin when they open
     }
   },
   "enabledPlugins": {
-    "evelan-tools@evelan-tools": true
+    "evelan@evelan": true
   }
 }
 ```
@@ -47,7 +47,7 @@ To have team members automatically prompted to install the plugin when they open
 
 Plugin updates are distributed automatically when the repo is updated. To manually refresh:
 ```
-/plugin marketplace update evelan-tools
+/plugin marketplace update evelan
 ```
 
 ## Skills

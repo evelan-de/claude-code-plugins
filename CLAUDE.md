@@ -23,7 +23,7 @@ claude-code-plugins/
 `.claude-plugin/plugin.json` must exist with:
 ```json
 {
-  "name": "evelan-tools",
+  "name": "evelan",
   "description": "Evelan team skills and commands for Claude Code",
   "version": "1.0.0",
   "author": { "name": "Evelan" },
@@ -54,6 +54,6 @@ allowed-tools: [Bash, Read, Glob, Grep]
 ## Installation
 
 1. Add marketplace: `/plugin marketplace add evelan-de/claude-code-plugins`
-2. Install plugin: `/plugin install evelan-tools@evelan-tools`
+2. Install plugin: `/plugin install evelan@evelan`
 
 See `README.md` for full installation instructions including auto-prompt setup for team projects.
