@@ -94,9 +94,13 @@ package to `evelan:autopilot-implementer`.
   record nice-to-have in `REPORT.md` with rationale.
 - Max 2 review cycles; unresolved real gaps → mark the package `[!]`, log it, move on.
 
-### 7. Full gate + commit
-Run cheap gate + `build`; paste the summary. Only if fully green: commit (Conventional Commits,
-referencing the topic/ticket).
+### 7. Docs + full gate + commit
+Before committing the package, update documentation **directly affected** by this change —
+inline docs / JSDoc / docstrings, and the doc file for the touched area if one exists. Treat
+this as part of the gate: a package is not done if it left its own docs stale. Keep it
+**proportionate** — skip for trivial bugfixes, internal refactors, or UI-only tweaks that
+change no documented behavior. Then run the cheap gate + `build`; paste the summary. Only if
+fully green: commit (Conventional Commits, referencing the topic/ticket).
 
 ### 8. Keep `PLAN.md` / `DECISIONS.md` current.
 
@@ -110,12 +114,20 @@ states, check console + network for errors, work through browser-checkable `MANU
 items, fix findings test-driven and re-verify, stop the server cleanly. If any precondition is
 missing → skip silently, note it in `REPORT.md`. **Never a blocker.**
 
-### 10. PR + CI
+### 10. Documentation review (before the PR)
+If the session added or changed user-facing functionality, behavior, config, or public API,
+update the general project docs accordingly — README and any other top-level docs that mention
+the affected area. If a **new feature** was built, add a doc entry under `docs/` following the
+existing scheme/structure already used there. Proportionate — skip entirely when nothing
+documented changed (small bugs, internal refactors, UI-only tweaks). This is the project's own
+documentation, separate from the per-session `docs/autopilot/` artifacts.
+
+### 11. PR + CI
 Push the branch and open **one PR** automatically (GitHub `gh pr create`; Bitbucket via API, ticket
 key in title). The PR is for review — **never auto-merge**. Then wait for CI (`gh run watch`); on
 red, read `gh run view --log-failed`, fix, re-push, re-check until green and merge-ready.
 
-### 11. Finalize artifacts
+### 12. Finalize artifacts
 Write `REPORT.md` and prepend the session one-liner to `docs/autopilot/INDEX.md`.
 
 ## Stop conditions (abort the whole session, write `REPORT.md`)

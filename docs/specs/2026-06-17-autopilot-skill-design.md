@@ -144,7 +144,10 @@ one-line tasks may collapse phases.
      rationale.
    - Fix every real gap test-driven, then re-gate. Max 2 review cycles; unresolved real gaps
      after 2 → package marked `[!]`, logged, move on.
-7. **Full gate + commit.** Run cheap gate + `build`, paste the summary. Only if fully green:
+7. **Docs + full gate + commit.** Before committing, update documentation **directly affected**
+   by this package (inline docs/JSDoc/docstrings, the doc file for the touched area) — treated as
+   part of the gate, but **proportionate** (skip for trivial bugfixes / internal refactors /
+   UI-only tweaks). Then run cheap gate + `build`, paste the summary. Only if fully green:
    commit (Conventional Commits, referencing the topic/issue key).
 8. **Per-package journaling.** Keep `PLAN.md` / `DECISIONS.md` current.
 
@@ -164,11 +167,16 @@ At session end (the topic is fully implemented):
    If any precondition is not met (not a web UI, no dev server, no browser tool, server won't
    start) → **skip silently**, note the reason in `REPORT.md`, and continue. This step is
    **never a blocker**.
-10. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
+10. **Documentation review (before the PR).** If the session added or changed user-facing
+    functionality, behavior, config, or public API, update the general project docs (README and
+    other top-level docs touching the area); if a **new feature** was built, add a doc entry
+    under `docs/` following the existing scheme there. Proportionate — skip when nothing
+    documented changed. Separate from the per-session `docs/autopilot/` artifacts.
+11. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
     create`; Bitbucket via API, Jira key in title where relevant). The PR is opened for review,
     **never auto-merged**. Wait for CI (`gh run watch`); on red, read
     `gh run view --log-failed`, fix, re-push, re-check — until green and **merge-ready**.
-11. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
+12. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
 
 ### Decisions & stop conditions
 
