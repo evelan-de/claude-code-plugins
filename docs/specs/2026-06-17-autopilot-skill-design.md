@@ -99,11 +99,13 @@ one-line tasks may collapse phases.
    3. **No task given at all** → derive the task from project context (open TODOs, leftover
       plan files, issues, obviously unfinished features), record the choice in `DECISIONS.md`,
       then proceed as in (2).
-1. **Project context & gate commands.** Detect the stack and the **exact** lint / typecheck /
-   test / build commands from `package.json`, `CLAUDE.md`, and tool configs — never assume,
-   look them up. If a piece is missing (e.g. no test runner configured), set it up minimally
-   and project-consistent **before** implementation, so TDD can run in the first package.
-   Existing project conventions take precedence over general best practices.
+1. **Project context & gate commands.** If `.claude/autopilot.json` exists (from a prior
+   `init`), use its `gate` as the source of truth. Otherwise detect the package manager and the
+   **exact** lint / typecheck / test / build commands the same way `init` does (see §7) from
+   `package.json`, `CLAUDE.md`, and tool configs — never assume, look them up. If a piece is
+   missing (e.g. no test runner configured), set it up minimally and project-consistent
+   **before** implementation, so TDD can run in the first package. Existing project conventions
+   take precedence over general best practices.
 2. **Branch.** Create a single session branch (`autopilot/<slug>`). Every package is a
    commit here — never multiple branches per session.
 3. **Explore (read-only).** Delegate wide reading to a subagent so it does not flood the
@@ -199,19 +201,39 @@ run is active and the gate is red, it `exit 2`s with the failure on stderr, so t
 - exit 0 → allow stop; exit 2 + stderr → block and feed the failure back to the model.
 - Guarded by a sentinel file (`.claude/.autopilot-active`) the skill creates at run start and
   removes at end, so **normal interactive sessions are never gated**.
-- The gate command is auto-detected from `package.json` (npm vs pnpm, actual script names)
-  and stored where the hook can read it.
+- The gate command is auto-detected at `init` time and stored in `.claude/autopilot.json`,
+  which the hook reads (PM-agnostic — see init detection below).
 - Note: the "~8 consecutive blocks" circuit breaker from the old kit was misattributed — it
   belongs to `auto` permission mode (3 consecutive / 20 total), not to Stop hooks.
 
 ### `init` behavior (safe-merge, chosen)
 
 `/autopilot init`:
-1. Reads the existing `.claude/settings.json`; **adds only** the autopilot Stop-hook block,
-   leaving everything else untouched. Idempotent — re-running changes nothing.
-2. Copies `autopilot-gate.sh` into the project's `.claude/hooks/` and `chmod +x`.
-3. Detects gate commands from `package.json` and writes them where the hook reads them.
-4. Reports exactly what it added.
+1. **Detect the package manager** (authoritative order, first hit wins):
+   1. `packageManager` field in `package.json` (corepack standard: `pnpm@…` / `yarn@…` / `npm@…` / `bun@…`).
+   2. Lockfile present: `pnpm-lock.yaml` → pnpm; `yarn.lock` → yarn; `bun.lockb` / `bun.lock` → bun;
+      `package-lock.json` → npm.
+   3. Fallback → `npm`.
+2. **Select the gate steps** from `package.json` `scripts`, including only what actually exists,
+   in the order typecheck → lint → test → build:
+   - typecheck: a `typecheck` / `type-check` script if present, else fall back to `tsc --noEmit`
+     when a `tsconfig.json` exists, else skip.
+   - lint: a `lint` script if present, else skip.
+   - test: a `test` script if present (the run-mode bootstraps one when missing; init only
+     wires up what is there).
+   - The cheap gate omits `build`; the full gate (run-mode, pre-commit) appends it when a
+     `build` script exists.
+   Each step is prefixed with the detected runner (e.g. `pnpm run lint`, `npm run lint`).
+3. **Persist the resolved gate** to `.claude/autopilot.json`
+   (`{ "gate": "pnpm run typecheck && pnpm run lint && pnpm test" }`). This file is the single
+   source of truth read by both the Stop hook and the run-mode orchestrator — so the hook is
+   PM-agnostic and never hardcodes pnpm/npm.
+4. **Merge the hook** into `.claude/settings.json`: reads the existing file, **adds only** the
+   autopilot `Stop`-hook block, leaves everything else untouched. Idempotent — re-running
+   changes nothing.
+5. Copies `autopilot-gate.sh` into the project's `.claude/hooks/` and `chmod +x`. The script
+   reads the gate from `.claude/autopilot.json` (default fallback only if the file is absent).
+6. Reports the detected package manager, the resolved gate command, and exactly what it added.
 
 ## 8. Safety & permissions
 
@@ -242,10 +264,11 @@ run is active and the gate is red, it `exit 2`s with the failure on stderr, so t
 
 ## 11. Open considerations
 
-- Exact gate-storage mechanism for the hook (sentinel-file payload vs. a small
-  `.claude/autopilot.json`) — decide during implementation.
 - Whether `init` should also offer a `--check` dry-run later (deferred; safe-merge is enough
   for v1).
+- yarn / bun gate verbs differ slightly (`yarn lint` vs `yarn run lint`, `bun run`); npm and
+  pnpm are the primary targets, yarn/bun are detected but verify their exact invocation during
+  implementation.
 
 ## Sources
 
