@@ -1,0 +1,16 @@
+{
+  "// note": "init merges ONLY this Stop block into the project's .claude/settings.json. Do not overwrite the file.",
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/autopilot-gate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
