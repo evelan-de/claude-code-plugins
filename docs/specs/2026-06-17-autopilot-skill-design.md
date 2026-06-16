@@ -39,11 +39,11 @@ context-triggered via its description. The old `~/.claude/commands/autopilot.md`
 All component directories live at the plugin root (never under `.claude-plugin/`).
 
 ```
+agents/                          # plugin root — auto-registered as evelan:autopilot-*
+  autopilot-reviewer.md          # Opus — adversarial review, fresh context
+  autopilot-implementer.md       # Sonnet — TDD implementation, escalates on uncertainty
 skills/autopilot/
   SKILL.md                       # orchestrator workflow + routing (run | init)
-  agents/
-    autopilot-reviewer.md        # Opus — adversarial review, fresh context
-    autopilot-implementer.md     # Sonnet — TDD implementation, escalates on uncertainty
   hooks/
     autopilot-gate.sh            # deterministic gate script (template, copied by init)
   references/
@@ -51,10 +51,12 @@ skills/autopilot/
     init.md                      # detailed init procedure (kept out of SKILL.md to stay lean)
 ```
 
-`plugin.json` already exposes `skills: "./skills/"`. Agents bundled inside the skill folder
-are referenced by the skill; if the project-level Stop hook needs them they are copied by
-`init`. (Plugin-level `agents`/`hooks` keys are intentionally **not** used for the gate —
-see §7 — because plugin hooks auto-register globally, which we do not want.)
+`plugin.json` already exposes `skills: "./skills/"`. The two subagents live at the **plugin
+root `agents/`** so they auto-register as named agents with guaranteed `model:` frontmatter
+(`evelan:autopilot-reviewer` = Opus, `evelan:autopilot-implementer` = Sonnet); the SKILL.md
+dispatches them by name. The Stop-hook script is **not** registered as a plugin hook (plugin
+hooks auto-register globally, which we do not want — see §7); it ships as a template that
+`/autopilot init` copies into each project's `.claude/hooks/`.
 
 ## 4. Model orchestration
 
