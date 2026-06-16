@@ -90,35 +90,72 @@ and/or a per-invocation model override when the orchestrator spawns the agent.
 One session works **one topic** end to end. Phases run in order per work package; trivial
 one-line tasks may collapse phases.
 
-1. **Branch.** Create a single session branch (`autopilot/<slug>`). Every package is a
+0. **Resolve input (cascade).** Decide what to build before touching anything:
+   1. A spec is provided in the prompt / referenced as a file / already exists in the repo
+      (`SPEC.md` or equivalent) → use it.
+   2. Only a rough idea → write a self-contained spec first (problem/goal, scope + explicit
+      non-goals, functional requirements with acceptance criteria, affected areas, edge and
+      error cases). Open questions are answered with conservative assumptions → `DECISIONS.md`.
+   3. **No task given at all** → derive the task from project context (open TODOs, leftover
+      plan files, issues, obviously unfinished features), record the choice in `DECISIONS.md`,
+      then proceed as in (2).
+1. **Project context & gate commands.** Detect the stack and the **exact** lint / typecheck /
+   test / build commands from `package.json`, `CLAUDE.md`, and tool configs — never assume,
+   look them up. If a piece is missing (e.g. no test runner configured), set it up minimally
+   and project-consistent **before** implementation, so TDD can run in the first package.
+   Existing project conventions take precedence over general best practices.
+2. **Branch.** Create a single session branch (`autopilot/<slug>`). Every package is a
    commit here — never multiple branches per session.
-2. **Explore (read-only).** Delegate wide reading to a subagent so it does not flood the
+3. **Explore (read-only).** Delegate wide reading to a subagent so it does not flood the
    orchestrator context. Report files, patterns, risks — not full file contents.
-3. **Plan → `PLAN.md`.** Self-contained: files/interfaces touched, explicit out-of-scope,
+4. **Plan → `PLAN.md`.** Self-contained: files/interfaces touched, explicit out-of-scope,
    concrete **verification criteria** (test cases with inputs/expected outputs, expected
    typecheck/lint/build result), and an **end-to-end check**. Break work into small,
    dependency-ordered packages with per-package Definition of Done and a status marker
    (`[ ]` / `[~]` / `[x]` / `[!]`).
-4. **Implement (TDD).** Failing test first (confirm it fails for the right reason), then
-   implement to green, then refactor. Run the **cheap gate** (typecheck/lint/test) after
-   each meaningful change and **show the output** as evidence — never assert success.
-   In Sonnet mode this package is delegated to `autopilot-implementer`.
-5. **Adversarial review (fresh context).** `autopilot-reviewer` sees only the diff +
-   `PLAN.md`. Order: Requirements → Verification → Correctness → Scope → Safety. It
-   **re-runs the gate itself**. It reports only correctness/requirement/safety gaps, never
-   style nits or speculative hardening. Verdict `PASS | GAPS`. Max 2 cycles; unresolved real
-   gaps after 2 → package marked `[!]`, logged, move on.
-6. **Full gate + commit.** Run cheap gate + `build`, paste the summary. Only if fully green:
+5. **Implement (TDD).** Failing test first (confirm it fails for the right reason), then
+   implement to green, then refactor. Everything sensibly unit-testable gets tests
+   (utilities, hooks, business logic, data transforms, API handlers, validation); UI
+   components are tested by behavior, not implementation detail. Run the **cheap gate**
+   (typecheck/lint/**full** test suite, not just the new tests) after each meaningful change
+   and **show the output** as evidence — never assert success. In Sonnet mode this package is
+   delegated to `autopilot-implementer`.
+6. **Review (fresh context, hybrid depth).**
+   - **Always:** the adversarial `autopilot-reviewer` sees only the diff + `PLAN.md`. Order:
+     Requirements → Verification → Correctness (incl. security) → Scope → Safety. It
+     **re-runs the gate itself**. It reports only correctness/requirement/safety gaps, never
+     style nits or speculative hardening. Verdict `PASS | GAPS`.
+   - **On demand:** when the prompt asks for it ("thorough review", "architecture review",
+     "Code-Qualität") or the diff is large, the orchestrator additionally fans out
+     **clean-code** and **reusability** lenses as parallel Opus subagents, each with fresh
+     context. Their findings are prioritized (critical / important / nice-to-have); only
+     critical and important ones are fixed, nice-to-have are recorded in `REPORT.md` with a
+     rationale.
+   - Fix every real gap test-driven, then re-gate. Max 2 review cycles; unresolved real gaps
+     after 2 → package marked `[!]`, logged, move on.
+7. **Full gate + commit.** Run cheap gate + `build`, paste the summary. Only if fully green:
    commit (Conventional Commits, referencing the topic/issue key).
-7. **Per-package journaling.** Keep `PLAN.md` / `DECISIONS.md` current.
+8. **Per-package journaling.** Keep `PLAN.md` / `DECISIONS.md` current.
 
 At session end:
 
-8. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
-   create`; Bitbucket via API, Jira key in title where relevant). Wait for CI (`gh run
+9. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
+   create`; Bitbucket via API, Jira key in title where relevant). The PR is opened for review,
+   **never auto-merged**. Wait for CI (`gh run
    watch`); on red, read `gh run view --log-failed`, fix, re-push, re-check — until green and
    **merge-ready**.
-9. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
+10. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
+
+### Decisions & stop conditions
+
+- **No questions — decide.** On any ambiguity, make the conservative choice (least breakage,
+  easiest to reverse later) and record it in `DECISIONS.md`. Only when something is genuinely
+  impossible (missing credentials, no external access) mark that package `[!]`, log why, and
+  continue with the next package.
+- **Abort the whole session** (write `REPORT.md`, do not force progress) when: the gate cannot
+  be made green without a destructive action or human input; the task would require anything on
+  the "never" list (§8); or no package remains implementable. (The v2 "2 consecutive blocked
+  tasks" rule does not apply — a session is a single topic, not a queue.)
 
 ## 6. Artifacts — `docs/autopilot/` (journal-style)
 
