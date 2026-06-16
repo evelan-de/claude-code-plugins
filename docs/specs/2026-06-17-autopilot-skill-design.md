@@ -139,14 +139,27 @@ one-line tasks may collapse phases.
    commit (Conventional Commits, referencing the topic/issue key).
 8. **Per-package journaling.** Keep `PLAN.md` / `DECISIONS.md` current.
 
-At session end:
+At session end (the topic is fully implemented):
 
-9. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
-   create`; Bitbucket via API, Jira key in title where relevant). The PR is opened for review,
-   **never auto-merged**. Wait for CI (`gh run
-   watch`); on red, read `gh run view --log-failed`, fix, re-push, re-check — until green and
-   **merge-ready**.
-10. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
+9. **UI / E2E verification (when applicable).** Runs only when **all three** hold:
+   (a) the change is a **web UI**, (b) the project exposes a **locally startable dev server**
+   (e.g. `npm run dev`), and (c) a **browser tool is available** in the session (Chrome plugin
+   / browser MCP / Preview MCP). If so:
+   - Start the dev server in the background and wait until it is reachable.
+   - Drive the actual UI through the **acceptance criteria** in `PLAN.md`: click the flows,
+     submit forms with valid **and** invalid input, provoke error states, and check the
+     **console and network requests** for errors.
+   - Work through the browser-checkable items in `MANUAL_TESTING.md` and mark them verified.
+   - Treat findings like review gaps: fix test-driven, re-gate, re-verify in the browser.
+   - Stop the dev server cleanly afterwards.
+   If any precondition is not met (not a web UI, no dev server, no browser tool, server won't
+   start) → **skip silently**, note the reason in `REPORT.md`, and continue. This step is
+   **never a blocker**.
+10. **PR + CI.** Push the session branch and open **one PR** automatically (GitHub `gh pr
+    create`; Bitbucket via API, Jira key in title where relevant). The PR is opened for review,
+    **never auto-merged**. Wait for CI (`gh run watch`); on red, read
+    `gh run view --log-failed`, fix, re-push, re-check — until green and **merge-ready**.
+11. **Finalize `REPORT.md`** and prepend the session one-liner to `docs/autopilot/INDEX.md`.
 
 ### Decisions & stop conditions
 
@@ -251,8 +264,8 @@ run is active and the gate is red, it `exit 2`s with the failure on stderr, so t
   TDD, systematic-debugging, code-review) when present, but does not hard-depend on them, so
   teammates without Superpowers still get a working autopilot.
 - Content and docs in English; the skill recognizes German intent phrases in the prompt.
-- Browser verification: only when a browser tool **and** a locally-startable web app are both
-  available; otherwise skipped silently and noted in `REPORT.md`. Never a blocker.
+- UI / E2E browser verification is part of the run-mode workflow (§5 step 9), gated on a web
+  UI + a local dev server + an available browser tool; skipped silently otherwise.
 
 ## 10. Non-goals (YAGNI)
 
