@@ -106,8 +106,15 @@ one-line tasks may collapse phases.
    missing (e.g. no test runner configured), set it up minimally and project-consistent
    **before** implementation, so TDD can run in the first package. Existing project conventions
    take precedence over general best practices.
-2. **Branch.** Create a single session branch (`autopilot/<slug>`). Every package is a
-   commit here — never multiple branches per session.
+2. **Branch.** Create a single session branch following the project's existing convention —
+   never multiple branches per session.
+   - **Prefix:** infer the project's usual feature-branch prefix from existing branches /
+     git history (`git branch -a`, recent merged branch names); fall back to `feature/` when
+     none is detectable.
+   - **Ticket:** if the prompt contains a ticket key (e.g. `DNA-901`, `WEB-123`, `PAUL-…`,
+     `EL-…`), include it (original casing) → `<prefix>/DNA-901-<slug>`. Otherwise
+     `<prefix>/<slug>`.
+   - **Slug:** lowercase, hyphen-separated, derived from the topic.
 3. **Explore (read-only).** Delegate wide reading to a subagent so it does not flood the
    orchestrator context. Report files, patterns, risks — not full file contents.
 4. **Plan → `PLAN.md`.** Self-contained: files/interfaces touched, explicit out-of-scope,
