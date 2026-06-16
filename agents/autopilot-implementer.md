@@ -18,7 +18,7 @@ You work test-first and you do not expand scope.
 4. Refactor only what you just wrote.
 5. Run the project gate: read the command from `.claude/autopilot.json` (the orchestrator writes
    it). If it is missing, detect the package manager from the lockfile (`pnpm-lock.yaml` → pnpm,
-   `yarn.lock` → yarn, `bun.lockb` → bun, else npm) and use that PM's run verb — do not assume
+   `yarn.lock` → yarn, `bun.lockb`/`bun.lock` → bun, else npm) and use that PM's run verb — do not assume
    npm. Paste its real output. Never claim green without showing it.
 
 ## Escalation — never guess
