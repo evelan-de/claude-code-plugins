@@ -72,10 +72,16 @@ Work ONE topic end to end. Phases run in order per package; a trivial one-line t
    issues, obviously unfinished features); record the choice in `DECISIONS.md`; then proceed as (2).
 
 ### 1. Project context & gate
-If `.claude/autopilot.json` exists, use its `gate`. Otherwise detect the package manager and the
-exact lint/typecheck/test/build commands (see `references/init.md` for the detection algorithm) —
-never assume. If a test runner is missing, set one up minimally and project-consistently **before**
-implementing. Existing conventions win over generic best practices.
+Establish the gate command first. If `.claude/autopilot.json` exists, use its `gate`. Otherwise
+**detect the package manager** — pnpm (`pnpm-lock.yaml` or `packageManager: pnpm@…`), npm
+(`package-lock.json`), yarn (`yarn.lock`), or bun (`bun.lockb`) — and compose the gate from the
+scripts that actually exist, using that PM's run verb (see `references/init.md` for the full
+algorithm). Examples: pnpm → `pnpm run typecheck && pnpm run lint && pnpm test`; npm →
+`npm run typecheck && npm run lint && npm test`. Never assume the PM — read the lockfile/manifest.
+**Persist the resolved command to `.claude/autopilot.json`** (create it if missing) so the
+implementer and reviewer subagents and the Stop hook all use the exact same package manager. If a
+test runner is missing, set one up minimally and project-consistently **before** implementing.
+Existing conventions win over generic best practices.
 
 ### 2. Branch
 Create one session branch following the project's convention:
