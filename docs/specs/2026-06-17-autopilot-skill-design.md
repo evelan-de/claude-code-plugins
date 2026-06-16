@@ -277,9 +277,13 @@ run is active and the gate is red, it `exit 2`s with the failure on stderr, so t
 
 ## 9. Team-readiness
 
-- The skill is **self-contained**: it *uses* Superpowers skills (brainstorming, writing-plans,
-  TDD, systematic-debugging, code-review) when present, but does not hard-depend on them, so
-  teammates without Superpowers still get a working autopilot.
+- The skill is **self-contained** but **leads with Superpowers skills per phase when installed**
+  (they take precedence over the inline fallback): brainstorming → spec, writing-plans → plan,
+  using-git-worktrees → workspace, test-driven-development (+ subagent-driven-development) →
+  implement, systematic-debugging → failures, requesting-code-review → review,
+  finishing-a-development-branch → finish/PR. It does not hard-depend on them, so teammates
+  without Superpowers still get a working autopilot. Where a Superpowers skill would ask the user
+  a question, autopilot decides conservatively instead and logs it.
 - Content and docs in English; the skill recognizes German intent phrases in the prompt.
 - UI / E2E browser verification is part of the run-mode workflow (§5 step 9), gated on a web
   UI + a local dev server + an available browser tool; skipped silently otherwise.

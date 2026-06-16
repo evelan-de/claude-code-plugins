@@ -28,9 +28,24 @@ green-CI, merge-ready PR is the goal.
 - **One session = one topic = one branch = one PR.** All work packages are commits on that one branch.
 - **No questions — decide.** On ambiguity, pick the conservative, easily-reversible option and
   record it in `DECISIONS.md`.
-- Use the Superpowers skills (brainstorming, writing-plans, test-driven-development,
-  systematic-debugging, requesting-code-review) when they are installed; otherwise follow the
-  equivalent workflow described here. Do not hard-depend on them.
+
+## Use Superpowers skills first (when installed)
+
+For each phase, if the matching Superpowers skill is installed, **invoke it and follow its
+workflow** — it takes precedence over the inline instructions here, which are the fallback when
+it is absent. Do not hard-depend on Superpowers. Where a Superpowers skill would ask the user a
+question, do not pause — decide conservatively (see "No questions — decide") and log it in
+`DECISIONS.md`.
+
+| Phase | Superpowers skill |
+| --- | --- |
+| 0 — spec / rough idea | `superpowers:brainstorming` |
+| 2 — isolated workspace | `superpowers:using-git-worktrees` |
+| 4 — plan | `superpowers:writing-plans` |
+| 5 — implement | `superpowers:test-driven-development` (+ `superpowers:subagent-driven-development` when delegating packages) |
+| 5/7 — failures, flaky tests, bugs | `superpowers:systematic-debugging` |
+| 6 — review | `superpowers:requesting-code-review` |
+| 11 — finish / PR | `superpowers:finishing-a-development-branch` |
 
 ## Model strategy
 
@@ -48,6 +63,7 @@ green-CI, merge-ready PR is the goal.
 Work ONE topic end to end. Phases run in order per package; a trivial one-line task may collapse them.
 
 ### 0. Resolve input (cascade)
+↳ Superpowers (if installed): `superpowers:brainstorming` to shape the spec.
 1. A spec is provided / referenced / already in the repo (`SPEC.md` or equivalent) → use it.
 2. Only a rough idea → write a self-contained spec into `PLAN.md` (problem/goal, scope + non-goals,
    functional requirements with acceptance criteria, affected areas, edge/error cases). Answer
@@ -72,12 +88,14 @@ Delegate wide reading to a subagent so it does not flood your context. Get back 
 risks — not full file contents.
 
 ### 4. Plan → `PLAN.md`
+↳ Superpowers (if installed): `superpowers:writing-plans`.
 Self-contained: files/interfaces touched, explicit out-of-scope, concrete verification criteria
 (test cases with inputs/expected outputs, expected typecheck/lint/build result), and an
 end-to-end check. Break into small, dependency-ordered packages, each with a Definition of Done
 and a status marker `[ ] / [~] / [x] / [!]`.
 
 ### 5. Implement (TDD)
+↳ Superpowers (if installed): `superpowers:test-driven-development`; `superpowers:systematic-debugging` for any failure.
 Per package: failing test first (confirm it fails for the right reason) → minimal code to green →
 refactor. Everything sensibly unit-testable gets tests (utils, hooks, business logic, data
 transforms, API handlers, validation); UI components are tested by behavior. Run the **cheap gate**
@@ -86,6 +104,7 @@ auto-tested → `MANUAL_TESTING.md` with concrete steps, then continue. In Sonne
 package to `evelan:autopilot-implementer`.
 
 ### 6. Review (fresh context, hybrid depth)
+↳ Superpowers (if installed): `superpowers:requesting-code-review` to frame the review.
 - **Always:** dispatch `evelan:autopilot-reviewer` with the diff + `PLAN.md`. Fix every gap it
   reports that affects correctness, requirements, or safety — test-driven, then re-gate.
 - **On demand:** if the prompt asks ("thorough review", "architecture review", "Code-Qualität") or
