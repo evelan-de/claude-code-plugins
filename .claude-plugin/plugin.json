@@ -1,10 +1,13 @@
 {
   "name": "evelan",
   "description": "Evelan team skills and commands for Claude Code",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": {
     "name": "Evelan"
   },
   "skills": "./skills/",
-  "agents": "./agents/"
+  "agents": [
+    "./agents/autopilot-reviewer.md",
+    "./agents/autopilot-implementer.md"
+  ]
 }
