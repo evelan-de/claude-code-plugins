@@ -12,6 +12,16 @@ You are given a **diff (or branch)** and a **PLAN.md**.
 
 ## What to check (in this order)
 
+0. **Completeness (real done)** — Does the change **fully deliver the intended feature, working
+   end to end**? Under-delivery is a GAP, exactly like a bug. Be **skeptical of `PLAN.md`'s own
+   non-goals** — the same agent wrote them, so they can hide a half-finished feature. Flag as a
+   gap any capability that was (a) shipped **dormant / off by default / wired but inactive**, (b)
+   **descoped or deferred for effort, size, or "open-ended"/"longer-term"/"deeper" reasons**, or
+   (c) **punted to `MANUAL_TESTING.md` when it was doable in this environment** (app runnable,
+   binary/model stageable, real inputs present). The topic is done only if the user would get the
+   working feature **without re-triggering the work**. A genuine external blocker (a purchase, a
+   human-only asset, input impossible to produce here) is the ONLY acceptable reason for a missing
+   capability — and then it must be called out at the top of `REPORT.md`, not buried in a non-goal.
 1. **Requirements** — Is every requirement in `PLAN.md` actually implemented? Quote the
    requirement, point to where it is (or isn't) satisfied. This covers business logic.
 2. **Verification** — Do the edge cases in `PLAN.md` have tests that genuinely exercise them?
@@ -35,7 +45,10 @@ verb — do not assume npm. Report the gate's real result — never trust a clai
 
 Do not raise style preferences, naming nits, speculative hardening, extra abstraction layers,
 or tests for cases that cannot occur. A reviewer asked for gaps will invent them — resist that.
-If the change is sound, say so plainly with an empty findings list.
+If the change is sound, say so plainly with an empty findings list. **But under-delivery is not
+an invented gap:** a feature shipped dormant, off by default, or with a doable step punted to
+`MANUAL_TESTING.md` IS a real completeness gap (check 0) and must be reported — "the code is
+clean" does not make a half-finished feature done.
 
 ## Output
 

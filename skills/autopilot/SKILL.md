@@ -8,8 +8,22 @@ argument-hint: "[init | <task | TICKET-KEY | spec file>]   (add 'with sonnet' fo
 # Autopilot
 
 You run **unattended**: no human will answer questions until the session is reviewed.
-Optimize for **correct, reviewed, committed** work — never volume. One fully verified,
-green-CI, merge-ready PR is the goal.
+Optimize for **correct, reviewed, committed, and COMPLETE** work — never volume. One fully
+verified, green-CI, merge-ready PR that **actually finishes its topic** is the goal.
+
+**Definition of done (non-negotiable):** a topic is done only when the feature **works end to
+end for the user** and *you have verified that yourself* — not merely when the gate is green.
+"Wired but dormant", "off by default", "the binary/model still has to be staged", "thresholds
+still need tuning", or "left as a MANUAL_TESTING step" do **NOT** count as done. If you cannot
+make it fully work, you do not ship it as done (see Stop conditions) — you never hand the user
+back a half-feature to finish and re-verify.
+
+**Effort is never a reason to stop, shrink, defer, or descope.** "Too much work", "large",
+"open-ended", "longer-term", "deeper lever", or "out of scope for one run" are **forbidden**
+justifications — you exist to do the work regardless of how much it is. If the topic is big,
+plan it across the whole session and build ALL of it. The ONLY things you may not do are the
+genuine external blockers on the never/blocked list (a purchase, a human-only design asset, or
+input that truly cannot be produced in this environment) — nothing else, and never "effort".
 
 **Input:** `$ARGUMENTS`
 
@@ -28,6 +42,18 @@ green-CI, merge-ready PR is the goal.
 - **One session = one topic = one branch = one PR.** All work packages are commits on that one branch.
 - **No questions — decide.** On ambiguity, pick the conservative, easily-reversible option and
   record it in `DECISIONS.md`.
+- **Finish or swap — never ship a half.** Deliver the WHOLE feature, working and verified. If a
+  genuine external blocker (a purchase, a human-only asset, or input data that truly cannot be
+  produced in this environment) stops you from finishing, do NOT ship a partial/dormant version
+  and mark it done: abandon that topic cleanly, report the exact blocker at the TOP of
+  `REPORT.md`, and pick a DIFFERENT fully-completable topic so the session still delivers
+  something whole. A half-feature marked "done" is a session FAILURE, not a partial success.
+- **Do the doable verification yourself.** If your environment can run the app, stage a
+  binary/model, or exercise the feature — e.g. a local desktop session that has the sidecars and
+  real recordings present — you MUST. Device/binary/data steps that ARE possible here may not be
+  punted to `MANUAL_TESTING.md`; that file is only for steps genuinely impossible in this
+  environment (a purchased cert, other-OS hardware). "Device-bound" is not an excuse when the
+  device is right here.
 
 ## Use Superpowers skills first (when installed)
 
@@ -98,7 +124,12 @@ risks — not full file contents.
 Self-contained: files/interfaces touched, explicit out-of-scope, concrete verification criteria
 (test cases with inputs/expected outputs, expected typecheck/lint/build result), and an
 end-to-end check. Break into small, dependency-ordered packages, each with a Definition of Done
-and a status marker `[ ] / [~] / [x] / [!]`.
+and a status marker `[ ] / [~] / [x] / [!]`. **The packages together must fully deliver the
+topic** — do NOT carve a feature into a shippable sliver and park the rest under "out-of-scope".
+A non-goal is legitimate only when it is genuinely *unrelated* scope, never a core part of the
+same feature deferred because it is large, device-bound, or open-ended. Every package's
+Definition of Done is "the user gets this working", not "the code compiles and a manual step is
+written down".
 
 ### 5. Implement (TDD)
 ↳ Superpowers (if installed): `superpowers:test-driven-development`; `superpowers:systematic-debugging` for any failure.
@@ -106,8 +137,12 @@ Per package: failing test first (confirm it fails for the right reason) → mini
 refactor. Everything sensibly unit-testable gets tests (utils, hooks, business logic, data
 transforms, API handlers, validation); UI components are tested by behavior. Run the **cheap gate**
 (typecheck/lint/full test suite) after each meaningful change and show its output. What cannot be
-auto-tested → `MANUAL_TESTING.md` with concrete steps, then continue. In Sonnet mode, delegate the
-package to `evelan:autopilot-implementer`.
+**auto**-tested but **can** be exercised in this environment, you verify **yourself** — run the
+app/sidecar, stage the needed binary/model, drive the feature end to end — and show the evidence.
+Only steps genuinely impossible here (a purchased cert, other-OS hardware) go to
+`MANUAL_TESTING.md`; effort, size, or a vague "device-bound" are NOT reasons to punt when the
+device/binary/data is available. In Sonnet mode, delegate the package to
+`evelan:autopilot-implementer`.
 
 ### 6. Review (fresh context, hybrid depth)
 ↳ Superpowers (if installed): `superpowers:requesting-code-review` to frame the review.
@@ -159,6 +194,12 @@ Write `REPORT.md` and prepend the session one-liner to `docs/autopilot/INDEX.md`
 - The gate cannot be made green without a destructive action or human input.
 - The task would require anything on the never-list.
 - No package remains implementable.
+
+**Never fake completion.** A topic you can only *partially* finish — dormant, off by default,
+verification punted for non-genuine reasons, or descoped for effort/size — is **not** committed
+as done. Either finish it fully, or (if a genuine external blocker stops you) drop it, report the
+blocker at the top of `REPORT.md`, and swap to a topic you CAN finish end to end. Shipping a
+half-feature and marking it done is itself a session failure — do not do it.
 
 ## Artifacts — `docs/autopilot/` (committed, part of the PR)
 
