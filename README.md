@@ -88,3 +88,17 @@ The orchestrator runs at your **session model** (Opus recommended). Review alway
 For unattended runs, launch with `--permission-mode auto`.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
+
+### reflect-on-changes
+
+Runs a short self-reflection check after a round of code changes is complete, before declaring the work done. Forces Claude to honestly interrogate its own work — surfacing what it's least confident about and what it might be missing — so problems get caught before the user finds them.
+
+**Features:**
+- Triggers automatically after meaningful changes (features, refactors, bug fixes, multi-file edits) — not for trivial one-line tweaks
+- Answers two grounded questions before the closing summary:
+  - **What am I least confident about?** — a specific function, assumption, untested path, or guessed dependency
+  - **What might I be missing?** — unstated context, ambiguous requirements, team conventions, or unknown unknowns
+- Presented as a short, clearly-labeled section with no vague hedging
+- Escalates real concerns into a proposed fix or a question instead of burying them in a checklist
+
+**Trigger phrases:** "done", "finished", "that should do it", "ready for review", "let me know what you think"
