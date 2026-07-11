@@ -69,6 +69,20 @@ Smart dependency updater using ncu (npm-check-updates). Goes beyond simple versi
 
 **Trigger phrases:** "update dependencies", "aktualisiere dependencies", "upgrade packages", "check outdated", "Pakete aktualisieren"
 
+### port-from-repo
+
+Controlled, exact-copy workflow for porting a component, style, layout, or feature from one repo into another. Kills the failure mode of approximating from memory instead of reading and copying the real source.
+
+**Two modes, separable by instruction:**
+- **exact** - reproduce look AND behaviour verbatim (copy classes and tokens as-is; verify in-browser against the source)
+- **structure-only** - take the logic/structure/ideas, but restyle with THIS project's own design system
+
+**Workflow it enforces:** read the source in full first (component + its base primitives + tokens) -> delta-check the target's existing tokens/primitives and any divergent global CSS -> treat "looks wrong everywhere" as a global/token cause (measure computed style) -> verify visually in the logged-in browser before claiming done.
+
+**Usage:** `/port-from-repo [exact | structure-only] <what to port + source repo>`
+
+**Trigger phrases:** "port from X", "übernimm das aus X", "wie in Jexity", "1:1", "make it like the other project", "take the logic/structure from X".
+
 ### autopilot
 
 Runs an autonomous, unattended development loop for **one topic per session**: spec → plan → TDD implementation → adversarial review → quality gate → PR (CI watched until green).
