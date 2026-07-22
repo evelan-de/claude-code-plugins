@@ -64,24 +64,49 @@ Non-empty checks per scope:
 
 ## Execution
 
-Focus instructions from the user ("only the API route", "watch for security
-issues") go in as the positional `PROMPT` argument. A model override, only
-when the user asks for one, goes through `-c model="<id>"` - there is no
-`--model` flag on this subcommand.
+A scope flag and a focus prompt are **mutually exclusive** - the CLI rejects
+`codex review --base <b> "focus"` with
+`error: the argument '--base <BRANCH>' cannot be used with '[PROMPT]'` (same
+for `--uncommitted` and `--commit`). So pick one of two forms:
+
+- **Scoped review (default, no custom instructions):** pass the scope flag
+  alone. This is the normal path and reviews exactly the diff from the table.
+
+  ```bash
+  LOG="$(mktemp /tmp/codex-review-XXXXXX)"
+  codex-cli review --base "$base" > "$LOG" 2>&1   # swap the flag per the table
+  ```
+
+- **Focused review (custom instructions, no scope flag):** when the user wants
+  to steer the review ("only the API route", "watch for security issues"),
+  pass the instructions as the `PROMPT` and drop the scope flag. Use `-` to
+  feed a multi-line prompt on stdin. Without a scope flag Codex reviews the
+  current working changes under your guidance - so this form fits the
+  uncommitted case; it cannot target an arbitrary `--base`/`--commit` range.
+
+  ```bash
+  LOG="$(mktemp /tmp/codex-review-XXXXXX)"
+  printf '%s\n' "only the API route, watch for security issues" \
+    | codex-cli review - > "$LOG" 2>&1
+  ```
+
+If the user asks for both a specific base/commit range AND focus text, you
+cannot pass both - prefer the scoped flag (the explicit range is the harder
+requirement) and tell the user the focus note could not be handed to Codex,
+or fall back to the focused form if the range is really the uncommitted diff.
+
+A model override, only when the user asks for one, goes through
+`-c model="<id>"` - there is no `--model` flag on this subcommand.
+
+**mktemp:** the template must end in the `X` run (`/tmp/codex-review-XXXXXX`).
+On macOS/BSD `mktemp`, X's followed by a suffix like `...-XXXXXX.log` are
+**not** expanded - you get a literal, non-random filename that collides on the
+next run. X's-at-end works on both BSD and GNU.
 
 A review can run for several minutes and foreground Bash is capped at 10
-minutes, so run it **in the background**, log to a file, and wait for the
-completion notification. No polling, and do not start other work while it
-runs - the review is the task.
-
-```bash
-LOG="$(mktemp /tmp/codex-review-XXXXXX.log)"
-# example: uncommitted scope with a focus prompt; swap the flag per the table
-codex-cli review --uncommitted "only the API route, watch for security issues" > "$LOG" 2>&1
-```
-
-(Started via the Bash tool with `run_in_background: true`; the harness
-notifies you when it exits.)
+minutes, so run it **in the background** (Bash `run_in_background: true`), log
+to a file, and wait for the completion notification. No polling, and do not
+start other work while it runs - the review is the task.
 
 ## Output handling - raw passthrough
 
