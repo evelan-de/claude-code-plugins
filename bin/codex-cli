@@ -1,0 +1,25 @@
+#!/bin/sh
+# codex-cli - locate the locally installed Codex CLI and exec it.
+#
+# The Codex desktop app does not put its binary on PATH, and teammates may
+# instead have an npm or homebrew install. Skills call this wrapper so they
+# never hardcode a machine-specific path. Resolution order:
+#   1. `codex` on PATH (npm / homebrew installs)
+#   2. /Applications/Codex.app/Contents/Resources/codex (macOS desktop app)
+#   3. $HOME/.local/bin/codex
+# All arguments are forwarded verbatim.
+
+APP_BIN="${CODEX_CLI_APP_BIN:-/Applications/Codex.app/Contents/Resources/codex}"
+
+if command -v codex >/dev/null 2>&1; then
+  CODEX_BIN="$(command -v codex)"
+elif [ -x "$APP_BIN" ]; then
+  CODEX_BIN="$APP_BIN"
+elif [ -x "$HOME/.local/bin/codex" ]; then
+  CODEX_BIN="$HOME/.local/bin/codex"
+else
+  echo "codex-cli: Codex CLI not found - install it (npm/homebrew) or open Codex.app once, then retry." >&2
+  exit 127
+fi
+
+exec "$CODEX_BIN" "$@"
