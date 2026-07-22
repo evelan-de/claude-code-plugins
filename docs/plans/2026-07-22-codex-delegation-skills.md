@@ -598,12 +598,16 @@ git commit -m "feat(autopilot): offer Codex cross-model review on demand"
 ### Task 6: README + version bump
 
 **Files:**
-- Modify: `README.md` (Skills section - append two new skill entries after "### reflect-on-changes")
+- Modify: `README.md` (Skills section - append two new skill entries after "### reflect-on-changes", AND backfill the missing `preview` and `codex-imagegen` entries)
 - Modify: `.claude-plugin/plugin.json` (version 1.2.1 -> 1.3.0)
 
-- [ ] **Step 1: Append the README sections**
+- [ ] **Step 1a: Backfill the two pre-existing missing README sections**
 
-Append to the end of `README.md` (after the reflect-on-changes section) exactly:
+The README Skills section is currently missing entries for the already-shipped `preview` and `codex-imagegen` skills (decided: fold into this task, not a separate follow-up). Before adding the new entries, read `skills/preview/SKILL.md` and `skills/codex-imagegen/SKILL.md` and append matching sections in the same house style (short description + Features + Trigger phrases, mirroring the existing entries). Place them so the Skills section reads in a sensible order (e.g. after the existing entries, before the two new codex-* entries). Keep prose in English, plain "-" not em dash.
+
+- [ ] **Step 1b: Append the two new README sections**
+
+Append to the README Skills section (after the reflect-on-changes / preview / codex-imagegen entries) exactly:
 
 ```markdown
 
@@ -653,7 +657,7 @@ Run: `grep -c $'—' README.md || echo "no new em dash"` - the pre-existing READ
 
 ```bash
 git add README.md
-git commit -m "docs(readme): document codex-review and codex-ask skills"
+git commit -m "docs(readme): document codex-review, codex-ask, preview and codex-imagegen skills"
 git add .claude-plugin/plugin.json
 git commit -m "chore(plugin): bump version to 1.3.0"
 ```
@@ -694,7 +698,7 @@ Checks:
 - Prompt "frag Codex, was es von diesem Repo hält" -> codex-ask triggers, and its preflight (`codex-cli --version`) resolves the Codex.app binary.
 This is the "skill triggers on intended phrases and not on generic ones" check - it cannot be scripted; observe it.
 
-- [ ] **Step 4: Confirm git state - and stop**
+- [ ] **Step 4: Confirm git state**
 
 ```bash
 git log --oneline main..HEAD
@@ -702,7 +706,17 @@ git status --short
 ```
 Expected: 7 commits on `feat/codex-delegation-skills` (wrapper, codex-review skill, command, codex-ask skill, autopilot bullet, README, version bump), clean tree.
 
-**Do NOT push and do NOT open a PR.** Per repo policy the feature is pushed only when complete and verified, and Andreas decides on the PR/merge (repo history has both direct-to-main and PR flows).
+- [ ] **Step 5: Push and open a PR (decided: PR flow, like autopilot)**
+
+Only after every prior step is green. Fetch first and confirm `main` has not moved; if it has, sync it in and re-run the gate before opening the PR.
+
+```bash
+git fetch origin
+git push -u origin feat/codex-delegation-skills
+gh pr create --base main --title "feat(skills): Codex CLI delegation - codex-review and codex-ask" --body "<summary of the two skills, the bin/codex-cli resolver, the /codex-review command, and the autopilot on-demand bullet; link the spec and this plan>"
+```
+
+The PR is for Andreas' review - do NOT auto-merge.
 
 ---
 
@@ -712,8 +726,8 @@ Expected: 7 commits on `feat/codex-delegation-skills` (wrapper, codex-review ski
 - No slash command for codex-ask (spec: skill trigger is sufficient).
 - No changes to `.claude-plugin/marketplace.json` and no `commands`/`bin` keys in plugin.json (auto-discovery verified).
 
-## Open questions for Andreas
+## Resolved decisions (confirmed by Andreas 2026-07-23)
 
-1. **Version bump:** 1.3.0 (minor) is assumed for the three new user-facing pieces. OK, or do you want a different number?
-2. **README gap (pre-existing):** the README Skills section is missing entries for the existing `preview` and `codex-imagegen` skills. This plan only adds the two new skills. Should the missing entries be added in a separate follow-up commit, or folded into Task 6?
-3. **Merge path:** the branch stays local per policy. When done, do you want a PR (like autopilot/reflect-on-changes) or a direct merge to main (like preview/port-from-repo)?
+1. **Version bump:** 1.3.0 (minor). Applied in Task 6.
+2. **README gap:** fold the missing `preview` and `codex-imagegen` entries into Task 6 (Step 1a) - not a separate follow-up.
+3. **Merge path:** PR flow (like autopilot). Push + `gh pr create` in Task 7, Step 5; no auto-merge.
