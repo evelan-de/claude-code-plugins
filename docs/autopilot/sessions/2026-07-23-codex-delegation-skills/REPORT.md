@@ -63,9 +63,39 @@ written):
    randomized on macOS/BSD `mktemp` (X's must end the template), producing a literal filename that
    collided and actually broke the first review run. Fixed to X's-at-end in both skills.
 
-Not re-run through a fresh full Codex round after the final temp-index fix: its two flagged cases
-are covered by the scratch-repo verification above. A further `/codex-review` pass is available if
-desired.
+### Second live Codex review (re-run on request)
+
+A second `codex review --base origin/main` over the final PR surfaced two more issues in the
+temp-index snapshot, both handled:
+
+4. **[P1] empty-index-file claim (`4248c39`)** - Codex said a pre-created `mktemp` file as
+   `GIT_INDEX_FILE` makes `git read-tree` fail "index file smaller than expected". **Did not
+   reproduce** on git 2.50.1 (an empty index is treated as empty and repopulated - verified
+   directly). Hardened anyway by switching to `mktemp -d` with a non-existent index path
+   (`$SNAP_DIR/index`), which removes the fragility across git versions.
+5. **[P2] ignored files (`4248c39`)** - valid: `git add -A` excludes `.gitignore`'d files, so the
+   snapshot cannot cover them. Force-adding all ignored files (node_modules, build output) would be
+   catastrophic, so the honest fix is to **narrow the documented guarantee** to git-visible files,
+   with a note to check ignored artifacts separately.
+
+Both verified in a scratch repo (isolation still correct: pre-existing untracked edits and Codex
+commits handled; only Codex's changes reported).
+
+### Follow-up feature: Codex-limit fallback (requested mid-session)
+
+Added on Andreas' request (`71753b5`):
+- `codex-review` skill gained a **fallback** section: when Codex exits non-zero with no usable
+  review and the log matches a limit/availability signature (rate limit, quota, 429, auth, missing
+  binary), report why and **review with Claude instead**, labelled as the fallback - never leave the
+  user with no review. A benign line (e.g. `failed to renew cache TTL`) with a real review present
+  is not treated as a limit.
+- `autopilot` step 6 bullet now takes explicit "use Codex as reviewer" / "Codex als Reviewer"
+  triggers and, on a Codex limit/unavailability, falls back to the standard `autopilot-reviewer`
+  that already ran (noting the skip in `REPORT.md`).
+
+The `codex-review` skill has now reviewed its own PR twice and every finding is resolved or
+explicitly, evidence-backed rejected. No third round run; the two latest fixes are covered by the
+scratch-repo verification above.
 
 ## Manual testing (genuinely not doable headless)
 
