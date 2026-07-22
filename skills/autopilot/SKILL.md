@@ -152,6 +152,9 @@ device/binary/data is available. In Sonnet mode, delegate the package to
   the diff is large, additionally fan out **clean-code** and **reusability** lenses as parallel
   subagents. Prioritize findings (critical / important / nice-to-have); fix critical + important,
   record nice-to-have in `REPORT.md` with rationale.
+- **On demand (cross-model):** if the prompt asks for it ("mit Codex reviewen", "Cross-Model-Review"),
+  additionally run a Codex review via the `evelan:codex-review` skill (`codex review --base <base>`);
+  never on a default run, and a missing Codex CLI simply means the option is unavailable.
 - Max 2 review cycles; unresolved real gaps → mark the package `[!]`, log it, move on.
 
 ### 7. Docs + full gate + commit
