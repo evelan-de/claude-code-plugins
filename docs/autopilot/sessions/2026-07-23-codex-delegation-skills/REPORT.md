@@ -55,5 +55,5 @@ shell test scripts + manifest/frontmatter validation, all green above.
 
 ## Open items
 
-- PR link to be filled in after `gh pr create` (INDEX.md and this report reference it as PENDING).
+- PR: https://github.com/evelan-de/claude-code-plugins/pull/5
 - Merge is Andreas' call (PR flow, no auto-merge).
