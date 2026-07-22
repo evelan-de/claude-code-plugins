@@ -39,6 +39,34 @@ order, explicit-only triggering on both skills, the spec-exact `codex-ask` invoc
 brief on stdin via bare `-`), write-safety (pre-run snapshot, dirty-tree warning, post-run
 status + diffstat), and the native `codex review` scope/empty-diff/raw-passthrough behaviour.
 
+### Live Codex cross-model review (the skill reviewing its own PR)
+
+Ran `codex-review` against the PR (`codex review --base origin/main`, model `gpt-5.6-sol`).
+This dogfooding surfaced three real defects in the just-shipped skills, all fixed test-first
+(each mechanism verified with a direct probe / scratch-repo experiment before the prose was
+written):
+
+1. **`codex-review` scope-vs-prompt (`a6a1970`)** - the CLI rejects a scope flag combined with a
+   positional PROMPT (`--base`/`--uncommitted`/`--commit` each error "cannot be used with
+   [PROMPT]"; confirmed by direct probe). The skill's Execution example did exactly that. Rewrote
+   to document the two valid forms (scoped review, or focused review via stdin `-` with no scope
+   flag). The focused form was then verified live (`codex review -` exit 0, real review; Codex
+   confirmed the PROMPT-only description matches its behaviour).
+2. **`codex-ask` change isolation (`8692fc3`)** - Codex flagged (P2) that the pre-run snapshot
+   only recorded status + HEAD, so a dirty tree would mix the user's edits into "what Codex
+   touched". A first fix (`git stash create` + untracked-name list) was itself reviewed by Codex,
+   which found two further gaps (edits to pre-existing untracked files invisible; clean-tree +
+   Codex-commit loses the baseline). Final fix: snapshot the full worktree into a tree object via
+   a temp index outside the repo (`git add -A` + `git write-tree`) before and after, then diff the
+   two trees. Verified in a scratch repo against exactly the flagged cases.
+3. **Portable `mktemp` (both skills)** - the documented template `...-XXXXXX.log` is not
+   randomized on macOS/BSD `mktemp` (X's must end the template), producing a literal filename that
+   collided and actually broke the first review run. Fixed to X's-at-end in both skills.
+
+Not re-run through a fresh full Codex round after the final temp-index fix: its two flagged cases
+are covered by the scratch-repo verification above. A further `/codex-review` pass is available if
+desired.
+
 ## Manual testing (genuinely not doable headless)
 
 One check from the plan (Task 7, Step 3) is interactive and cannot run in this non-interactive
