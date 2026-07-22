@@ -30,21 +30,27 @@ you write, not by the shell command.
 
    ```bash
    PRE_HEAD="$(git rev-parse HEAD)"
-   SNAP_IDX="$(mktemp /tmp/codex-ask-idx-XXXXXX)"   # temp index, OUTSIDE the repo
-   GIT_INDEX_FILE="$SNAP_IDX" git read-tree HEAD
-   GIT_INDEX_FILE="$SNAP_IDX" git add -A            # tracked edits, deletions, AND untracked content
-   PRE_TREE="$(GIT_INDEX_FILE="$SNAP_IDX" git write-tree)"
-   rm -f "$SNAP_IDX"
+   SNAP_DIR="$(mktemp -d /tmp/codex-ask-snap-XXXXXX)"   # temp dir OUTSIDE the repo
+   GIT_INDEX_FILE="$SNAP_DIR/index" git read-tree HEAD
+   GIT_INDEX_FILE="$SNAP_DIR/index" git add -A          # tracked edits, deletions, AND untracked content
+   PRE_TREE="$(GIT_INDEX_FILE="$SNAP_DIR/index" git write-tree)"
+   rm -rf "$SNAP_DIR"
    ```
 
-   This writes a tree object capturing the **entire** current worktree -
-   tracked edits, deletions, and the content of untracked files - without
-   touching your real index or working tree, so Codex still sees the dirty
-   state. The temp index must live outside the repo (the `/tmp` path) or
-   `git add -A` would sweep it into the snapshot. `PRE_TREE` + `PRE_HEAD` are
-   your baseline. (A `git stash create` + untracked-name list does **not**
-   work: it misses edits to pre-existing untracked files and loses the
-   baseline when a clean tree then gets a Codex commit.)
+   This writes a tree object capturing the current worktree - tracked edits,
+   deletions, and the content of untracked files - without touching your real
+   index or working tree, so Codex still sees the dirty state. Use a temp
+   **directory** outside the repo and an index path that does not pre-exist
+   (`$SNAP_DIR/index`): a pre-created empty file can trip `git read-tree` on
+   some git versions, and an index inside the repo would get swept into the
+   snapshot. `PRE_TREE` + `PRE_HEAD` are your baseline.
+
+   Two limits to know: `git add -A` excludes files ignored by `.gitignore`, so
+   this snapshot covers **git-visible** files only - if the delegated task is
+   expected to touch an ignored artifact, say so and check it separately. And a
+   `git stash create` + untracked-name list does **not** work here: it misses
+   edits to pre-existing untracked files and loses the baseline when a clean
+   tree then gets a Codex commit.
 3. **Warn before running if the tree is already dirty** with our own
    uncommitted work - the user should know Codex edits will land on top of
    it. Wait for their go-ahead in that case.
@@ -136,11 +142,11 @@ Free text is the default - do not add a schema unasked.
    uncommitted edits mixed in:
 
    ```bash
-   POST_IDX="$(mktemp /tmp/codex-ask-idx-XXXXXX)"
-   GIT_INDEX_FILE="$POST_IDX" git read-tree HEAD
-   GIT_INDEX_FILE="$POST_IDX" git add -A
-   POST_TREE="$(GIT_INDEX_FILE="$POST_IDX" git write-tree)"
-   rm -f "$POST_IDX"
+   POST_DIR="$(mktemp -d /tmp/codex-ask-snap-XXXXXX)"
+   GIT_INDEX_FILE="$POST_DIR/index" git read-tree HEAD
+   GIT_INDEX_FILE="$POST_DIR/index" git add -A
+   POST_TREE="$(GIT_INDEX_FILE="$POST_DIR/index" git write-tree)"
+   rm -rf "$POST_DIR"
 
    git diff --stat "$PRE_TREE" "$POST_TREE"   # exactly Codex's changes, isolated
    git diff "$PRE_TREE" "$POST_TREE"          # full patch, when you need detail
