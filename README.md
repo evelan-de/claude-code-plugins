@@ -150,6 +150,7 @@ Cross-model code review: delegates a review of your local diff to the Codex CLI 
 - Preflight guards: Codex binary resolution, git-repo check, empty-diff abort (no wasted model calls)
 - Runs in the background with a log file (reviews can take minutes); the untouched log path is always reported
 - Output is passed through raw - only tool-call noise and sandbox warnings are stripped
+- Falls back to a normal Claude review when Codex is rate-limited or unavailable (never leaves you with no review)
 - Never fixes anything on its own; asks which findings to act on
 
 **Usage:** `/codex-review [--uncommitted | --base <branch> | --commit <sha>] [focus instructions]`

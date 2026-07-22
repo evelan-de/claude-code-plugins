@@ -108,6 +108,33 @@ minutes, so run it **in the background** (Bash `run_in_background: true`), log
 to a file, and wait for the completion notification. No polling, and do not
 start other work while it runs - the review is the task.
 
+## Fallback when Codex is rate-limited or unavailable
+
+Codex can refuse a run because a usage/rate limit is hit, auth expired, or the
+service is down. Detect this and **fall back to a normal Claude review** rather
+than leaving the user with nothing. Treat the run as failed-to-review when the
+process exits non-zero **and** produced no actual review, especially when the
+log matches a limit/availability signature (case-insensitive):
+
+`rate limit`, `usage limit`, `quota`, `429`, `too many requests`,
+`limit reached`, `reached your usage`, `insufficient_quota`, `unauthorized`,
+`401`, `login`, `not found` (binary).
+
+On such a failure:
+
+1. Tell the user plainly that Codex could not review and why (quote the matched
+   line), with the log path.
+2. **Fall back:** review the same diff yourself as Claude - the normal review
+   flow the user would otherwise get. If a dedicated review agent is available
+   in the session (e.g. a `code-reviewer` subagent, or in an autopilot run the
+   `evelan:autopilot-reviewer`), dispatch that; otherwise review it directly.
+   Label the output clearly as the **Claude fallback review**, not Codex's.
+
+Do not silently swallow a Codex failure and do not pretend Codex reviewed when
+it did not. A genuine transient (e.g. the benign `failed to renew cache TTL`
+line) with a real review still present is **not** a limit - only fall back when
+there is no usable review.
+
 ## Output handling - raw passthrough
 
 Codex's review text is relayed **verbatim and unjudged**. Do not summarize
