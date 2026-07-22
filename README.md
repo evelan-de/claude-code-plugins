@@ -116,3 +116,56 @@ Runs a short self-reflection check after a round of code changes is complete, be
 - Escalates real concerns into a proposed fix or a question instead of burying them in a checklist
 
 **Trigger phrases:** "done", "finished", "that should do it", "ready for review", "let me know what you think"
+
+### preview
+
+Switches to the `preview` development branch, pulls the latest changes, and optionally cleans up the branch you were on.
+
+**Features:**
+- Warns about uncommitted changes first and offers stash / discard / abort
+- `git fetch --prune`, then detects when the current branch is gone on the remote
+- Offers to delete the old local branch after switching
+- Prints a short summary of what changed
+
+**Trigger phrases:** "Wechsel zu Preview", "switch to preview", "checkout preview", "geh auf preview", "zurück zu preview", "pull preview", "/preview"
+
+### codex-imagegen
+
+Generates raster images (hero shots, product mockups, illustrations, textures, icons, social/OG cards, backgrounds) by delegating to the Codex CLI's built-in imagegen skill, which runs OpenAI's gpt-image-2 model. Manually invoked only.
+
+**Features:**
+- Structured image brief (use case, subject, composition, lighting, palette, exact text, constraints)
+- Runs Codex headless in auto-review mode; robust file copy-out if the sandbox blocks Codex's own write
+- Reference images via `--image` for edits and compositing (e.g. a real UI screenshot onto a device screen)
+- Sizing guidance and a chroma-key path for cutouts with transparency
+
+**Trigger phrases:** "codex-imagegen", "generate images with Codex", "through the Codex CLI", "using gpt-image-2". Does not auto-trigger on a generic image request unless tied to Codex.
+
+### codex-review
+
+Cross-model code review: delegates a review of your local diff to the Codex CLI (`codex review`) and relays its findings verbatim - no summarizing, no filtering, no auto-fixing. Useful as an independent second opinion next to the normal Claude review flow, which stays untouched.
+
+**Features:**
+- Scope auto-detection: dirty tree -> `--uncommitted`, clean feature branch -> `--base <default branch>`, or a specific `--commit <sha>` - an explicit argument always wins
+- Preflight guards: Codex binary resolution, git-repo check, empty-diff abort (no wasted model calls)
+- Runs in the background with a log file (reviews can take minutes); the untouched log path is always reported
+- Output is passed through raw - only tool-call noise and sandbox warnings are stripped
+- Falls back to a normal Claude review when Codex is rate-limited or unavailable (never leaves you with no review)
+- Never fixes anything on its own; asks which findings to act on
+
+**Usage:** `/codex-review [--uncommitted | --base <branch> | --commit <sha>] [focus instructions]`
+
+**Trigger phrases:** "Codex-Review", "lass Codex reviewen", "lass Codex drüberschauen", "zweite Meinung von Codex", "Cross-Model-Review". A generic "review this" does NOT trigger it.
+
+### codex-ask
+
+General-purpose delegation to the Codex CLI (`codex exec`): writes a structured brief (goal, context, constraints, expected result, definition of done), runs Codex in the `workspace-write` sandbox with auto-review escalations, and reports back the answer plus everything Codex changed on disk.
+
+**Features:**
+- Structured stdin brief - Codex has no access to the conversation, so the skill briefs it properly instead of forwarding a one-liner
+- Write-safety: git state recorded before the run, dirty-tree warning, post-run `git status` + diffstat so changes are never silent
+- Clean final answer captured via `-o` and relayed verbatim
+- Optional `--output-schema` for structured JSON answers
+- Never auto-triggered - only when you explicitly route work to Codex
+
+**Trigger phrases:** "frag Codex", "was sagt Codex zu ...", "lass Codex das machen", "delegiere das an Codex", "ask Codex", "delegate this to Codex"

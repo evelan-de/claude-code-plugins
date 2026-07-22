@@ -152,6 +152,14 @@ device/binary/data is available. In Sonnet mode, delegate the package to
   the diff is large, additionally fan out **clean-code** and **reusability** lenses as parallel
   subagents. Prioritize findings (critical / important / nice-to-have); fix critical + important,
   record nice-to-have in `REPORT.md` with rationale.
+- **On demand (cross-model via Codex):** if the prompt asks for it ("nutze Codex als Reviewer",
+  "Codex als Reviewer", "use Codex as reviewer", "mit Codex reviewen", "Cross-Model-Review"),
+  additionally run a Codex review via the `evelan:codex-review` skill (`codex review --base <base>`)
+  on top of the standard `autopilot-reviewer`, and fix real gaps it reports like any other.
+  **Fallback (required):** if Codex is rate-limited or unavailable (see that skill's limit
+  signatures) or the Codex CLI is missing, do NOT fail the review - the standard
+  `evelan:autopilot-reviewer` has already run, so proceed on its result and note in `REPORT.md`
+  that the Codex cross-model pass was skipped and why. Never on a default run.
 - Max 2 review cycles; unresolved real gaps → mark the package `[!]`, log it, move on.
 
 ### 7. Docs + full gate + commit
