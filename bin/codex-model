@@ -1,0 +1,111 @@
+#!/bin/sh
+# codex-model - resolve a friendly model name to a valid Codex model slug.
+#
+# Users say "nutze Luna" or "mit Sol reviewen", not "gpt-5.6-luna". Codex only
+# accepts the full slug, and an unknown one fails LATE - the session starts,
+# the request goes out, and only then the backend answers
+# `400 ... model is not supported`. This resolver turns the short name into a
+# slug and fails fast with the list of real alternatives instead.
+#
+# Resolution order, against the live catalog (`codex debug models`):
+#   1. exact slug match          (gpt-5.6-luna -> gpt-5.6-luna)
+#   2. unique suffix match       (luna -> gpt-5.6-luna, 5.5 -> gpt-5.5)
+# No family names are hardcoded, so a future gpt-5.7-luna resolves by itself.
+#
+# Usage:
+#   codex-model list             # selectable slugs, one per line
+#   codex-model resolve <name>   # print the slug, or fail with alternatives
+#
+# Exit codes: 0 ok | 2 unknown name | 3 ambiguous name | 64 usage error
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+CODEX_CLI="$SELF_DIR/codex-cli"
+
+# Internal models the catalog exposes but users must not select directly.
+# codex-auto-review backs `approvals_reviewer=auto_review`; it is not a
+# general-purpose model and the backend rejects it as one.
+INTERNAL_SLUGS="codex-auto-review"
+
+usage() {
+  echo "usage: codex-model list" >&2
+  echo "       codex-model resolve <name>" >&2
+  exit 64
+}
+
+# Print the selectable slugs, one per line. Empty output means "catalog
+# unavailable" - the caller decides what to do with that.
+catalog_slugs() {
+  "$CODEX_CLI" debug models 2>/dev/null \
+    | grep -o '"slug"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed 's/.*"slug"[[:space:]]*:[[:space:]]*"//; s/"$//' \
+    | while IFS= read -r slug; do
+        case " $INTERNAL_SLUGS " in
+          *" $slug "*) continue ;;
+        esac
+        [ -n "$slug" ] && printf '%s\n' "$slug"
+      done
+}
+
+resolve() {
+  raw="$1"
+  [ -n "$raw" ] || usage
+  name="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+
+  slugs="$(catalog_slugs)"
+  if [ -z "$slugs" ]; then
+    # Best-effort validation only: a broken/absent catalog must not stop a
+    # user who typed a perfectly good slug. Warn, pass through, let the
+    # backend have the final say.
+    echo "codex-model: could not read the model catalog - using '$raw' unvalidated." >&2
+    printf '%s\n' "$raw"
+    return 0
+  fi
+
+  for slug in $slugs; do
+    if [ "$slug" = "$name" ]; then
+      printf '%s\n' "$slug"
+      return 0
+    fi
+  done
+
+  matches=""
+  for slug in $slugs; do
+    case "$slug" in
+      *-"$name") matches="$matches $slug" ;;
+    esac
+  done
+
+  # shellcheck disable=SC2086 # word splitting is the point: count the matches
+  set -- $matches
+  if [ "$#" -eq 1 ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  if [ "$#" -gt 1 ]; then
+    echo "codex-model: '$raw' is ambiguous - matches:$matches" >&2
+    echo "Pick the full slug." >&2
+    return 3
+  fi
+
+  echo "codex-model: unknown model '$raw'. Available:" >&2
+  printf '%s\n' "$slugs" | sed 's/^/  /' >&2
+  return 2
+}
+
+case "${1:-}" in
+  list)
+    slugs="$(catalog_slugs)"
+    if [ -z "$slugs" ]; then
+      echo "codex-model: could not read the model catalog." >&2
+      exit 2
+    fi
+    printf '%s\n' "$slugs"
+    ;;
+  resolve)
+    shift
+    resolve "${1:-}"
+    ;;
+  *)
+    usage
+    ;;
+esac
