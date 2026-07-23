@@ -14,9 +14,17 @@ claude-code-plugins/
 │       └── SKILL.md
 ├── commands/                 # User-invoked slash commands (optional)
 │   └── <command-name>.md
+├── bin/                      # Helper executables on PATH for skills
+│   ├── <tool>                # POSIX sh, no external deps
+│   └── <tool>.test.sh        # bash test suite, run: bash bin/<tool>.test.sh
 ├── docs/                     # Documentation and diagrams
 └── README.md
 ```
+
+Anything in `bin/` is on PATH when the plugin is installed, so skills call the
+helper by bare name (`codex-cli`, `codex-model`) instead of hardcoding paths.
+Keep helpers POSIX `sh` and dependency-free, and ship a `.test.sh` next to
+each one - they run on teammates' machines, not just yours.
 
 ## Plugin Configuration
 
