@@ -103,6 +103,25 @@ For unattended runs, launch with `--permission-mode auto`.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
 
+### orchestrate
+
+Coordinates an autonomous development session **without implementing anything itself**: it
+resolves the task and pins down the user-verifiable **goal artifact** (feature running in
+the local app, a generated report, a finished PDF, …), plans in the main context, has the
+plan reviewed by a fresh-context agent **and** cross-model via `evelan:codex-ask`, then
+dispatches **one** background implementation subagent (**Opus model override**) that runs
+`evelan:autopilot` with "nutze Codex als Reviewer". A ~10-minute watchdog nudges a stalled
+agent and replaces it if it stays stuck. At the end the orchestrator verifies the result
+independently (re-runs the gate, exercises the goal artifact) and reports in simplified
+technical language (ASD-STE100 style) in the language of the user's prompt.
+
+**Usage:** `/orchestrate <task, ticket key, or spec file>`
+
+Best started with the strongest available session model (Fable 5) — the skill plans in the
+main context and cannot switch the session model itself.
+
+**Trigger phrases:** "/orchestrate", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
+
 ### reflect-on-changes
 
 Runs a short self-reflection check after a round of code changes is complete, before declaring the work done. Forces Claude to honestly interrogate its own work — surfacing what it's least confident about and what it might be missing — so problems get caught before the user finds them.
