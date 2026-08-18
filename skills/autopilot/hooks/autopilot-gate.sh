@@ -16,6 +16,8 @@ SENTINEL="$PROJECT_DIR/.claude/.autopilot-active"
 [ -f "$SENTINEL" ] || exit 0
 
 CONFIG="$PROJECT_DIR/.claude/autopilot.json"
+# Last-resort fallback ONLY: /autopilot init always writes the PM-correct gate to
+# autopilot.json; this npm default applies just when that file is missing or unreadable.
 DEFAULT_GATE="npm run typecheck && npm run lint && npm test"
 GATE=""
 if [ -f "$CONFIG" ]; then

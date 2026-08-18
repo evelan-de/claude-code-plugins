@@ -2,7 +2,7 @@
 name: autopilot
 description: Use for autonomous, unattended development of one topic — spec → plan → TDD → adversarial review → quality gate → PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um". Also handles "autopilot init" to set up the per-project quality-gate hook.
 user-invocable: true
-argument-hint: "[init | <task | TICKET-KEY | spec file>]   (add 'with sonnet' for cost-efficient implementation)"
+argument-hint: "[init | <task | TICKET-KEY | spec file | session directory>]   (add 'with sonnet' for cost-efficient implementation, 'defer PR' to skip push/PR)"
 ---
 
 # Autopilot
@@ -75,8 +75,11 @@ question, do not pause — decide conservatively (see "No questions — decide")
 
 ## Model strategy
 
-- **You (the orchestrator) are the session model** (Opus by default): explore, spec, plan,
-  review adjudication, all decisions, commit/PR/CI.
+- **You (the session lead) run at the session model.** You never choose it: standalone it
+  is simply what the session was started with; dispatched as a subagent it is what the
+  coordinator's model override says (mission control passes Opus). Your job: explore, spec,
+  plan, review adjudication, all decisions, commit — plus PR/CI unless the run is defer-PR
+  (phase 11).
 - **Implementation:** by default you implement directly. **Only if the prompt signals cost/speed
   intent** — "with sonnet", "cost-efficient", "fast", "cheap" (DE: "mit Sonnet",
   "kosteneffizient", "schnell", "günstig") — delegate each work package to the
@@ -90,6 +93,16 @@ Work ONE topic end to end. Phases run in order per package; a trivial one-line t
 
 ### 0. Resolve input (cascade)
 ↳ Superpowers (if installed): `superpowers:brainstorming` to shape the spec.
+0. A **prepared session directory** is provided (a `docs/autopilot/sessions/<slug>/` path
+   with a `PLAN.md`, e.g. from a mission-control coordinator) → adopt it verbatim as THIS
+   session's artifact folder and its `PLAN.md` as the plan. If the path lies outside your
+   working tree (fresh worktree), copy the folder in first; it gets committed with the
+   session. A **goal artifact** stated in that plan is binding for phase 9.
+   **Continuation:** if that directory already holds session artifacts and a session branch
+   for it exists, you are CONTINUING that session — check out the existing branch, keep all
+   finished work, apply the feedback from the dispatch prompt, update `PLAN.md` statuses
+   and `REPORT.md` in place, and do NOT create a new branch or a new `INDEX.md` entry
+   (amend the existing line only if the outcome changed).
 1. A spec is provided / referenced / already in the repo (`SPEC.md` or equivalent) → use it.
 2. Only a rough idea → write a self-contained spec into `PLAN.md` (problem/goal, scope + non-goals,
    functional requirements with acceptance criteria, affected areas, edge/error cases). Answer
@@ -108,6 +121,12 @@ algorithm). Examples: pnpm → `pnpm run typecheck && pnpm run lint && pnpm test
 implementer and reviewer subagents and the Stop hook all use the exact same package manager. If a
 test runner is missing, set one up minimally and project-consistently **before** implementing.
 Existing conventions win over generic best practices.
+
+**Sentinel for the optional Stop-hook hard gate:** if the project has the gate installed
+(`.claude/hooks/autopilot-gate.sh` + Stop hook in `.claude/settings.json`), create
+`.claude/.autopilot-active` NOW — the hook is inert without it. You own its lifecycle:
+remove it in phase 12 AND on every abort path (Stop conditions). Never leave it behind — a
+stale sentinel gates every future session in that project.
 
 ### 2. Branch
 Create one session branch following the project's convention:
@@ -160,7 +179,9 @@ device/binary/data is available. In Sonnet mode, delegate the package to
   signatures) or the Codex CLI is missing, do NOT fail the review - the standard
   `evelan:autopilot-reviewer` has already run, so proceed on its result and note in `REPORT.md`
   that the Codex cross-model pass was skipped and why. Never on a default run.
-- Max 2 review cycles; unresolved real gaps → mark the package `[!]`, log it, move on.
+- Max 2 review cycles; unresolved real gaps → mark the package `[!]` and log it. **Any `[!]`
+  package blocks the done claim:** surface it at the TOP of `REPORT.md` and in the PR
+  description; in a defer-PR run, hand the session back as **incomplete**, never as done.
 
 ### 7. Docs + full gate + commit
 Before committing the package, update documentation **directly affected** by this change —
@@ -176,11 +197,17 @@ fully green: commit (Conventional Commits, referencing the topic/ticket).
 
 ### 9. UI / E2E verification (when applicable)
 Only when ALL hold: (a) it is a web UI, (b) a local dev server is startable (`npm run dev`),
-(c) a browser tool is available (Chrome plugin / browser MCP / Preview MCP). Then: start the dev
-server, drive the acceptance criteria, submit forms with valid AND invalid input, provoke error
-states, check console + network for errors, work through browser-checkable `MANUAL_TESTING.md`
-items, fix findings test-driven and re-verify, stop the server cleanly. If any precondition is
-missing → skip silently, note it in `REPORT.md`. **Never a blocker.**
+(c) browser/preview tooling is available. Then: start the dev server, drive the acceptance
+criteria, submit forms with valid AND invalid input, provoke error states, check console +
+network for errors, work through browser-checkable `MANUAL_TESTING.md` items, fix findings
+test-driven and re-verify, stop the server cleanly. If a precondition is missing → skip and
+record WHICH precondition was missing in `REPORT.md`.
+
+**Exception — a goal artifact makes this mandatory:** when the plan/spec defines a goal
+artifact (a user-verifiable deliverable: the feature working in the running app, a generated
+report, a finished document), exercising that artifact end to end is NOT skippable. A missing
+precondition is then a blocker to resolve (start the server, stage the data), and a failing
+exercise means the topic is **not done** — fix or report incomplete, never skip.
 
 ### 10. Documentation review (before the PR)
 If the session added or changed user-facing functionality, behavior, config, or public API,
@@ -191,17 +218,27 @@ documented changed (small bugs, internal refactors, UI-only tweaks). This is the
 documentation, separate from the per-session `docs/autopilot/` artifacts.
 
 ### 11. PR + CI
-Push the branch and open **one PR** automatically (GitHub `gh pr create`; Bitbucket via API, ticket
-key in title). The PR is for review — **never auto-merge**. Then wait for CI (`gh run watch`); on
-red, read `gh run view --log-failed`, fix, re-push, re-check until green and merge-ready.
+**Defer-PR mode:** when the prompt says "defer PR" / "no push" / "kein Push" (mission-control
+dispatches always do), SKIP this phase entirely — never push, never open a PR. Finish phases
+10 and 12, then report the branch name and final state; the coordinator owns push, PR and CI
+after its own verification.
+
+Otherwise: push the branch and open **one PR** automatically (GitHub `gh pr create`, ticket
+key in title; legacy Bitbucket deployments via API). The PR is for review — **never
+auto-merge**. Then wait for CI (`gh run watch`); on red, read `gh run view --log-failed`,
+fix, re-push, re-check until green and merge-ready.
 
 ### 12. Finalize artifacts
-Write `REPORT.md` and prepend the session one-liner to `docs/autopilot/INDEX.md`.
+Write `REPORT.md`, prepend the session one-liner to `docs/autopilot/INDEX.md`, and remove
+the Stop-hook sentinel (`.claude/.autopilot-active`) if you created it in phase 1.
 
 ## Stop conditions (abort the whole session, write `REPORT.md`)
 - The gate cannot be made green without a destructive action or human input.
 - The task would require anything on the never-list.
 - No package remains implementable.
+
+On EVERY abort: commit the session artifacts (`REPORT.md` with the blocker at the top) to the
+session branch so nothing is lost, and remove the Stop-hook sentinel if you created it.
 
 **Never fake completion.** A topic you can only *partially* finish — dormant, off by default,
 verification punted for non-genuine reasons, or descoped for effort/size — is **not** committed
@@ -230,5 +267,6 @@ Create `docs/autopilot/` and seed `INDEX.md` with that header + marker if missin
 
 ## Permissions
 For unattended runs, `--permission-mode auto` is recommended (the user sets this at launch — you
-cannot change it). The Stop-hook hard gate (via `/autopilot init`) is optional and complements
-your own gate runs.
+cannot change it). When you run as a dispatched subagent (mission-control), you inherit the
+coordinator session's permission mode — the coordinator must have been launched permissive.
+The Stop-hook hard gate (via `/autopilot init`) is optional and complements your own gate runs.
