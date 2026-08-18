@@ -75,9 +75,11 @@ question, do not pause — decide conservatively (see "No questions — decide")
 
 ## Model strategy
 
-- **You (the session lead) are the session model** (the strongest available — currently
-  Fable 5 — or whatever the session was started with): explore, spec, plan, review
-  adjudication, all decisions, commit — plus PR/CI unless the run is defer-PR (phase 11).
+- **You (the session lead) run at the session model.** You never choose it: standalone it
+  is simply what the session was started with; dispatched as a subagent it is what the
+  coordinator's model override says (mission control passes Opus). Your job: explore, spec,
+  plan, review adjudication, all decisions, commit — plus PR/CI unless the run is defer-PR
+  (phase 11).
 - **Implementation:** by default you implement directly. **Only if the prompt signals cost/speed
   intent** — "with sonnet", "cost-efficient", "fast", "cheap" (DE: "mit Sonnet",
   "kosteneffizient", "schnell", "günstig") — delegate each work package to the
