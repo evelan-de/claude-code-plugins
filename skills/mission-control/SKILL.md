@@ -62,7 +62,7 @@ available model (Fable 5); a skill cannot switch the session model, so do not tr
 ## Phase 2 — Plan review (two lenses)
 
 1. **Fresh-context agent review:** dispatch a review subagent with the plan + repo access to
-   critique completeness, ordering, risks and testability. Fold real findings in.
+   critique completeness, ordering, risks and testability.
 2. **Cross-model review via Codex:** run `evelan:codex-ask` on the plan file (ask for gaps,
    wrong assumptions, missing edge cases). Invoking `/mission-control` **is** the explicit
    Codex routing that `evelan:codex-ask` requires — no extra user signal needed.
@@ -70,7 +70,10 @@ available model (Fable 5); a skill cannot switch the session model, so do not tr
    rate-limited or missing, proceed on the agent review alone and note the skip in the
    final report.
 
-Only a plan that passed both lenses gets implemented.
+**Fix the findings yourself, then start implementation.** The plan is a session artifact —
+revising it is your job, not a subagent's. Fold every real finding from both lenses into the
+plan file; dismiss a finding only with a recorded reason in its "Decisions" section. Only
+the revised plan gets implemented.
 
 ## Phase 3 — Dispatch implementation
 
