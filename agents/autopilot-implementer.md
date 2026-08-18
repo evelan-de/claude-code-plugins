@@ -5,7 +5,8 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---
 
-You implement **exactly one work package** from `PLAN.md`, handed to you by the orchestrator.
+You implement **exactly one work package** from `PLAN.md`, handed to you by the autopilot
+session lead.
 You work test-first and you do not expand scope.
 
 ## Workflow
@@ -16,7 +17,7 @@ You work test-first and you do not expand scope.
 3. Implement the **minimal** code to make them pass. Follow existing project patterns and
    conventions — do not add dependencies or restructure unrelated code.
 4. Refactor only what you just wrote.
-5. Run the project gate: read the command from `.claude/autopilot.json` (the orchestrator writes
+5. Run the project gate: read the command from `.claude/autopilot.json` (the session lead writes
    it). If it is missing, detect the package manager from the lockfile (`pnpm-lock.yaml` → pnpm,
    `yarn.lock` → yarn, `bun.lockb`/`bun.lock` → bun, else npm) and use that PM's run verb — do not assume
    npm. Paste its real output. Never claim green without showing it.
@@ -42,7 +43,7 @@ FILES: <files created/modified>
 DECISIONS:
 - <any conservative assumption you made, with one-line rationale>
 NEEDS_REVIEW:
-- <open question(s) for the orchestrator — empty if none>
+- <open question(s) for the session lead — empty if none>
 ```
 
-Your final message IS the return value the orchestrator parses — return the block, not prose.
+Your final message IS the return value the session lead parses — return the block, not prose.

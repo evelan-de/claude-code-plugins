@@ -92,8 +92,9 @@ Runs an autonomous, unattended development loop for **one topic per session**: s
   e.g. `/autopilot DNA-901 add rate limiting to the contact route`
 - Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
 - Thorough review (adds clean-code + reusability lenses): add "thorough review".
+- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim.
 
-The orchestrator runs at your **session model** (Opus recommended). Review always runs on Opus (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
+The session lead runs at your **session model** (strongest available recommended — currently Fable 5). Review always runs on Opus (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
 
 **Optional hard gate (per project):** `/autopilot init` sets up a deterministic `Stop` hook in the current project that blocks the model from ending a turn while the gate (typecheck/lint/test) is red. It auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hook into `.claude/hooks/`, and safe-merges the hook into `.claude/settings.json` (idempotent, never overwrites). The hook is inert outside autopilot runs (sentinel-guarded).
 
@@ -107,18 +108,23 @@ For unattended runs, launch with `--permission-mode auto`.
 
 Coordinates an autonomous development session **without implementing anything itself**: it
 resolves the task and pins down the user-verifiable **goal artifact** (feature running in
-the local app, a generated report, a finished PDF, …), plans in the main context, has the
-plan reviewed by a fresh-context agent **and** cross-model via `evelan:codex-ask`, then
-dispatches **one** background implementation subagent (**Opus model override**) that runs
-`evelan:autopilot` with "nutze Codex als Reviewer". A ~10-minute watchdog nudges a stalled
-agent and replaces it if it stays stuck. At the end the orchestrator verifies the result
-independently (re-runs the gate, exercises the goal artifact) and reports in simplified
-technical language (ASD-STE100 style) in the language of the user's prompt.
+the local app, a generated report, a finished PDF, …), prepares the autopilot session
+folder (`docs/autopilot/sessions/<slug>/PLAN.md`) in the main context, has the plan
+reviewed by a fresh-context agent **and** cross-model via `evelan:codex-ask` (fixing the
+findings itself), then dispatches **one** background implementation subagent (**Opus model
+override**, general-purpose type) that runs `evelan:autopilot` on that session directory
+with "nutze Codex als Reviewer" and **"defer PR"**. A ~10-minute watchdog nudges a stalled
+agent and replaces it if it stays stuck. At the end mission control verifies the result
+independently (re-runs the gate, exercises the goal artifact), and only then pushes, opens
+the PR and watches CI — red CI goes back to the subagent as file-level instructions. The
+final report uses simplified technical language (ASD-STE100 style) in the language of the
+user's prompt.
 
 **Usage:** `/mission-control <task, ticket key, or spec file>`
 
 Best started with the strongest available session model (Fable 5) — the skill plans in the
-main context and cannot switch the session model itself.
+main context and cannot switch the session model itself — and with a permissive permission
+mode (e.g. `--permission-mode auto`), which the dispatched subagents inherit.
 
 **Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
 

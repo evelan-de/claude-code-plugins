@@ -13,13 +13,19 @@ implementation subagent running the `evelan:autopilot` skill.
 
 **Input:** `$ARGUMENTS`
 
+**Launch requirement:** this session must be started with a permissive permission mode
+(e.g. `--permission-mode auto`) — background subagents inherit the coordinator's mode, and a
+restrictive mode stalls the implementer on permission prompts nobody answers. If you detect
+mid-run that permissions are blocking the subagent, report it as an external blocker instead
+of respawning into the same wall.
+
 ## Non-negotiables
 
 - **You do not write or edit production code, tests, or configs of the target project.**
   Not "just this one line", not "faster if I do it myself", not "the subagent is stuck
   anyway". Findings go back to a subagent — always. Session artifacts are the one
-  exception: the plan/spec file and your own notes are yours to write; the implementation
-  subagent commits them along with its other autopilot artifacts.
+  exception: the autopilot session folder you prepare (plan, notes) is yours to write; the
+  implementation subagent commits it along with its other autopilot artifacts.
 - **Never trust a completion claim.** The implementation subagent reporting "done" is the
   start of your verification, not the end of the session.
 - **The session ends with the goal artifact standing ready** (see below), or with an honest
@@ -43,8 +49,8 @@ The goal artifact is the session's definition of done. Ask the user **now** only
 goal artifact itself could take materially different shapes (e.g. "report" as HTML page vs.
 PDF) — one question up front beats a multi-hour session that builds the wrong thing.
 Ordinary scope details are NOT worth a question: decide conservatively and record each such
-decision in a "Decisions" section of the plan file — the implementation subagent carries
-them into its `DECISIONS.md` per the autopilot rules. After this point the session
+decision in the plan file's "Decisions" section — it travels with the session folder, so
+the implementation subagent sees every assumption. After this point the session
 runs unattended.
 
 ## Phase 1 — Plan (main context)
@@ -55,9 +61,14 @@ available model (Fable 5); a skill cannot switch the session model, so do not tr
 1. Delegate wide read-only exploration to a subagent (files, patterns, risks — not file
    dumps). Exploration and plan-review subagents run on the default model — only the
    implementation subagent gets a model override.
-2. Write a self-contained plan the autopilot can consume as its spec (`PLAN.md` in the
-   target repo, autopilot format: scope + non-goals, work packages with Definition of Done,
-   verification criteria, the goal artifact from Phase 0 as the end-to-end check).
+2. **Prepare the autopilot session yourself, in autopilot's own format.** Create
+   `docs/autopilot/sessions/YYYY-MM-DD-<slug>/` in the target repo and write the plan there
+   as `PLAN.md` (autopilot format: scope + non-goals, work packages with Definition of
+   Done and status markers `[ ] / [~] / [x] / [!]`, verification criteria, a "Decisions"
+   section, and the goal artifact from Phase 0 as the end-to-end check). **Never place the
+   plan at the repo root** or anywhere else — the session folder IS the handoff. The copy
+   the subagent commits on the session branch is authoritative; if the subagent worked in
+   its own worktree, remove your leftover untracked copy before Phase 5.5.
 
 ## Phase 2 — Plan review (two lenses)
 
@@ -79,17 +90,27 @@ the revised plan gets implemented.
 
 Dispatch **one** background implementation subagent via the Agent tool:
 
-- **Model override: Opus** (`model: "opus"`).
-- Prompt: invoke the `evelan:autopilot` skill with the reviewed plan as spec, and include
-  the phrase **"nutze Codex als Reviewer"** so autopilot runs its cross-model Codex review
-  pass on the diff (autopilot has the fallback handling if Codex is unavailable).
+- **General-purpose (full-tool) agent type** — autopilot must itself dispatch its reviewer
+  subagent and invoke skills; a restricted agent type breaks its mandatory review path. Do
+  not pass worktree isolation — autopilot manages its own branch (and worktree, if it
+  chooses one) per its phase 2.
+- **Model override: Opus** (`model: "opus"`) — the implementation tier; the coordinator
+  stays the strongest model for planning and adjudication.
+- Prompt: invoke the `evelan:autopilot` skill on the **prepared session directory** (pass
+  the absolute path) so autopilot adopts it as its own artifact folder, and include the
+  phrases **"nutze Codex als Reviewer"** (cross-model Codex review on the diff; autopilot
+  has the fallback if Codex is unavailable) and **"defer PR"** (the subagent never pushes
+  and never opens a PR — you own that after verification, Phase 5.5).
 - Pass the goal artifact definition verbatim — the subagent must know what "done" means.
-- The subagent owns branch, commits, gate and PR per the autopilot skill's own rules.
+- The subagent owns branch, commits and gate per the autopilot skill's own rules.
 
 ## Phase 4 — Supervise (watchdog)
 
 Completion notifications arrive automatically — never poll for those. The watchdog exists
-for **hangs**: permission prompts nobody answers, silent stalls, an agent going in circles.
+for **hangs**: silent stalls and an agent going in circles. (A permission prompt nobody
+answers is NOT a respawn case — that is the external-blocker path from the launch
+requirement: report it, a replacement would hang identically.) The subagent never waits on
+CI (it runs defer-PR), so a long silence is a real stall, not a CI wait.
 
 - Set a recurring ~10-minute check (Monitor tool, scheduled wakeup, or /loop — whatever the
   harness offers; if none, check whenever you are re-invoked).
@@ -115,9 +136,24 @@ After the subagent reports done, verify yourself — evidence, not claims:
    response/file content counts); report/PDF → open and check the actual file.
 3. Findings go back to the implementation subagent as concrete, file-level feedback — to
    the running agent if it is still alive, otherwise to a fresh one with the same
-   parameters. One fix cycle = feedback sent + full re-verification (gate AND goal
-   artifact). Repeat until the goal artifact genuinely stands. Max 3 fix cycles — after
-   that, report honestly instead of looping.
+   parameters, instructed (like a stall replacement) to check out the EXISTING session
+   branch and artifacts, keep finished work, and apply the feedback — no new branch, no new
+   session folder, no INDEX.md re-entry. One fix cycle = feedback sent + full
+   re-verification (gate AND goal artifact). Repeat until the goal artifact genuinely
+   stands. Max 3 fix cycles (a session-level counter, distinct from autopilot's internal
+   per-package review cycles) — after that, report honestly instead of looping.
+
+## Phase 5.5 — Finish: push, PR, CI (you own this)
+
+Only after Phase 5 passes — never before (the branch stays local until verified):
+
+1. Push the session branch and open **one PR** (`gh pr create`, ticket key in the title,
+   base = the project's integration branch). Never auto-merge.
+2. Watch CI (`gh run watch`). On red: read the failing logs and send them to the
+   implementation subagent as **precise, file-level instructions** (which job failed, the
+   exact error, the affected files) — you never fix CI failures yourself. The subagent
+   commits the fix, you push again and re-check until green. Each CI round counts as a fix
+   cycle (Phase 5 limit applies).
 
 ## Phase 6 — Final summary
 
@@ -126,7 +162,8 @@ statement per sentence, active voice, common words, no nested clauses. Write it 
 language of the user's initial prompt.
 
 Cover: what was built · how it was verified (commands, results) · where to check it
-(URL / path, ready to use) · open items and skipped steps with reasons.
+(URL / path, ready to use) · the PR link and CI state · open items and skipped steps with
+reasons.
 
 ## Red flags — stop and re-read the non-negotiables
 
@@ -135,3 +172,7 @@ Cover: what was built · how it was verified (commands, results) · where to che
 - "Polling every few minutes to see if it finished" → completion notifies you; the watchdog
   is only for stalls.
 - "The goal artifact is close enough" → it stands ready for the user, or it is not done.
+- "The subagent can push and open the PR" → it runs defer-PR; push, PR and CI are yours,
+  and only after Phase 5 passed.
+- "I'll patch the CI failure quickly" → CI findings are dispatched as file-level
+  instructions like any other finding.
