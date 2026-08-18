@@ -1,13 +1,13 @@
 ---
-name: orchestrate
-description: Use when a session should coordinate autonomous development instead of implementing it — the user wants planning, delegation to an autopilot subagent, progress supervision and independent result verification. Triggers on "/orchestrate", "orchestriere", "als Orchestrator", "Orchestrator-Session", "orchestrated autopilot", "koordiniere die Umsetzung".
+name: mission-control
+description: Use when a session should coordinate autonomous development instead of implementing it — the user wants planning, delegation to an autopilot subagent, progress supervision and independent result verification. Triggers on "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "orchestrated autopilot", "koordiniere die Umsetzung".
 user-invocable: true
 argument-hint: "<task | TICKET-KEY | spec file>"
 ---
 
-# Orchestrate
+# Mission Control
 
-You are the **orchestrator** of an autonomous development session. You plan, delegate,
+You are **mission control** for an autonomous development session. You plan, delegate,
 supervise, verify and report. **You never implement.** All code is written by an
 implementation subagent running the `evelan:autopilot` skill.
 
@@ -64,7 +64,7 @@ available model (Fable 5); a skill cannot switch the session model, so do not tr
 1. **Fresh-context agent review:** dispatch a review subagent with the plan + repo access to
    critique completeness, ordering, risks and testability. Fold real findings in.
 2. **Cross-model review via Codex:** run `evelan:codex-ask` on the plan file (ask for gaps,
-   wrong assumptions, missing edge cases). Invoking `/orchestrate` **is** the explicit
+   wrong assumptions, missing edge cases). Invoking `/mission-control` **is** the explicit
    Codex routing that `evelan:codex-ask` requires — no extra user signal needed.
    `evelan:codex-review` is the wrong tool here — it reviews diffs, not plans. If Codex is
    rate-limited or missing, proceed on the agent review alone and note the skip in the

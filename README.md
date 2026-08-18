@@ -103,7 +103,7 @@ For unattended runs, launch with `--permission-mode auto`.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
 
-### orchestrate
+### mission-control
 
 Coordinates an autonomous development session **without implementing anything itself**: it
 resolves the task and pins down the user-verifiable **goal artifact** (feature running in
@@ -115,12 +115,12 @@ agent and replaces it if it stays stuck. At the end the orchestrator verifies th
 independently (re-runs the gate, exercises the goal artifact) and reports in simplified
 technical language (ASD-STE100 style) in the language of the user's prompt.
 
-**Usage:** `/orchestrate <task, ticket key, or spec file>`
+**Usage:** `/mission-control <task, ticket key, or spec file>`
 
 Best started with the strongest available session model (Fable 5) — the skill plans in the
 main context and cannot switch the session model itself.
 
-**Trigger phrases:** "/orchestrate", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
+**Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
 
 ### reflect-on-changes
 
