@@ -228,6 +228,17 @@ key in title; legacy Bitbucket deployments via API). The PR is for review — **
 auto-merge**. Then wait for CI (`gh run watch`); on red, read `gh run view --log-failed`,
 fix, re-push, re-check until green and merge-ready.
 
+**A green `review` check is NOT "review considered".** When a PR review bot runs on the
+repo, its findings live in the PR comments, not in the check status. Before calling the PR
+merge-ready, fetch and triage BOTH comment surfaces
+(`gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate` and the same under
+`issues/<n>/comments`, filtered to the bot's login) — verify each finding, fix or rebut it
+with evidence, never ignore it. Anchor fixes in named invariants or recorded decisions
+(DECISIONS.md), not in review appeasement: a finding that reverses an earlier round's
+change or contradicts a recorded decision is escalated (to the coordinator in a defer-PR
+run, to the user otherwise), not implemented — repeated AI review rounds on the same code
+otherwise oscillate. (Learned 2026-08-27, paul PR #117.)
+
 ### 12. Finalize artifacts
 Write `REPORT.md`, prepend the session one-liner to `docs/autopilot/INDEX.md`, and remove
 the Stop-hook sentinel (`.claude/.autopilot-active`) if you created it in phase 1.
