@@ -167,6 +167,12 @@ Only after Phase 5 passes — never before (the branch stays local until verifie
 
    (Learned 2026-08-27, paul PR #117: two real merge-blocking findings sat in unread inline
    comments under a green check — one of them pinned as "correct" by a fresh test.)
+
+   Interpret marker comments, not just findings. A never-silent review workflow (paul since
+   2026-08-27) posts SOMETHING on every completed session: findings, a "No issues found"
+   marker, or "Code review skipped/incomplete: <reason>". Only findings-or-clean counts as
+   reviewed — a skipped/incomplete marker (or zero comments) means the review did NOT
+   happen, and merge-ready must not be claimed on the strength of the green check alone.
 4. **Guard against review ping-pong.** AI review rounds on the same code eventually start
    finding things until changes reverse each other (seen repeatedly on date/validity logic).
    Mission control is the tiebreaker: verify each finding independently before dispatching

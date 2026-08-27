@@ -233,7 +233,11 @@ repo, its findings live in the PR comments, not in the check status. Before call
 merge-ready, fetch and triage BOTH comment surfaces
 (`gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate` and the same under
 `issues/<n>/comments`, filtered to the bot's login) — verify each finding, fix or rebut it
-with evidence, never ignore it. Anchor fixes in named invariants or recorded decisions
+with evidence, never ignore it. Interpret marker comments too: a never-silent review
+workflow posts "No issues found" on a clean run and "Code review skipped/incomplete:
+<reason>" when it did not review — only findings-or-clean counts as reviewed; a
+skipped/incomplete marker (or zero comments) means no review happened, whatever the check
+color. Anchor fixes in named invariants or recorded decisions
 (DECISIONS.md), not in review appeasement: a finding that reverses an earlier round's
 change or contradicts a recorded decision is escalated (to the coordinator in a defer-PR
 run, to the user otherwise), not implemented — repeated AI review rounds on the same code
