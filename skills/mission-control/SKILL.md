@@ -154,6 +154,33 @@ Only after Phase 5 passes — never before (the branch stays local until verifie
    exact error, the affected files) — you never fix CI failures yourself. The subagent
    commits the fix, you push again and re-check until green. Each CI round counts as a fix
    cycle (Phase 5 limit applies).
+3. **Read the review bot's PR comments — a green `review` check is NOT "review
+   considered".** The bot is advisory; its value lives entirely in the comment content, and
+   the check passing only proves the pipeline ran. Before calling the PR merge-ready, fetch
+   BOTH comment surfaces and triage every finding like a human reviewer's comment (verify,
+   dispatch a fix cycle, or rebut with evidence — never ignore):
+
+   ```bash
+   gh api "repos/<owner>/<repo>/pulls/<n>/comments" --paginate --jq '.[] | select(.user.login | startswith("claude")) | .body'
+   gh api "repos/<owner>/<repo>/issues/<n>/comments" --paginate --jq '.[] | select(.user.login | startswith("claude")) | .body'
+   ```
+
+   (Learned 2026-08-27, paul PR #117: two real merge-blocking findings sat in unread inline
+   comments under a green check — one of them pinned as "correct" by a fresh test.)
+
+   Interpret marker comments, not just findings. A never-silent review workflow (paul since
+   2026-08-27) posts SOMETHING on every completed session: findings, a "No issues found"
+   marker, or "Code review skipped/incomplete: <reason>". Only findings-or-clean counts as
+   reviewed — a skipped/incomplete marker (or zero comments) means the review did NOT
+   happen, and merge-ready must not be claimed on the strength of the green check alone.
+4. **Guard against review ping-pong.** AI review rounds on the same code eventually start
+   finding things until changes reverse each other (seen repeatedly on date/validity logic).
+   Mission control is the tiebreaker: verify each finding independently before dispatching
+   it; require the implementer to anchor every fix in a NAMED invariant or recorded decision
+   (never in review appeasement); a finding that contradicts a recorded decision or reverses
+   an earlier round's change is escalated to you for adjudication, not implemented; and the
+   fix-cycle cap from Phase 5 is the hard stop — after it, report honestly instead of
+   letting rounds continue.
 
 ## Phase 6 — Final summary
 
