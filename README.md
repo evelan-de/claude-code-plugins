@@ -194,3 +194,18 @@ General-purpose delegation to the Codex CLI (`codex exec`): writes a structured 
 - Never auto-triggered - only when you explicitly route work to Codex
 
 **Trigger phrases:** "frag Codex", "was sagt Codex zu ...", "lass Codex das machen", "delegiere das an Codex", "ask Codex", "delegate this to Codex"
+
+### e2e-demo
+
+Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions — either or both, concatenated as sequential cuts when a task needs both.
+
+**Features:**
+- Real run first, always — an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
+- Assertions read back real persisted state (DB row, API response), never just a UI toast or a zero exit code
+- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended — no OpenAI account or billing)
+- Narration and the artifact's results table are derived strictly from what the run actually proved — nothing narrated that wasn't checked
+- Human-gated steps (a real browser login, an approval) are named plainly, never faked or automated around
+- Published artifact: goal/issue, what changed, a results table, real screenshots, the narration script
+- Project-agnostic — finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
+
+**Trigger phrases:** "test this properly", "make sure this works", "show me a demo", "I want a report for this", "verify the instructions actually work for a client", "teste das richtig", "zeig mir eine Demo", "beweise dass das funktioniert", "ich will einen Report dazu"
