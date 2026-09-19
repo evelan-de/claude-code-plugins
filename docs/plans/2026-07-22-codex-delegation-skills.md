@@ -43,7 +43,7 @@ All work happens on a feature branch; docs/plans history and CLAUDE.md conventio
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /Users/astraub/dev/tools/claude-code-plugins
+cd /Users/astraub/dev/projects/claude-code-plugins
 git checkout -b feat/codex-delegation-skills
 ```
 
@@ -689,7 +689,7 @@ Expected: `ok` for all 8 skills including `codex-review` and `codex-ask`, no tra
 
 Launch a fresh Claude Code session with the local plugin:
 ```bash
-claude --plugin-dir /Users/astraub/dev/tools/claude-code-plugins
+claude --plugin-dir /Users/astraub/dev/projects/claude-code-plugins
 ```
 Checks:
 - `/codex-review` appears in the command list and `/help`.

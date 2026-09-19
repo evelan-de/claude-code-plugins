@@ -37,7 +37,7 @@
 - [ ] **Step 1: Create the directories**
 
 ```bash
-cd /Users/astraub/dev/tools/claude-code-plugins
+cd /Users/astraub/dev/projects/claude-code-plugins
 mkdir -p agents skills/autopilot/hooks skills/autopilot/references
 ```
 
@@ -697,7 +697,7 @@ For unattended runs, launch with `--permission-mode auto`.
 
 Run:
 ```bash
-claude --plugin-dir /Users/astraub/dev/tools/claude-code-plugins -p "List the skills and agents the evelan plugin provides." 2>&1 | tail -30
+claude --plugin-dir /Users/astraub/dev/projects/claude-code-plugins -p "List the skills and agents the evelan plugin provides." 2>&1 | tail -30
 ```
 Expected: output mentions the `autopilot` skill and the `autopilot-reviewer` / `autopilot-implementer` agents. (If the CLI flag differs in this version, instead confirm files are discoverable: `ls agents skills/autopilot`.)
 

@@ -9,7 +9,7 @@ run in the non-interactive autopilot session.
 Launch a fresh session with the local plugin:
 
 ```bash
-claude --plugin-dir /Users/astraub/dev/tools/claude-code-plugins
+claude --plugin-dir /Users/astraub/dev/projects/claude-code-plugins
 ```
 
 Then confirm:
