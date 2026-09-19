@@ -131,8 +131,8 @@ notification. No polling, no side work while it runs.
 
 **Default: pass no model at all.** Codex then uses its own default, which is
 the strongest coding model in the catalog. Only override when the user names
-a model ("nutze Luna", "mit Sol", "das billige Modell") or explicitly asks
-for a cheap/fast run.
+a model ("nutze Luna", "mit Sol", "mit Terra", "das billige Modell") or
+explicitly asks for a cheap/fast run.
 
 Never paste a slug from memory - the catalog changes with every Codex
 release. Resolve the name first:
@@ -143,8 +143,10 @@ codex-cli exec -m "$MODEL" --sandbox workspace-write ... - < "$BRIEF"
 ```
 
 `codex-model` sits next to `codex-cli` in the plugin's `bin/`. It matches an
-exact slug or a unique suffix, so "luna" / "Sol" / "5.5" all resolve. Its
-exit codes matter:
+exact slug or a unique suffix, so "luna" / "Sol" / "Terra" / "5.5" all
+resolve. Only models the catalog lists for its picker are offered; entries
+Codex marks hidden (internal helpers, capacity fallbacks) are rejected like
+any unknown name. Its exit codes matter:
 
 | Exit | Meaning | What you do |
 |---|---|---|

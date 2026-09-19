@@ -11,18 +11,27 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/appbin" "$tmp/emptyhome"
 
 # A fake `codex` that answers `debug models` with a catalog and nothing else.
-# $1 target file, $2 comma-separated slugs
+# $1 target file, $2 comma-separated entries: `slug` or `slug:visibility`.
+# An entry without `:visibility` gets no visibility key at all, which is how
+# older catalogs looked. Every model also carries a nested object and a prose
+# field with escaped quotes, so the parser is proven against both.
 fake_codex() {
-  target="$1"; slugs="$2"
+  target="$1"; entries="$2"
   cat > "$target" <<EOF
 #!/bin/sh
 if [ "\$1" = "debug" ] && [ "\$2" = "models" ]; then
   json='{"models":['
   first=1
-  for s in $(echo "$slugs" | tr ',' ' '); do
+  for e in $(echo "$entries" | tr ',' ' '); do
     [ \$first -eq 1 ] || json="\$json,"
     first=0
-    json="\$json{\"slug\":\"\$s\",\"display_name\":\"\$s\"}"
+    s="\${e%%:*}"
+    json="\$json{\"slug\":\"\$s\",\"display_name\":\"\$s\""
+    json="\$json,\"supported_reasoning_levels\":[{\"effort\":\"low\",\"description\":\"x\"}]"
+    case "\$e" in
+      *:*) json="\$json,\"visibility\":\"\${e#*:}\"" ;;
+    esac
+    json="\$json,\"base_instructions\":\"Say \\\\\"slug\\\\\" and \\\\\"visibility\\\\\": \\\\\"hide\\\\\" in prose.\"}"
   done
   json="\$json]}"
   printf '%s\n' "\$json"
@@ -50,19 +59,23 @@ check() { # $1 desc  $2 want_exit  $3 want_substring
   fi
 }
 
-CATALOG="gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4-mini,codex-auto-review"
+CATALOG="gpt-reserve:hide,gpt-5.6-sol:list,gpt-5.6-terra:list,gpt-5.6-luna:list,gpt-5.5:list,gpt-5.4-mini,codex-auto-review:hide"
 fake_codex "$tmp/appbin/codex" "$CATALOG"
 
 # 1. list prints the selectable slugs
 run list
 check "list prints catalog slugs" 0 "gpt-5.6-luna"
 
-# 2. internal models are not offered
-if [ "$GOT" -eq 0 ] && ! printf '%s' "$OUT" | grep -qF "codex-auto-review"; then
-  echo "ok   - list hides internal slugs (exit $GOT)"; PASS=$((PASS+1))
+# 2. hidden catalog entries are not offered (the catalog's own visibility flag)
+if [ "$GOT" -eq 0 ] && ! printf '%s' "$OUT" | grep -qE "codex-auto-review|gpt-reserve"; then
+  echo "ok   - list hides entries marked visibility=hide (exit $GOT)"; PASS=$((PASS+1))
 else
-  echo "FAIL - list hides internal slugs (got: $OUT)"; FAIL=$((FAIL+1))
+  echo "FAIL - list hides entries marked visibility=hide (got: $OUT)"; FAIL=$((FAIL+1))
 fi
+
+# 2b. an entry without a visibility key (older catalogs) stays selectable
+run list
+check "list keeps entries without a visibility key" 0 "gpt-5.4-mini"
 
 # 3. friendly name resolves to the full slug
 run resolve luna
@@ -86,12 +99,14 @@ check "unknown name -> exit 2" 2 "nonsense"
 run resolve nonsense
 check "unknown name lists alternatives" 2 "gpt-5.6-sol"
 
-# 8. internal slugs are not resolvable either
+# 8. hidden slugs are not resolvable either, neither exactly nor by suffix
 run resolve codex-auto-review
-check "internal slug is not selectable" 2 "codex-auto-review"
+check "hidden slug is not selectable" 2 "codex-auto-review"
+run resolve reserve
+check "hidden slug is not selectable by suffix" 2 "unknown model 'reserve'"
 
 # 9. an ambiguous short name is reported, never guessed
-fake_codex "$tmp/appbin/codex" "gpt-5.6-luna,gpt-5.7-luna"
+fake_codex "$tmp/appbin/codex" "gpt-5.6-luna:list,gpt-5.7-luna:list"
 run resolve luna
 check "ambiguous name -> exit 3" 3 "ambiguous"
 

@@ -12,6 +12,11 @@
 #   2. unique suffix match       (luna -> gpt-5.6-luna, 5.5 -> gpt-5.5)
 # No family names are hardcoded, so a future gpt-5.7-luna resolves by itself.
 #
+# Only models the catalog lists for the picker are selectable. Entries the
+# catalog marks `"visibility":"hide"` (internal helpers such as
+# codex-auto-review, capacity fallbacks such as gpt-reserve) are skipped, so
+# the offered set tracks Codex's own picker release by release.
+#
 # Usage:
 #   codex-model list             # selectable slugs, one per line
 #   codex-model resolve <name>   # print the slug, or fail with alternatives
@@ -21,11 +26,6 @@
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 CODEX_CLI="$SELF_DIR/codex-cli"
 
-# Internal models the catalog exposes but users must not select directly.
-# codex-auto-review backs `approvals_reviewer=auto_review`; it is not a
-# general-purpose model and the backend rejects it as one.
-INTERNAL_SLUGS="codex-auto-review"
-
 usage() {
   echo "usage: codex-model list" >&2
   echo "       codex-model resolve <name>" >&2
@@ -34,16 +34,35 @@ usage() {
 
 # Print the selectable slugs, one per line. Empty output means "catalog
 # unavailable" - the caller decides what to do with that.
+#
+# The catalog is one JSON document; each model object carries its "slug"
+# before its "visibility", and no nested object uses either key. Pulling the
+# two keys out in document order therefore pairs them up correctly without a
+# JSON parser. The leading [^\\] rejects escaped quotes inside string values
+# (the base_instructions prompt is long prose).
 catalog_slugs() {
   "$CODEX_CLI" debug models 2>/dev/null \
-    | grep -o '"slug"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | sed 's/.*"slug"[[:space:]]*:[[:space:]]*"//; s/"$//' \
-    | while IFS= read -r slug; do
-        case " $INTERNAL_SLUGS " in
-          *" $slug "*) continue ;;
-        esac
+    | grep -oE '[^\\]"(slug|visibility)"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | sed -E 's/^.?"([a-z]+)"[[:space:]]*:[[:space:]]*"([^"]*)"$/\1=\2/' \
+    | {
+        slug=""
+        while IFS= read -r line; do
+          case "$line" in
+            slug=*)
+              # A model without a visibility key stays selectable.
+              [ -n "$slug" ] && printf '%s\n' "$slug"
+              slug="${line#slug=}"
+              ;;
+            visibility=*)
+              [ "${line#visibility=}" != "hide" ] && [ -n "$slug" ] \
+                && printf '%s\n' "$slug"
+              slug=""
+              ;;
+          esac
+        done
         [ -n "$slug" ] && printf '%s\n' "$slug"
-      done
+        true
+      }
 }
 
 resolve() {
