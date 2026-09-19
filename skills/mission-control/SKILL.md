@@ -182,6 +182,10 @@ path) · PR link and CI state · open items and skipped steps with reasons · la
 - "Let me look at what the agent is doing" → block and disk only.
 - "One agent for the whole topic is simpler" → one dispatch per package.
 - "Let it compact and carry on" → fresh lead with `HANDOFF.md`.
+- "The budget is too small, I'll raise `contextBudget`" → a fresh lead starts at 50-80k
+  tokens; a hand-off within minutes and without code means the hook measured the wrong
+  transcript (its reminder names the file). Fix the hook (`/autopilot init` with the current
+  plugin), never the budget.
 - "The idea is clear enough, I'll decide the rest" → open shape questions go back to the
   user before Phase 1.
 - "Polling to see if it finished" → completion notifies you; watchdog is for stalls.

@@ -12,12 +12,16 @@ Never overwrite existing config.
    every session of the project once `.claude/autopilot.json` exists; `# raw` in a command
    bypasses it.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
-   reads the session's own transcript after each tool call, sums the context the next turn
-   will carry, and once it exceeds the budget (default 250k tokens, `contextBudget` in
-   `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the instruction to write
-   `HANDOFF.md`, commit, and return `STATUS: incomplete`. Active only inside subagents
-   (hook input carries `agent_id`) or while the `.claude/.autopilot-active` sentinel exists;
-   silent in interactive sessions.
+   reads the transcript of the agent it runs in after each tool call (inside a subagent:
+   `<session>/subagents/agent-<agent_id>.jsonl`; the `transcript_path` in the hook input is
+   always the main session's file and is only used in a standalone run), takes the context
+   the next turn will carry, and once it exceeds the budget (default 250k tokens,
+   `contextBudget` in `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the
+   instruction to write `HANDOFF.md`, commit, and return `STATUS: incomplete`. The reminder
+   names the measured file. Active only inside subagents (hook input carries `agent_id`) or
+   while the `.claude/.autopilot-active` sentinel exists; silent in interactive sessions.
+   Do not raise the budget when a fresh lead hits it within minutes: a fresh lead starts at
+   roughly 50-80k tokens, so an instant hit means the wrong transcript was measured.
 4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart with matcher
    `compact`): if compaction happens anyway, re-injects where the session artifacts live.
 
@@ -83,8 +87,10 @@ Hooks merged into `settings.json` take effect at the next session start, so test
 directly. Write the gate command into a temp file preceded by a `# CMD: <gate>` line, run
 `bash .claude/hooks/autopilot-gate-filter.sh run <file>`, and confirm the output starts with
 `GATE GREEN` or `GATE RED` and `.claude/autopilot-gate.log` gained a line whose `tree=` equals
-`bash .claude/hooks/autopilot-gate-filter.sh tree`. Run the budget hook once with a fake input
+`bash .claude/hooks/autopilot-gate-filter.sh tree`. Run the budget hook's own test suite from the plugin
+(`bash "${CLAUDE_PLUGIN_ROOT}/skills/autopilot/hooks/autopilot-context-budget.test.sh"`) and
+confirm `FAIL=0`; then run the project copy once with a fake input
 (`echo '{"transcript_path":"<this session's transcript>","agent_id":"init-check"}' | bash .claude/hooks/autopilot-context-budget.sh`)
-and confirm it prints `{}`. Then print: detected package manager, the resolved gate command,
+and confirm it prints `{}` (no such subagent transcript exists, so it must stay silent). Then print: detected package manager, the resolved gate command,
 the files created/modified, whether each merge was a no-op (already initialized), whether `jq`
 is available, and that the hooks become active in the next session.
