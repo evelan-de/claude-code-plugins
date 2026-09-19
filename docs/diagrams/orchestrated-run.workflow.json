@@ -13,7 +13,7 @@
           "plan",
           "session"
         ],
-        "note": "Coordinator resolves the task, fixes the goal artifact, writes PLAN.md and CONTEXT.md, gets two plan reviews."
+        "note": "Coordinator resolves the task, fixes the goal artifact, writes PLAN.md and DIGEST.md, gets two plan reviews."
       },
       {
         "id": "packages",
@@ -25,7 +25,7 @@
           "commit",
           "watchdog"
         ],
-        "note": "One fresh autopilot-lead per work package. Handoff is PLAN.md on disk, never the transcript."
+        "note": "One fresh autopilot-lead per work package. PLAN.md or HANDOFF.md on disk is the handoff, never the transcript."
       },
       {
         "id": "finish",
@@ -68,8 +68,8 @@
       "lane": "coordinator",
       "col": 0,
       "type": "external",
-      "label": "Task / ticket",
-      "sublabel": "explored once",
+      "label": "Decided task",
+      "sublabel": "decisions made",
       "width": 124
     },
     {
@@ -78,7 +78,7 @@
       "col": 1,
       "type": "backend",
       "label": "Plan",
-      "sublabel": "2 plan reviews",
+      "sublabel": "PLAN + DIGEST.md, 2 reviews",
       "tag": "fresh agent + Codex",
       "width": 124
     },
@@ -88,7 +88,7 @@
       "col": 2,
       "type": "backend",
       "label": "Dispatch PACKAGE",
-      "sublabel": "next [ ] package",
+      "sublabel": "next [ ] or HANDOFF.md",
       "width": 124
     },
     {
@@ -97,7 +97,7 @@
       "col": 3,
       "type": "security",
       "label": "Watchdog",
-      "sublabel": "20-min status ticks",
+      "sublabel": "autopilot-watchdog, 20 min",
       "tag": "no transcripts",
       "width": 124
     },
@@ -126,7 +126,7 @@
       "col": 2,
       "type": "backend",
       "label": "Lead: one package",
-      "sublabel": "PACKAGE <id>, TDD",
+      "sublabel": "PACKAGE <id>, TDD at seams",
       "width": 124
     },
     {
@@ -135,7 +135,7 @@
       "col": 3,
       "type": "security",
       "label": "Gate once + review",
-      "sublabel": "reviewer on Opus",
+      "sublabel": "commit or hand off",
       "tag": "gate log accepted",
       "width": 124
     },
@@ -163,7 +163,7 @@
       "col": 3,
       "type": "database",
       "label": "Branch commit",
-      "sublabel": "PLAN.md [x] + log",
+      "sublabel": "PLAN.md [x] or HANDOFF",
       "width": 124
     },
     {
