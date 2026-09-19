@@ -20,10 +20,11 @@ This is a prompt-driven skill, not a deterministic script. Explore, present what
 
 Look at the current repo to understand its starting state. Read whatever exists; don't assume:
 
-- `git remote -v` and `.git/config`: GitHub, GitLab or Bitbucket? Which repo?
-- Jira signals: a Bitbucket remote, `atlassian.net` anywhere in `CLAUDE.md`/`README.md`, ticket
-  keys like `ABC-123` in recent commit subjects (`git log --oneline -50`). Note the key prefix and
-  the site host when found.
+- `git remote -v` and `.git/config`: GitHub or GitLab? Which repo?
+- Jira signals: `atlassian.net` or "Jira" in `CLAUDE.md`/`README.md`, ticket keys like `ABC-123`
+  in recent commit subjects or branch names (`git log --oneline -50`, `git branch -a`). Note the
+  key prefix and the site host when found. A GitHub remote alone is not a signal either way:
+  some repos track work in GitHub Issues, others in Jira.
 - `AGENTS.md` and `CLAUDE.md` at the repo root: does either exist? Is there already an `## Agent skills` section in either?
 - `CONTEXT.md` and `CONTEXT-MAP.md` at the repo root
 - `docs/adr/` and any `src/*/docs/adr/` directories
@@ -42,9 +43,10 @@ Lead each section with the recommended answer so the user can accept it in a wor
 
 > Explainer: The "issue tracker" is where issues live for this repo. Skills like `evelan:spec-to-tickets`, `evelan:triage-backlog`, and `evelan:write-spec` read from and write to it. They need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
 
-Default posture: if exploration found Jira signals (Bitbucket remote, `atlassian.net`, ticket keys in
-commits), propose **Jira** with the detected project key and site, and ask only for confirmation
-plus the In-Progress and merge status names. Else if a `git remote` points at GitHub, propose that.
+Default posture: if exploration found Jira signals (`atlassian.net`, ticket keys in commits or
+branches), propose **Jira** with the detected project key and site, name GitHub Issues as the
+alternative in the same breath, and ask for confirmation plus the In-Progress and merge status
+names. Without Jira signals and with a GitHub remote, propose **GitHub Issues**.
 If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise
 (or if the user prefers), offer:
 
