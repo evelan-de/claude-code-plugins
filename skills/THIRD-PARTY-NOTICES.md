@@ -33,9 +33,10 @@ They are maintained here as Evelan skills from now on and may diverge from upstr
 | teach | teach |
 | to-questionnaire | to-questionnaire |
 | wait-what | wait-what |
+| wizard | wizard |
+| writing-for-agents | writing-for-agents |
 
-Not vendored: `wizard` and `writing-for-agents` (Claude Code ships equivalents as built-in
-skills), and the `in-progress`, `misc` and `deprecated` folders.
+Not vendored: the `in-progress`, `misc` and `deprecated` folders.
 
 ### MIT License
 

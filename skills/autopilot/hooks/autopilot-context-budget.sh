@@ -9,8 +9,10 @@
 # additionalContext: write HANDOFF.md into the autopilot session folder, commit, and
 # return the dispatch block as `incomplete` so the coordinator dispatches a fresh lead.
 #
-# Deterministic, no model summary involved. Inert when:
+# Inert when:
 #   - the project is not autopilot-enabled (.claude/autopilot.json missing),
+#   - the session is neither a subagent (no agent_id in the hook input) nor a standalone
+#     autopilot run (no .claude/.autopilot-active sentinel), i.e. an interactive session,
 #   - jq is missing,
 #   - the transcript has no usage yet, or
 #   - the budget has not been reached.
@@ -25,6 +27,11 @@ CONFIG="$PROJECT_DIR/.claude/autopilot.json"
 input="$(cat 2>/dev/null || true)"
 [ -f "$CONFIG" ] || { echo '{}'; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo '{}'; exit 0; }
+
+agent="$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)"
+if [ -z "$agent" ] && [ ! -f "$PROJECT_DIR/.claude/.autopilot-active" ]; then
+  echo '{}'; exit 0
+fi
 
 transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
 [ -n "$transcript" ] && [ -f "$transcript" ] || { echo '{}'; exit 0; }
@@ -48,12 +55,12 @@ esac
 
 [ "$ctx" -ge "$budget" ] || { echo '{}'; exit 0; }
 
-# Rate-limit reminders per session so the model is not nagged on every call.
-session="$(printf '%s' "$input" | jq -r '.session_id // "nosession"' 2>/dev/null)"
-agent="$(printf '%s' "$input" | jq -r '.agent_id // "main"' 2>/dev/null)"
+# Rate-limit reminders per transcript (one transcript per agent) so the model is not nagged
+# on every call and a fresh agent never inherits another agent's counter.
+key="$(basename "$transcript" .jsonl)"
 marker_dir="${TMPDIR:-/tmp}/autopilot-context-budget"
 mkdir -p "$marker_dir" 2>/dev/null
-marker="$marker_dir/${session}-${agent}.count"
+marker="$marker_dir/${key}.count"
 count=0
 [ -f "$marker" ] && count="$(cat "$marker" 2>/dev/null || echo 0)"
 case "$count" in ''|*[!0-9]*) count=0;; esac

@@ -1,4 +1,4 @@
-# `/autopilot init` — set up the per-project hooks
+# `/autopilot init` - set up the per-project hooks
 
 Goal: enable four deterministic hooks in the **current** project, safely and idempotently.
 Never overwrite existing config.
@@ -15,8 +15,9 @@ Never overwrite existing config.
    reads the session's own transcript after each tool call, sums the context the next turn
    will carry, and once it exceeds the budget (default 250k tokens, `contextBudget` in
    `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the instruction to write
-   `HANDOFF.md`, commit, and return `STATUS: incomplete`. This replaces auto-compaction as
-   the context limiter: deterministic, no lossy model summary.
+   `HANDOFF.md`, commit, and return `STATUS: incomplete`. Active only inside subagents
+   (hook input carries `agent_id`) or while the `.claude/.autopilot-active` sentinel exists;
+   silent in interactive sessions.
 4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart with matcher
    `compact`): if compaction happens anyway, re-injects where the session artifacts live.
 
@@ -42,7 +43,7 @@ When unsure (exotic setups), verify against the project's own CI/scripts; npm + 
 Order: typecheck → lint → test (+ build for the full gate only).
 - typecheck: `typecheck` or `type-check` script; else `tsc --noEmit` if `tsconfig.json` exists; else skip.
 - lint: `lint` script; else skip.
-- test: `test` script; else skip (run-mode bootstraps a missing runner — init wires only what is there).
+- test: `test` script; else skip (run-mode bootstraps a missing runner - init wires only what is there).
 Compose the **cheap gate** string (no build), e.g. `pnpm run typecheck && pnpm run lint && pnpm test`.
 Prefer quiet reporters where the runner supports them and the project's scripts do not already
 set one (vitest/jest: `-- --reporter=dot`; playwright: `--reporter=dot`). Check with the
@@ -52,9 +53,9 @@ runner's `--help` before adding a flag; never break an existing script.
 ```json
 { "gate": "<composed cheap gate>" }
 ```
-This is the single source of truth read by the hook and the run-mode orchestrator. If the
+If the
 file exists with a different gate, show the diff and keep the existing one unless the detected
-commands are clearly better — explain what you chose.
+commands are clearly better - explain what you chose.
 
 ### 4. Copy the hooks
 Copy `autopilot-gate.sh`, `autopilot-gate-filter.sh`, `autopilot-context-budget.sh` and
@@ -78,10 +79,12 @@ Ensure `.claude/.autopilot-active` (transient sentinel) and `.claude/autopilot-g
 (machine-local evidence log) are gitignored.
 
 ### 7. Verify and report
-Run one filtered command end to end (e.g. the gate itself) and confirm the output starts with
-`GATE GREEN` or `GATE RED` and that `.claude/autopilot-gate.log` gained a line. Run the
-context-budget hook once by hand with a fake input whose transcript is the current session's
-(`echo '{"transcript_path":"<path>","session_id":"init-check"}' | .claude/hooks/autopilot-context-budget.sh`)
-and confirm it prints `{}` (below budget). Then print:
-detected package manager, the resolved gate command, the files created/modified, whether each
-merge was a no-op (already initialized), and whether `jq` is available.
+Hooks merged into `settings.json` take effect at the next session start, so test the scripts
+directly. Write the gate command into a temp file preceded by a `# CMD: <gate>` line, run
+`bash .claude/hooks/autopilot-gate-filter.sh run <file>`, and confirm the output starts with
+`GATE GREEN` or `GATE RED` and `.claude/autopilot-gate.log` gained a line whose `tree=` equals
+`bash .claude/hooks/autopilot-gate-filter.sh tree`. Run the budget hook once with a fake input
+(`echo '{"transcript_path":"<this session's transcript>","agent_id":"init-check"}' | bash .claude/hooks/autopilot-context-budget.sh`)
+and confirm it prints `{}`. Then print: detected package manager, the resolved gate command,
+the files created/modified, whether each merge was a no-op (already initialized), whether `jq`
+is available, and that the hooks become active in the next session.

@@ -1,6 +1,6 @@
 ---
 name: autopilot
-description: Use for autonomous, unattended development of one topic — spec → plan → TDD → adversarial review → quality gate → PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um". Also handles "autopilot init" to set up the per-project quality-gate hooks.
+description: Use for autonomous, unattended development of one topic - spec → plan → TDD → adversarial review → quality gate → PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um". Also handles "autopilot init" to set up the per-project quality-gate hooks.
 user-invocable: true
 argument-hint: "[init | <task | TICKET-KEY | spec file | session directory>]   (add 'with sonnet' for cost-efficient implementation, 'defer PR' to skip push/PR; mission-control passes 'PACKAGE <id>' or 'FINALIZE')"
 ---
@@ -52,12 +52,12 @@ may stop a topic.
   offset/limit) to read. Never `cat` a whole file, never `git diff` without a path or
   `--stat`, never `git show` a whole commit.
 - **Tail long outputs**: `| tail -n 40` on build, install and runner output unless reading a
-  specific failure. The gate filter (when installed) does this for runner commands.
+  specific failure.
 - **Never re-read** what is already in your context.
 - **Gate discipline.** During red-green: only the affected test file. Full cheap gate once,
   before the commit. Never "to see where we are".
 - **Explore once, through a subagent** that returns files and patterns, not contents. In
-  orchestrated mode read `CONTEXT.md` instead.
+  orchestrated mode read the session folder's `DIGEST.md` instead.
 - **One command per Bash call.** No `for ...; do cat ...; done`.
 - **Browser checks without screenshots** by default: `read_page`, `get_page_text`, `find`.
   One screenshot per screen, only to judge layout.
@@ -78,19 +78,19 @@ so the user resumes with `/autopilot <session directory>`.
 Format:
 
 ```
-# HANDOFF — <package id or topic> — <ISO timestamp>
+# HANDOFF - <package id or topic> - <ISO timestamp>
 ## Where we are
 <package id> is [~]: <one sentence>. Branch: <name>, HEAD: <sha>.
 ## Verified (with evidence)
-- <what> — <command> → <result line>   (or: see .claude/autopilot-gate.log last line)
+- <what> - <command> → <result line>   (or: see .claude/autopilot-gate.log last line)
 ## Open
 - <concrete item>
 ## Next step
 <the exact first action the next agent takes>
 ## Decisions made in this dispatch
-- <decision> — <why>   (also in DECISIONS.md)
+- <decision> - <why>   (also in DECISIONS.md)
 ## Pointers
-PLAN.md · CONTEXT.md · DECISIONS.md · commits <sha..sha> · gate log
+PLAN.md · DIGEST.md · DECISIONS.md · commits <sha..sha> · gate log
 ## Do not redo
 - <verified things the next agent must not repeat>
 ```
@@ -108,21 +108,21 @@ delete it when the package reaches `[x]`.
   "günstig"): delegate each package to `evelan:autopilot-implementer`, inspect its block,
   resolve every `needs_review` item before accepting.
 - **Review:** always `evelan:autopilot-reviewer` (fresh context). It accepts the hook-written
-  gate evidence log when it matches HEAD.
+  gate evidence log when its tree hash matches the working tree.
 
 ## Orchestrated modes (dispatched by mission control)
 
 The session folder `docs/autopilot/sessions/<slug>/` holds `PLAN.md` (packages, statuses,
-decisions, goal artifact) and `CONTEXT.md` (exploration digest). Adopt it verbatim. The goal
+decisions, goal artifact) and `DIGEST.md` (exploration digest). Adopt it verbatim. The goal
 artifact in the plan is binding.
 
-**`PACKAGE <id>`** — implement exactly that package:
+**`PACKAGE <id>`** - implement exactly that package:
 
 1. Branch: check out the session branch named in `PLAN.md`; if none exists yet, create it per
    phase 2 and record its name at the top of `PLAN.md`. No worktree, no second branch.
 2. Gate: phase 1. Do **not** create the Stop-hook sentinel in orchestrated mode.
 3. If the dispatch names a `HANDOFF.md`, read it and continue at "Next step". Otherwise set
-   the package `[~]`. Then phases 3 (read `CONTEXT.md`; no exploration subagent unless a
+   the package `[~]`. Then phases 3 (read `DIGEST.md`; no exploration subagent unless a
    needed file is missing from the digest), 5, 6 (standard reviewer only, no Codex), 7, 8 for
    this package. Commit on the session branch. Set `[x]` (or `[!]` with the gap named under
    the package), append `DECISIONS.md`, commit the artifacts, delete a consumed `HANDOFF.md`.
@@ -130,7 +130,7 @@ artifact in the plan is binding.
 5. Return the `evelan:autopilot-lead` output block. Fix dispatch: same rules, package back to
    `[~]` while you work. Budget or turn cap reached: hand off, return `STATUS: incomplete`.
 
-**`FINALIZE`** — every package is `[x]`:
+**`FINALIZE`** - every package is `[x]`:
 
 1. Check out the session branch, read `PLAN.md`.
 2. Phase 9 against the goal artifact (mandatory), phase 10, Codex cross-model review once on
@@ -280,14 +280,14 @@ escalated (coordinator in defer-PR, user otherwise), not implemented.
 On every abort: commit the artifacts (`REPORT.md`, blocker on top), remove the sentinel if you
 created it. Orchestrated: package `[!]`, commit `PLAN.md`, return the block as `blocked`.
 
-## Artifacts — `docs/autopilot/` (committed, part of the PR)
+## Artifacts - `docs/autopilot/` (committed, part of the PR)
 
 ```
 docs/autopilot/
   INDEX.md                                # newest-first, one line + link per session
   sessions/YYYY-MM-DD-<slug>/
     PLAN.md          # spec + plan + verification criteria + package status (+ branch name)
-    CONTEXT.md       # exploration digest (orchestrated runs; written by mission control)
+    DIGEST.md        # exploration digest (orchestrated runs; written by mission control)
     DECISIONS.md     # assumptions with rationale
     HANDOFF.md       # transient hand-off; deleted when consumed
     REPORT.md        # shipped work, coverage, review findings, PR link, CI, open items
@@ -297,7 +297,7 @@ docs/autopilot/
 `INDEX.md` insert marker (prepend, never sort or rewrite):
 ```
 <!-- NEW ENTRIES GO IMMEDIATELY BELOW THIS LINE -->
-- **YYYY-MM-DD HH:MM** — <title> — <one-line summary> — [PR](<url>) [→](./sessions/<slug>/REPORT.md)
+- **YYYY-MM-DD HH:MM** - <title> - <one-line summary> - [PR](<url>) [→](./sessions/<slug>/REPORT.md)
 ```
 Seed `docs/autopilot/INDEX.md` with that header and marker if missing.
 

@@ -1,6 +1,6 @@
 ---
 name: mission-control
-description: Use when a session should coordinate autonomous development instead of implementing it — the user wants planning, delegation to an autopilot subagent, progress supervision and independent result verification. Triggers on "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "orchestrated autopilot", "koordiniere die Umsetzung".
+description: Use when a session should coordinate autonomous development instead of implementing it - the user wants planning, delegation to an autopilot subagent, progress supervision and independent result verification. Triggers on "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "orchestrated autopilot", "koordiniere die Umsetzung".
 user-invocable: true
 argument-hint: "<task | TICKET-KEY | spec file>"
 ---
@@ -19,8 +19,7 @@ final summary):
 - **Permissive permission mode** (e.g. `--permission-mode auto`). If permissions block a
   subagent mid-run, report it as an external blocker; do not respawn.
 - **Project hooks installed** in the target repo (`/autopilot init`: gate filter,
-  context-budget hand-off). Without them the run works but the lead relies on its turn cap
-  alone. Never use an auto-compact window as a substitute.
+  context-budget hand-off). Never use an auto-compact window as a substitute.
 - **Session model** Fable 5.1. Never Fable 5.
 
 ## Non-negotiables
@@ -33,7 +32,7 @@ final summary):
 - **The session ends with the goal artifact standing ready**, or with an honest report of
   what is finished, what is not, and the exact blocker.
 
-## Phase 0 — Resolve input, check the decision precondition, fix the goal artifact
+## Phase 0 - Resolve input, check the decision precondition, fix the goal artifact
 
 Resolve the input: ticket key → fetch the ticket (tracker MCP or CLI); spec file → read it;
 otherwise the prompt is the task. Only you have tracker access; everything the lead needs
@@ -58,7 +57,7 @@ Ask the user now only when the goal artifact itself could take materially differ
 (HTML page vs PDF). Ordinary scope details: decide conservatively, record in the plan's
 "Decisions" section. After this point the session runs unattended.
 
-## Phase 1 — Plan (main context)
+## Phase 1 - Plan (main context)
 
 1. Delegate wide read-only exploration to an `Explore` subagent (files, patterns, risks).
 2. Create `docs/autopilot/sessions/YYYY-MM-DD-<slug>/` in the target repo with:
@@ -66,26 +65,25 @@ Ask the user now only when the goal artifact itself could take materially differ
      status markers `[ ] / [~] / [x] / [!]`, verification criteria, "Decisions", the goal
      artifact as end-to-end check. **Every package lists the files, interfaces and test
      seams it touches.**
-   - `CONTEXT.md`: exploration digest (architecture, conventions, gate command, test
+   - `DIGEST.md`: exploration digest (architecture, conventions, gate command, test
      patterns, risks).
    Never place the plan anywhere else. The copy the lead commits on the session branch is
    authoritative.
 3. **One package = one dispatch:** a coherent change a fresh agent finishes well under 400
    turns with the gate green and a commit. When in doubt, split.
 
-## Phase 2 — Plan review (two lenses)
+## Phase 2 - Plan review (two lenses)
 
 1. **Fresh-context agent review:** plan + repo access; completeness, ordering, package
    sizing, risks, testability.
 2. **Codex review** via `evelan:codex-ask` on the plan file (gaps, wrong assumptions, missing
-   edge cases). Invoking `/mission-control` is the Codex routing signal. `evelan:codex-review`
-   is for diffs, not plans. Codex unavailable → agent review alone, note the skip in the
-   final report.
+   edge cases); `/mission-control` counts as the explicit Codex routing. Codex unavailable →
+   agent review alone, note the skip in the final report.
 
 Fold every real finding into `PLAN.md` yourself; dismiss only with a recorded reason under
 "Decisions". Only the revised plan gets implemented.
 
-## Phase 3 — Dispatch, one package at a time
+## Phase 3 - Dispatch, one package at a time
 
 Agent tool, `subagent_type: "evelan:autopilot-lead"`, background. No model override, no
 worktree isolation, never `general-purpose`.
@@ -115,16 +113,16 @@ split the package.
 **Prompt, mode `FINALIZE`** (every package `[x]`): session directory, `FINALIZE`, goal
 artifact verbatim, `defer PR`, "nutze Codex als Reviewer".
 
-## Phase 4 — Supervise (watchdog)
+## Phase 4 - Supervise (watchdog)
 
 Completion notifications arrive on their own; never poll for them. The watchdog is for
 stalls only. A permission prompt nobody answers is an external blocker, not a stall.
 
 - Recurring check about every **20 minutes** (Monitor, scheduled wakeup, /loop; else when
   re-invoked).
-- Each check runs `autopilot-watchdog <repo> <branch>` (plugin binary on PATH). It prints
-  `PROGRESS ...` or `STALL ... stalls=<n>` from the branch's last commit and the newest
-  `PLAN.md` mtime and keeps the counter. Combine with the harness task status
+- Each check runs `autopilot-watchdog <repo> <branch>` (plugin binary on PATH, always exit
+  0). It prints `PROGRESS ...` or `STALL ... stalls=<n>` from the branch's last commit and
+  the newest `PLAN.md` mtime and keeps the counter. Combine with the harness task status
   (running / completed / failed). Never judge by output size, never read the transcript.
 - **A task that returned its block is finished.** Never `TaskStop` it; ignore late
   background-task notifications from it.
@@ -135,7 +133,7 @@ stalls only. A permission prompt nobody answers is an external blocker, not a st
 - **External blocker** (credentials, permission, human input): let the lead finish what is
   finishable, report the blocker precisely.
 
-## Phase 5 — Verify independently
+## Phase 5 - Verify independently
 
 After the `FINALIZE` block:
 
@@ -150,7 +148,7 @@ After the `FINALIZE` block:
    fix cycle = feedback + full re-verification (gate AND goal artifact). Max 3 fix cycles;
    after that report honestly.
 
-## Phase 5.5 — Push, PR, CI (yours, only after Phase 5 passes)
+## Phase 5.5 - Push, PR, CI (yours, only after Phase 5 passes)
 
 1. Push the session branch, open **one PR** (`gh pr create`, ticket key in title, base = the
    project's integration branch). Never auto-merge.
@@ -169,7 +167,7 @@ After the `FINALIZE` block:
    invariant or a recorded decision. A finding that contradicts a decision or reverses an
    earlier round is adjudicated by you, not implemented. The fix-cycle cap is the hard stop.
 
-## Phase 6 — Final summary
+## Phase 6 - Final summary
 
 Simplified technical language (ASD-STE100 style): short sentences, one statement each,
 active voice, common words. Language of the user's initial prompt.

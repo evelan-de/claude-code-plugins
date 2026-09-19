@@ -119,7 +119,7 @@ Runs an autonomous, unattended development loop for **one topic per session**: s
 - Run a task: `/autopilot <task, ticket key, or spec file>`
   e.g. `/autopilot DNA-901 add rate limiting to the contact route`
 - Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
-- Thorough review (adds clean-code + reusability lenses): add "thorough review".
+- Thorough review (adds the standards axis: repo coding standards plus a smell baseline): add "thorough review".
 - Cross-model review: add "nutze Codex als Reviewer". It runs once per session on the whole branch.
 - Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim. With a mode (`PACKAGE <id>` or `FINALIZE`) the skill runs only the phases that mode owns; that is how mission-control dispatches it.
 
@@ -131,7 +131,7 @@ The session lead runs at your **session model** — standalone that is whatever 
 
 **Optional per-project hooks:** `/autopilot init` sets up four deterministic hooks in the current project. The `Stop` hook blocks a standalone run from ending a turn while the gate (typecheck/lint/test) is red (inert outside autopilot runs, sentinel-guarded). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line (timestamp, HEAD, tree state, exit code) to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. The `PostToolUse` context-budget hook measures the context the next turn will carry from the session's own transcript and, above the budget (default 250k, `contextBudget` in `.claude/autopilot.json`), injects the hand-off instruction. The `SessionStart` hook (matcher `compact`) re-injects the session folder pointer if compaction happens anyway. Init auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hooks into `.claude/hooks/`, and safe-merges them into `.claude/settings.json` (idempotent, never overwrites). The filter and budget hooks need `jq`; put `# raw` in a command to bypass the filter.
 
-**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `CONTEXT.md` (orchestrated runs), `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
+**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `DIGEST.md` (orchestrated runs), `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
 
 For unattended runs, launch with `--permission-mode auto`.
 
@@ -142,7 +142,7 @@ For unattended runs, launch with `--permission-mode auto`.
 Coordinates an autonomous development session **without implementing anything itself**: it
 resolves the task and pins down the user-verifiable **goal artifact** (feature running in
 the local app, a generated report, a finished PDF, …), prepares the autopilot session
-folder (`docs/autopilot/sessions/<slug>/` with `PLAN.md` and a `CONTEXT.md` exploration
+folder (`docs/autopilot/sessions/<slug>/` with `PLAN.md` and a `DIGEST.md` exploration
 digest) in the main context, has the plan reviewed by a fresh-context agent **and**
 cross-model via `evelan:codex-ask` (fixing the findings itself), then dispatches the
 `evelan:autopilot-lead` agent **once per work package** (`PACKAGE <id>`, fresh context each

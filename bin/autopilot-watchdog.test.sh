@@ -16,7 +16,7 @@ out="$(sh "$BIN" "$R" feat/x "$S")"; rc=$?
 case "$out" in PROGRESS*stalls=0*) ok "first tick is PROGRESS (rc $rc)";; *) fail "first tick: $out";; esac
 
 out="$(sh "$BIN" "$R" feat/x "$S")"; rc=$?
-case "$out" in STALL*stalls=1*) [ $rc -eq 1 ] && ok "unchanged tick is STALL stalls=1 exit 1" || fail "stall rc $rc";; *) fail "second tick: $out";; esac
+case "$out" in STALL*stalls=1*) [ $rc -eq 0 ] && ok "unchanged tick is STALL stalls=1, exit 0" || fail "stall rc $rc";; *) fail "second tick: $out";; esac
 
 out="$(sh "$BIN" "$R" feat/x "$S")"
 case "$out" in STALL*stalls=2*) ok "consecutive stall counts to 2";; *) fail "third tick: $out";; esac
@@ -35,6 +35,11 @@ out="$(sh "$BIN" "$R" nobranch "$S.2" 2>/dev/null)"
 case "$out" in *commit=none*age=-1*) ok "missing branch reports commit=none";; *) fail "missing branch: $out";; esac
 
 sh "$BIN" >/dev/null 2>&1; [ $? -eq 2 ] && ok "usage error exits 2" || fail "usage exit code"
+
+R2="$(mktemp -d)"; git -C "$R2" init -q; git -C "$R2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init; git -C "$R2" checkout -q -b feat/x
+out1="$(sh "$BIN" "$R" feat/x)"; out2="$(sh "$BIN" "$R2" feat/x)"
+case "$out2" in PROGRESS*) ok "default state file is keyed per repo (second repo starts fresh)";; *) fail "repo key: $out2";; esac
+rm -rf "$R2"; rm -f "${TMPDIR:-/tmp}"/autopilot-watchdog-*-feat_x.state
 
 rm -rf "$R"
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"

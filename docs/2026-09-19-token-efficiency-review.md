@@ -39,7 +39,7 @@ Findings:
 - `agents/autopilot-lead.md`: Fable 5.1, tools allowlist, `maxTurns: 500`. Mission control
   dispatches it instead of `general-purpose` + Opus.
 - Mission control dispatches one lead per work package (`PACKAGE <id>`) plus one `FINALIZE`
-  dispatch; writes `CONTEXT.md` once; never reads transcripts; 20-minute watchdog on task
+  dispatch; writes `DIGEST.md` (exploration digest) once; never reads transcripts; 20-minute watchdog on task
   status and branch progress; browser verification delegated to a verifier subagent; launch
   requirement `--autocompact 300k`; Codex review once per session.
 - Autopilot: orchestrated modes, context-hygiene section (bounded reads, tail, one gate run

@@ -9,9 +9,12 @@ claude-code-plugins/
 ├── .claude-plugin/
 │   ├── plugin.json           # Plugin metadata (name, version, author)
 │   └── marketplace.json      # Marketplace catalog for plugin discovery
-├── skills/                   # Model-invoked skills (auto-triggered by context)
-│   └── <skill-name>/
-│       └── SKILL.md
+├── skills/                   # Skills (user- or model-invoked)
+│   ├── <skill-name>/
+│   │   └── SKILL.md
+│   └── THIRD-PARTY-NOTICES.md  # attribution for vendored skills
+├── agents/                   # Subagent definitions (frontmatter: model, tools, maxTurns)
+│   └── <agent-name>.md
 ├── commands/                 # User-invoked slash commands (optional)
 │   └── <command-name>.md
 ├── bin/                      # Helper executables on PATH for skills
@@ -28,16 +31,9 @@ each one - they run on teammates' machines, not just yours.
 
 ## Plugin Configuration
 
-`.claude-plugin/plugin.json` must exist with:
-```json
-{
-  "name": "evelan",
-  "description": "Evelan team skills and commands for Claude Code",
-  "version": "1.0.0",
-  "author": { "name": "Evelan" },
-  "skills": "./skills/"
-}
-```
+`.claude-plugin/plugin.json` must exist with `name`, `description`, `version` (bump on every
+release), `author`, `skills: "./skills/"` and an `agents` array listing every file under
+`agents/` (an unlisted agent is not installed).
 
 ## Adding Skills
 

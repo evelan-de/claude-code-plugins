@@ -26,7 +26,7 @@ Look at the current repo to understand its starting state. Read whatever exists;
 - `docs/adr/` and any `src/*/docs/adr/` directories
 - `docs/agents/`: does this skill's prior output already exist?
 - `.scratch/`: a sign that a local-markdown issue tracker convention is already in use
-- Is the `evelan:triage-backlog` skill installed? (a `evelan:triage-backlog` skill folder alongside this one, or `evelan:triage-backlog` in your available skills.) This decides whether Section B runs at all.
+- Is the `evelan:triage-backlog` skill installed? (a `triage-backlog` skill folder alongside this one, or `evelan:triage-backlog` in your available skills.) This decides whether Section B runs at all.
 - Monorepo signals: a `pnpm-workspace.yaml`, a `workspaces` field in `package.json`, or a populated `packages/*` with its own `src/`. These are present only in a genuinely large multi-package repo; their absence means single-context, which is almost every repo.
 
 ### 2. Present findings and ask
