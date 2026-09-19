@@ -131,20 +131,20 @@ notification. No polling, no side work while it runs.
 
 **Default: pass no model at all.** Codex then uses its own default, which is
 the strongest coding model in the catalog. Only override when the user names
-a model ("nutze Luna", "mit Sol", "mit Terra", "das billige Modell") or
+a model ("nutze Astra", "mit Sol", "nutze Luna", "das billige Modell") or
 explicitly asks for a cheap/fast run.
 
 Never paste a slug from memory - the catalog changes with every Codex
 release. Resolve the name first:
 
 ```bash
-MODEL="$(codex-model resolve luna)" || exit   # -> gpt-5.6-luna
+MODEL="$(codex-model resolve astra)" || exit  # -> gpt-6-astra
 codex-cli exec -m "$MODEL" --sandbox workspace-write ... - < "$BRIEF"
 ```
 
 `codex-model` sits next to `codex-cli` in the plugin's `bin/`. It matches an
-exact slug or a unique suffix, so "luna" / "Sol" / "Terra" / "5.5" all
-resolve. Only models the catalog lists for its picker are offered; entries
+exact slug or a unique suffix, so "Astra" / "Sol" / "Terra" / "luna" / "5.5"
+all resolve. Only models the catalog lists for its picker are offered; entries
 Codex marks hidden (internal helpers, capacity fallbacks) are rejected like
 any unknown name. Its exit codes matter:
 
@@ -163,7 +163,10 @@ Rough guidance when the user asks for a recommendation, not a specific model:
 the frontier model for real code work and reviews, the cheap tier for
 high-volume, low-judgement tasks (bulk rewrites, extraction, classification).
 `codex-model list` shows what is actually available - do not describe tiers
-you have not verified.
+you have not verified. The catalog comes from the installed Codex CLI, so an
+outdated CLI hides newer models: when a model the user names is missing from
+the list, check `codex-cli --version` against the latest release before
+telling them it does not exist.
 
 **Report which model ran.** Take it from the `model:` line in the log header
 that Codex writes, not from the model itself - models routinely misreport

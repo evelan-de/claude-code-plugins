@@ -59,7 +59,7 @@ check() { # $1 desc  $2 want_exit  $3 want_substring
   fi
 }
 
-CATALOG="gpt-reserve:hide,gpt-5.6-sol:list,gpt-5.6-terra:list,gpt-5.6-luna:list,gpt-5.5:list,gpt-5.4-mini,codex-auto-review:hide"
+CATALOG="gpt-6-astra:list,gpt-reserve:hide,gpt-5.6-sol:list,gpt-5.6-terra:list,gpt-5.6-luna:list,gpt-5.5:list,gpt-5.4-mini,codex-auto-review:hide"
 fake_codex "$tmp/appbin/codex" "$CATALOG"
 
 # 1. list prints the selectable slugs
@@ -80,6 +80,8 @@ check "list keeps entries without a visibility key" 0 "gpt-5.4-mini"
 # 3. friendly name resolves to the full slug
 run resolve luna
 check "resolve luna -> gpt-5.6-luna" 0 "gpt-5.6-luna"
+run resolve astra
+check "resolve astra -> gpt-6-astra" 0 "gpt-6-astra"
 
 # 4. resolution is case-insensitive (dictated names arrive capitalised)
 run resolve Luna

@@ -99,22 +99,24 @@ or fall back to the focused form if the range is really the uncommitted diff.
 
 **Default: pass no model.** Codex uses its own default, which is the
 strongest coding model in the catalog - the right one for a review. Override
-only when the user names a model ("review mit Sol", "nutze Luna dafür",
-"mit Terra").
+only when the user names a model ("review mit Astra", "mit Sol", "nutze
+Luna dafür").
 
 `codex review` has **no `-m/--model` flag** (unlike `codex exec`) - the
 override goes through `-c model="<slug>"`. Resolve the name first rather than
 typing a slug from memory, since the catalog changes with every release:
 
 ```bash
-MODEL="$(codex-model resolve sol)" || exit     # -> gpt-5.6-sol
+MODEL="$(codex-model resolve astra)" || exit   # -> gpt-6-astra
 codex-cli review -c model="$MODEL" --base "$base" > "$LOG" 2>&1
 ```
 
 `codex-model` lives next to `codex-cli` in the plugin's `bin/` and exits 2
 with the list of real slugs on an unknown name (models the catalog marks
 hidden count as unknown), 3 on an ambiguous one. In
-both cases stop and ask the user - do not guess a slug. This matters because
+both cases stop and ask the user - do not guess a slug. The catalog comes
+from the installed Codex CLI, so a model missing from the list may just mean
+the CLI is outdated. This matters because
 Codex does not reject a bad slug locally: the run starts and only the backend
 answers `400 ... model is not supported`, after minutes of review time.
 
