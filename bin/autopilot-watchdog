@@ -1,0 +1,59 @@
+#!/bin/sh
+# autopilot-watchdog - one progress tick for a mission-control coordinator.
+#
+# usage: autopilot-watchdog <repo-dir> <branch> [state-file]
+#
+# Prints one line the coordinator can read without touching any transcript:
+#   PROGRESS commit=<sha> age=<seconds since last commit> plan_age=<seconds since PLAN.md mtime> stalls=<n>
+# or
+#   STALL    commit=<sha> age=... plan_age=... stalls=<n>
+#
+# A tick counts as progress when the branch's last commit OR the newest PLAN.md under
+# docs/autopilot/sessions/ changed since the previous tick. State lives in state-file
+# (default $TMPDIR/autopilot-watchdog-<repo hash>-<branch>.state). Consecutive stall ticks
+# are counted so the coordinator applies its stalls=2 / stalls=4 rules from the number
+# alone. Always exits 0; the verdict is the first word of the output line.
+# POSIX sh, no dependencies beyond git and stat.
+set -u
+
+repo="${1:-}"; branch="${2:-}"
+if [ -z "$repo" ] || [ -z "$branch" ]; then
+  echo "usage: autopilot-watchdog <repo-dir> <branch> [state-file]" >&2
+  exit 2
+fi
+safe_branch="$(printf '%s' "$branch" | tr '/ ' '__')"
+repo_key="$(printf '%s' "$repo" | cksum | cut -d' ' -f1)"
+state="${3:-${TMPDIR:-/tmp}/autopilot-watchdog-$repo_key-$safe_branch.state}"
+
+commit="$(git -C "$repo" rev-parse --short "$branch" 2>/dev/null || echo none)"
+commit_ts="$(git -C "$repo" log -1 --format=%ct "$branch" 2>/dev/null || echo 0)"
+
+plan_ts=0
+sessions="$repo/docs/autopilot/sessions"
+if [ -d "$sessions" ]; then
+  for f in "$sessions"/*/PLAN.md; do
+    [ -f "$f" ] || continue
+    if stat -f %m "$f" >/dev/null 2>&1; then ts="$(stat -f %m "$f")"; else ts="$(stat -c %Y "$f")"; fi
+    [ "$ts" -gt "$plan_ts" ] && plan_ts="$ts"
+  done
+fi
+
+now="$(date +%s)"
+prev_commit=""; prev_plan=0; stalls=0
+if [ -f "$state" ]; then
+  # shellcheck disable=SC1090
+  . "$state"
+fi
+
+if [ "$commit" != "$prev_commit" ] || [ "$plan_ts" -gt "$prev_plan" ]; then
+  stalls=0; verdict=PROGRESS
+else
+  stalls=$((stalls + 1)); verdict=STALL
+fi
+
+printf 'prev_commit=%s\nprev_plan=%s\nstalls=%s\n' "$commit" "$plan_ts" "$stalls" >"$state"
+
+age=$((now - commit_ts)); [ "$commit_ts" -eq 0 ] && age=-1
+plan_age=$((now - plan_ts)); [ "$plan_ts" -eq 0 ] && plan_age=-1
+echo "$verdict commit=$commit age=$age plan_age=$plan_age stalls=$stalls"
+exit 0

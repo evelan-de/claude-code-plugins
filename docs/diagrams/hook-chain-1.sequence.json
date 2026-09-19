@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Hook chain, part 1: gate-output filter (PreToolUse)",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "filter",
+        "label": "Rewrite and run",
+        "focus": [
+          "agent",
+          "cc",
+          "filter",
+          "runner",
+          "log"
+        ],
+        "note": "Runner commands are rewritten; the raw output never reaches the model; one evidence line per run."
+      }
+    ],
+    "viewBox": [
+      1280,
+      600
+    ],
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent"
+    },
+    {
+      "id": "cc",
+      "type": "frontend",
+      "label": "Claude Code"
+    },
+    {
+      "id": "filter",
+      "type": "security",
+      "label": "filter hook"
+    },
+    {
+      "id": "runner",
+      "type": "external",
+      "label": "Runner"
+    },
+    {
+      "id": "log",
+      "type": "database",
+      "label": "gate.log"
+    }
+  ],
+  "messages": [
+    {
+      "from": "agent",
+      "to": "cc",
+      "y": 176,
+      "label": "Bash: pnpm test",
+      "variant": "emphasis"
+    },
+    {
+      "from": "cc",
+      "to": "filter",
+      "y": 216,
+      "label": "hook input JSON",
+      "variant": "default"
+    },
+    {
+      "from": "filter",
+      "to": "cc",
+      "y": 256,
+      "label": "updatedInput: filter run <cmdfile>",
+      "variant": "return"
+    },
+    {
+      "from": "filter",
+      "to": "runner",
+      "y": 296,
+      "label": "bash -o pipefail <cmdfile>",
+      "variant": "default"
+    },
+    {
+      "from": "runner",
+      "to": "filter",
+      "y": 336,
+      "label": "raw output, exit code",
+      "variant": "return"
+    },
+    {
+      "from": "filter",
+      "to": "log",
+      "y": 376,
+      "label": "time, head, tree, exit, cmd",
+      "variant": "dashed"
+    },
+    {
+      "from": "filter",
+      "to": "cc",
+      "y": 416,
+      "label": "GATE GREEN/RED + summary, same exit",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "filter",
+      "from": 210,
+      "to": 422,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Rules",
+      "items": [
+        "Only runner commands (pm scripts, vitest, tsc, ...); # raw bypasses",
+        "Exit status preserved via pipefail; tree hash = working tree incl. uncommitted files"
+      ]
+    }
+  ]
+}

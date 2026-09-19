@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "PACKAGE dispatch, part 1: dispatch and red-green loop",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "start",
+        "label": "Dispatch and read",
+        "focus": [
+          "mc",
+          "lead",
+          "disk"
+        ],
+        "note": "The lead reads only PLAN.md, DIGEST.md and an optional HANDOFF.md."
+      },
+      {
+        "id": "loop",
+        "label": "Red-green loop",
+        "focus": [
+          "lead",
+          "hooks",
+          "runner",
+          "disk"
+        ],
+        "note": "Affected test file per cycle; output filtered and logged by the hook; budget hook may order a hand-off."
+      }
+    ],
+    "viewBox": [
+      1280,
+      600
+    ],
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "mc",
+      "type": "backend",
+      "label": "Mission Ctrl"
+    },
+    {
+      "id": "lead",
+      "type": "backend",
+      "label": "Lead"
+    },
+    {
+      "id": "hooks",
+      "type": "security",
+      "label": "Hooks"
+    },
+    {
+      "id": "runner",
+      "type": "external",
+      "label": "Runner"
+    },
+    {
+      "id": "disk",
+      "type": "database",
+      "label": "Disk"
+    }
+  ],
+  "messages": [
+    {
+      "from": "mc",
+      "to": "lead",
+      "y": 176,
+      "label": "PACKAGE <id>, defer PR",
+      "variant": "emphasis"
+    },
+    {
+      "from": "lead",
+      "to": "disk",
+      "y": 216,
+      "label": "read PLAN.md, DIGEST.md, HANDOFF.md",
+      "variant": "default"
+    },
+    {
+      "from": "lead",
+      "to": "hooks",
+      "y": 256,
+      "label": "run affected test file",
+      "variant": "default"
+    },
+    {
+      "from": "hooks",
+      "to": "runner",
+      "y": 296,
+      "label": "rewritten command, pipefail",
+      "variant": "default"
+    },
+    {
+      "from": "runner",
+      "to": "hooks",
+      "y": 336,
+      "label": "raw output + exit code",
+      "variant": "return"
+    },
+    {
+      "from": "hooks",
+      "to": "disk",
+      "y": 376,
+      "label": "append gate.log line",
+      "variant": "dashed"
+    },
+    {
+      "from": "hooks",
+      "to": "lead",
+      "y": 416,
+      "label": "failures + summary only",
+      "variant": "return"
+    },
+    {
+      "from": "hooks",
+      "to": "lead",
+      "y": 456,
+      "label": "budget reached: hand off",
+      "variant": "security"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "lead",
+      "from": 170,
+      "to": 462,
+      "type": "backend"
+    },
+    {
+      "participant": "hooks",
+      "from": 250,
+      "to": 462,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Rules",
+      "items": [
+        "Lead reads disk, never a transcript",
+        "Gate filter: failures + summary, exit status kept, gate.log line per run"
+      ]
+    }
+  ]
+}
