@@ -43,7 +43,7 @@ dispatch prompt you passed through to this skill.
   production config, or CI credentials, and never touch other people's branches. A task needing
   any of these is skipped and logged.
 - **One session = one topic = one branch = one PR.** All work packages are commits on that one
-  branch — also across orchestrated dispatches.
+  branch — also across orchestrated dispatches and hand-offs.
 - **No questions — decide.** On ambiguity, pick the conservative, easily-reversible option and
   record it in `DECISIONS.md`.
 - **Finish or swap — never ship a half.** Deliver the WHOLE feature, working and verified. If a
@@ -58,6 +58,10 @@ dispatch prompt you passed through to this skill.
   punted to `MANUAL_TESTING.md`; that file is only for steps genuinely impossible in this
   environment (a purchased cert, other-OS hardware). "Device-bound" is not an excuse when the
   device is right here.
+- **Self-contained.** This skill does not depend on any other plugin. It does not invoke
+  Superpowers or other third-party workflow skills; the rules it needs are inlined below. The
+  only skills it calls are Evelan's own (`evelan:autopilot-reviewer`, `evelan:codex-review`,
+  `evelan:autopilot-implementer`).
 
 ## Context hygiene (non-negotiable, this is where the cost is)
 
@@ -80,31 +84,59 @@ contents into it. Every line you pull into context is re-read on every later tur
   already is that digest — read it instead of exploring.
 - **One thing per Bash call, no chained inspection loops.** A `for f in ...; do cat $f; done`
   is the most expensive single call you can make.
+- **Browser verification without screenshots by default.** Use `read_page`, `get_page_text`
+  and `find`; take one screenshot per screen only to judge layout. Every screenshot is image
+  input that every later turn re-reads.
+- **Hand off, never compact.** Auto-compaction is a lossy model summary that drops skill
+  bodies and hook context. When the context-budget hook (installed by `/autopilot init`)
+  reports that the budget is reached, or you are near the lead's turn cap, you hand off (see
+  "Hand-off" below). You do not "push on" and you do not wait for compaction.
 
-## Superpowers skills (when installed)
+## Hand-off (`HANDOFF.md`)
 
-Superpowers workflows are written for a human in the loop. Unattended, invoke them only where
-they add a check you cannot do inline, and never let one pause you for a question — decide
-conservatively (see "No questions — decide") and log it in `DECISIONS.md`. Do not hard-depend
-on Superpowers.
+A hand-off transfers the work to a fresh context through a file, not through a summary of
+the conversation. It is the normal way an orchestrated package continues when it outgrows
+one dispatch, and the normal way a standalone run survives a long session.
 
-| Phase | Superpowers skill | When |
-| --- | --- | --- |
-| 2 — isolated workspace | `superpowers:using-git-worktrees` | Run mode only, when the working tree is dirty or shared |
-| 4 — plan | `superpowers:writing-plans` | Run mode only, when no `PLAN.md` exists yet |
-| 5/7 — failures | `superpowers:systematic-debugging` | Only after the second failed fix attempt on the same failure |
-| 11 — finish / PR | `superpowers:finishing-a-development-branch` | Run mode only (orchestrated runs defer the PR) |
+When to write it: the context-budget hook says so; you are within ~30 turns of the lead's
+`maxTurns`; a standalone run has been going for hours and a natural phase boundary (package
+committed, review done) is reached.
 
-Not invoked unattended: `superpowers:brainstorming` (it exists to ask the user questions you
-must not ask; write the spec directly per phase 0), `superpowers:test-driven-development`
-(its rules are inlined in phase 5), `superpowers:requesting-code-review` (the
-`autopilot-reviewer` dispatch is the review), `superpowers:subagent-driven-development`.
+Steps: (1) commit every finished change on the session branch; (2) write
+`docs/autopilot/sessions/<slug>/HANDOFF.md`; (3) update the package status in `PLAN.md`
+(`[~]` with a one-line progress note); (4) commit both; (5) in orchestrated mode return the
+output block with `STATUS: incomplete` and `HANDOFF: <path>`; standalone, end the turn with a
+one-line pointer to the file so the user can resume with `/autopilot <session directory>`.
+
+Format (short, verifiable, references instead of copies):
+
+```
+# HANDOFF — <package id or topic> — <ISO timestamp>
+## Where we are
+<package id> is [~]: <one sentence>. Branch: <name>, HEAD: <sha>.
+## Verified (with evidence)
+- <what> — <command> → <result line>   (or: see .claude/autopilot-gate.log last line)
+## Open
+- <what is not done yet, concrete>
+## Next step
+<the exact first action the next agent takes>
+## Decisions made in this dispatch
+- <decision> — <why>   (also in DECISIONS.md)
+## Pointers
+PLAN.md · CONTEXT.md · DECISIONS.md · commits <sha..sha> · gate log
+## Do not redo
+- <verified things the next agent must not repeat>
+```
+
+Never duplicate content that already lives in PLAN.md, DECISIONS.md, commits or diffs: point
+to them. Redact secrets. When you continue from a `HANDOFF.md`, read it first, trust its
+"Verified" list, start at "Next step", and delete or overwrite it when the package is `[x]`.
 
 ## Model strategy
 
 - **You (the session lead) run at the session model.** You never choose it: standalone it is
   simply what the session was started with; dispatched by mission control you ARE the
-  `evelan:autopilot-lead` agent (Fable 5.1, fixed small tool set, 500-turn cap). Your job:
+  `evelan:autopilot-lead` agent (Fable 5.1, fixed small tool set, 400-turn cap). Your job:
   explore, spec, plan, review adjudication, all decisions, commit — plus PR/CI unless the run
   is defer-PR (phase 11).
 - **Implementation:** by default you implement directly. **Only if the prompt signals cost/speed
@@ -131,14 +163,16 @@ THIS session's artifact folder. The goal artifact stated in the plan is binding.
 2. Gate: phase 1 (read `.claude/autopilot.json`, or detect and persist it). Do **not** create
    the Stop-hook sentinel: in an orchestrated run the `Stop` hook would gate the coordinator's
    turns, not yours; the coordinator's own verification is the hard gate.
-3. Mark the package `[~]` in `PLAN.md`, then phases 3 (read `CONTEXT.md`, no exploration
+3. If the dispatch names a `HANDOFF.md`, read it and continue at its "Next step". Otherwise
+   mark the package `[~]` in `PLAN.md`. Then phases 3 (read `CONTEXT.md`, no exploration
    subagent unless the digest is missing a file you need), 5, 6 (standard reviewer only, no
    Codex), 7, 8 for this package only. Commit(s) on the session branch. Mark `[x]` (or `[!]`
    with the gap named under the package) in `PLAN.md`, append to `DECISIONS.md`, commit the
-   artifact changes.
+   artifact changes, remove a consumed `HANDOFF.md`.
 4. Do NOT write `REPORT.md`, do NOT touch `INDEX.md`, do NOT run phases 9-12.
 5. Return the `evelan:autopilot-lead` output block. If you were told to apply feedback (fix
-   dispatch), the same rules apply; the package goes back to `[~]` while you work.
+   dispatch), the same rules apply; the package goes back to `[~]` while you work. If the
+   budget or the turn cap is reached, hand off (see above) and return `STATUS: incomplete`.
 
 **Mode `FINALIZE`** — every package is `[x]`:
 
@@ -148,11 +182,6 @@ THIS session's artifact folder. The goal artifact stated in the plan is binding.
    fallback when Codex is unavailable; fix real gaps test-first and re-gate), then phase 12
    (`REPORT.md`, one `INDEX.md` line). Never phase 11: the run is defer-PR.
 3. Return the output block with `ARTIFACT: verified` or the exact reason it is not.
-
-**Turn cap.** The lead agent stops at 500 turns and returns partial output. Keep `PLAN.md`
-and the branch truthful before every commit so a resume or a fresh dispatch loses nothing.
-Update `PLAN.md` status notes when a package turns out larger than planned, so the
-coordinator can split it.
 
 ## Run-mode workflow
 
@@ -166,13 +195,17 @@ Work ONE topic end to end. Phases run in order per package; a trivial one-line t
    plan is binding for phase 9.
    **Continuation:** if that directory already holds session artifacts and a session branch
    for it exists, you are CONTINUING that session — check out the existing branch, keep all
-   finished work, apply the feedback from the dispatch prompt, update `PLAN.md` statuses
-   and `REPORT.md` in place, and do NOT create a new branch or a new `INDEX.md` entry
-   (amend the existing line only if the outcome changed).
-1. A spec is provided / referenced / already in the repo (`SPEC.md` or equivalent) → use it.
+   finished work, read `HANDOFF.md` if present and start at its "Next step", apply the
+   feedback from the dispatch prompt, update `PLAN.md` statuses and `REPORT.md` in place, and
+   do NOT create a new branch or a new `INDEX.md` entry (amend the existing line only if the
+   outcome changed).
+1. A spec is provided / referenced / already in the repo (`SPEC.md` or equivalent, or a spec
+   produced by `evelan:write-spec`) → use it.
 2. Only a rough idea → write a self-contained spec into `PLAN.md` (problem/goal, scope + non-goals,
    functional requirements with acceptance criteria, affected areas, edge/error cases). Answer
-   open questions with conservative assumptions → `DECISIONS.md`.
+   open questions with conservative assumptions → `DECISIONS.md`. Unattended you cannot
+   interview anyone; the interactive way to sharpen an idea before a run is
+   `evelan:question-with-docs`, which the user runs beforehand.
 3. No task given at all → derive the task from project context (open TODOs, leftover plan files,
    issues, obviously unfinished features); record the choice in `DECISIONS.md`; then proceed as (2).
 
@@ -200,10 +233,14 @@ Create one session branch following the project's convention:
 - Prefix: infer from existing branches / git history (`git branch -a`, recent merges); fall back to `feature/`.
 - Ticket: if the prompt has a key (`DNA-901`, `WEB-123`, `PAUL-…`, `EL-…`), include it (original casing) → `<prefix>/DNA-901-<slug>`; else `<prefix>/<slug>`.
 - Slug: lowercase, hyphen-separated, from the topic.
+- Work in the current checkout. Create a worktree only when the working tree is dirty with
+  someone else's changes or shared with another running session; record its path in `PLAN.md`.
 
 ### 3. Explore (read-only)
 Delegate wide reading to an `Explore` subagent so it does not flood your context. Get back
 files, patterns, risks — not full file contents. Do it once; later packages read the digest.
+If the project has a `CONTEXT.md` (domain vocabulary, from `evelan:domain-model`) and ADRs,
+read them first and use their terms in tests and interfaces.
 
 ### 4. Plan → `PLAN.md`
 Self-contained: files/interfaces touched, explicit out-of-scope, concrete verification criteria
@@ -214,29 +251,55 @@ topic** — do NOT carve a feature into a shippable sliver and park the rest und
 A non-goal is legitimate only when it is genuinely *unrelated* scope, never a core part of the
 same feature deferred because it is large, device-bound, or open-ended. Every package's
 Definition of Done is "the user gets this working", not "the code compiles and a manual step is
-written down".
+written down". Name for each package the **seams** (public interfaces) its tests will hit.
 
 ### 5. Implement (TDD)
-Per package: failing test first (run only that test file; confirm it fails for the right
-reason) → minimal code to green (that test file again) → refactor. Everything sensibly
-unit-testable gets tests (utils, hooks, business logic, data transforms, API handlers,
-validation); UI components are tested by behavior. Run the **full cheap gate**
-(typecheck/lint/full test suite) once before the commit and show its (filtered) output. On a
-failure you cannot fix in two attempts, invoke `superpowers:systematic-debugging` if installed.
-What cannot be **auto**-tested but **can** be exercised in this environment, you verify
-**yourself** — run the app/sidecar, stage the needed binary/model, drive the feature end to
-end — and show the evidence. Only steps genuinely impossible here (a purchased cert, other-OS
-hardware) go to `MANUAL_TESTING.md`; effort, size, or a vague "device-bound" are NOT reasons to
-punt when the device/binary/data is available. In Sonnet mode, delegate the package to
-`evelan:autopilot-implementer`.
+The red → green loop, one vertical slice at a time. These rules are the whole method; there
+is no external skill to load.
+
+- **Tests live at seams.** A seam is the public boundary where behaviour is observable
+  without reaching inside: a module's exported function, an API handler, a component's
+  rendered behaviour. Never test private internals, never assert through a side channel
+  (querying the database instead of using the interface). Unattended, the seams come from
+  `PLAN.md`; if a package names none, pick the narrowest public interface that covers its
+  Definition of Done and record the choice in `DECISIONS.md`.
+- **Red before green.** Write one failing test at the seam, run **only that test file**,
+  confirm it fails for the right reason (the assertion, not a typo or missing import). Then
+  the minimal code to pass it, run the file again. Refactor only what you just wrote.
+- **Vertical slices, not horizontal.** One test → one implementation → next test. Never write
+  all tests first: bulk tests encode imagined behaviour and go insensitive to real changes.
+- **Anti-patterns to reject in your own tests:** implementation-coupled (breaks on refactor
+  without behaviour change), tautological (the assertion recomputes the expected value the way
+  the code does; expected values come from a known-good literal, a worked example, the spec),
+  skipped or `.only`, assertions that cannot fail.
+- **What gets tests:** everything sensibly unit-testable (utils, hooks, business logic, data
+  transforms, API handlers, validation); UI components by behaviour. Mock only at process
+  boundaries (network, clock, filesystem), never internal collaborators.
+- **Debugging a failure:** reproduce with one command that goes red on this bug, form one
+  hypothesis, change one thing, re-run. After the second failed fix attempt on the same
+  failure, stop patching: write down the observed vs expected behaviour, bisect (last known
+  good commit, `git stash` halves, or a minimal repro), and only then fix. Never weaken the
+  assertion to go green.
+- **Gate:** the full cheap gate (typecheck/lint/full test suite) runs once before the commit,
+  through the gate filter when installed; paste its summary line.
+- What cannot be **auto**-tested but **can** be exercised in this environment, you verify
+  **yourself** — run the app/sidecar, stage the needed binary/model, drive the feature end to
+  end — and show the evidence. Only steps genuinely impossible here (a purchased cert, other-OS
+  hardware) go to `MANUAL_TESTING.md`; effort, size, or a vague "device-bound" are NOT reasons
+  to punt when the device/binary/data is available.
+- In Sonnet mode, delegate the package to `evelan:autopilot-implementer` with the seams named.
 
 ### 6. Review (fresh context, hybrid depth)
 - **Always:** dispatch `evelan:autopilot-reviewer` with the diff + `PLAN.md`. Fix every gap it
   reports that affects correctness, requirements, or safety — test-driven, then re-gate.
 - **On demand:** if the prompt asks ("thorough review", "architecture review", "Code-Qualität") or
-  the diff is large, additionally fan out **clean-code** and **reusability** lenses as parallel
-  subagents. Prioritize findings (critical / important / nice-to-have); fix critical + important,
-  record nice-to-have in `REPORT.md` with rationale.
+  the diff is large, additionally run the **standards axis**: a parallel subagent that checks the
+  diff against the repo's documented coding standards (`CODING_STANDARDS.md`, `CONTRIBUTING.md`,
+  ESLint/Prettier config as ground truth) plus the smell baseline of `evelan:two-axis-review`
+  (mysterious name, duplicated code, feature envy, data clumps, primitive obsession, long
+  parameter list, speculative generality), each a labelled heuristic, repo standard wins.
+  Prioritize findings (critical / important / nice-to-have); fix critical + important, record
+  nice-to-have in `REPORT.md` with rationale.
 - **On demand (cross-model via Codex):** if the prompt asks for it ("nutze Codex als Reviewer",
   "Codex als Reviewer", "use Codex as reviewer", "mit Codex reviewen", "Cross-Model-Review"),
   additionally run a Codex review via the `evelan:codex-review` skill (`codex review --base <base>`)
@@ -269,8 +332,8 @@ Only when ALL hold: (a) it is a web UI, (b) a local dev server is startable (`np
 criteria, submit forms with valid AND invalid input, provoke error states, check console +
 network for errors, work through browser-checkable `MANUAL_TESTING.md` items, fix findings
 test-driven and re-verify, stop the server cleanly. Prefer `read_page`/`get_page_text`/`find`
-over screenshots; take a screenshot only to judge layout. If a precondition is missing → skip
-and record WHICH precondition was missing in `REPORT.md`.
+over screenshots; take one screenshot per screen only to judge layout. If a precondition is
+missing → skip and record WHICH precondition was missing in `REPORT.md`.
 
 **Exception — a goal artifact makes this mandatory:** when the plan/spec defines a goal
 artifact (a user-verifiable deliverable: the feature working in the running app, a generated
@@ -313,8 +376,9 @@ run, to the user otherwise), not implemented — repeated AI review rounds on th
 otherwise oscillate. (Learned 2026-08-27, paul PR #117.)
 
 ### 12. Finalize artifacts
-Write `REPORT.md`, prepend the session one-liner to `docs/autopilot/INDEX.md`, and remove
-the Stop-hook sentinel (`.claude/.autopilot-active`) if you created it in phase 1.
+Write `REPORT.md`, prepend the session one-liner to `docs/autopilot/INDEX.md`, delete a
+consumed `HANDOFF.md`, and remove the Stop-hook sentinel (`.claude/.autopilot-active`) if you
+created it in phase 1.
 
 ## Stop conditions (abort the whole session, write `REPORT.md`)
 - The gate cannot be made green without a destructive action or human input.
@@ -340,6 +404,7 @@ docs/autopilot/
     PLAN.md          # spec + plan + verification criteria + per-package status (+ session branch name)
     CONTEXT.md       # exploration digest (orchestrated runs; written by mission control)
     DECISIONS.md     # conservative assumptions, each with rationale
+    HANDOFF.md       # transient: state transfer to the next dispatch; deleted when consumed
     REPORT.md        # shipped work, test coverage, review findings (fixed + deferred), PR link, CI status, open items
     MANUAL_TESTING.md  # only when something cannot be auto-tested
 ```
@@ -355,5 +420,6 @@ Create `docs/autopilot/` and seed `INDEX.md` with that header + marker if missin
 For unattended runs, `--permission-mode auto` is recommended (the user sets this at launch — you
 cannot change it). When you run as a dispatched subagent (mission-control), you inherit the
 coordinator session's permission mode — the coordinator must have been launched permissive.
-The Stop-hook hard gate and the gate-output filter (via `/autopilot init`) are optional and
-complement your own gate runs.
+The four project hooks (via `/autopilot init`: Stop-hook hard gate, gate-output filter,
+context-budget hand-off, post-compaction pointer) are optional and complement your own gate
+runs; the hand-off rules above apply with or without the hook.

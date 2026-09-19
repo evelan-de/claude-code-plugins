@@ -52,6 +52,16 @@ Individual tests you doubt (check 2) you always run yourself, but only those fil
 whole suite again. Read files in bounded ranges (`grep -n`, then `sed -n a,bp`), never `cat`
 whole files; your context is small and should stay that way.
 
+## Standards axis (only when the dispatch asks for "thorough" or "standards")
+
+Add a second pass against the repo's documented coding standards (`CODING_STANDARDS.md`,
+`CONTRIBUTING.md`, lint/format config as ground truth) plus a fixed smell baseline: mysterious
+name, duplicated code, feature envy, data clumps, primitive obsession, long parameter list,
+speculative generality. Each smell is a labelled heuristic ("possible Feature Envy"), never a
+hard violation; a documented repo standard always wins over the baseline; skip anything the
+tooling already enforces. Report these under a separate `Standards:` heading so the lead can
+prioritise them below correctness findings.
+
 ## What NOT to report
 
 Do not raise style preferences, naming nits, speculative hardening, extra abstraction layers,

@@ -21,11 +21,12 @@ missing one as a launch note in the final summary):
   the coordinator's mode, and a restrictive mode stalls the implementer on permission prompts
   nobody answers. If you detect mid-run that permissions are blocking the subagent, report it
   as an external blocker instead of respawning into the same wall.
-- **Auto-compact window of about 300k tokens** (`/autocompact 300k`, `claude --autocompact 300k`,
-  or `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`). It applies to this session and to the subagents
-  it spawns. Without it, coordinator and implementers run up to the ~967k default on 1M models,
-  and the measured cost of these sessions was 70-80% cache reads of that oversized context.
-  Nothing that matters lives only in context: the plan of record is `PLAN.md` on disk.
+- **Project hooks installed** (`/autopilot init` in the target repo): the gate-output filter
+  keeps runner output out of every context, and the context-budget hook turns an oversized
+  lead context into an explicit `HANDOFF.md` hand-off instead of a lossy auto-compaction.
+  Without the hooks the run still works, but the lead relies on its own turn cap alone. Never
+  compensate with a small auto-compact window: compaction drops skill bodies and hook context
+  and is not the mechanism this skill is built on; the plan of record is on disk.
 - **Session model:** the strongest available model for planning and adjudication (Fable 5.1).
   Never Fable 5 (non-5.1): its cache-read price is four times that of Fable 5.1 and twice that
   of Opus 5, and a coordinator is almost pure cache reads.
@@ -47,13 +48,24 @@ missing one as a launch note in the final summary):
 - **The session ends with the goal artifact standing ready** (see below), or with an honest
   report of what is finished, what is not, and the exact blocker.
 
-## Phase 0 — Resolve input, then fix the goal artifact
+## Phase 0 — Resolve input, check the decision precondition, fix the goal artifact
 
 Resolve the input first: a ticket key → fetch the ticket (issue tracker MCP or CLI) and use
 it as the task source; a spec file → read it; otherwise the prompt text is the task. You are
 the only party with tracker access: the lead subagents run on a fixed small tool set and read
 nothing but the session folder, so everything from the ticket that matters goes into
 `PLAN.md`.
+
+**Precondition: the important decisions are already made by the user.** Mission control runs
+unattended and decides the small things itself; the big ones (what exactly to build, for
+whom, what is out, which trade-offs are acceptable) must have been settled before the run.
+Check the input for that: a spec produced by `evelan:write-spec`, a ticket with acceptance
+criteria and stated non-goals, `CONTEXT.md`/ADRs from `evelan:question-with-docs`, or a
+prompt that answers the questions itself. If the input is a raw idea with open shape
+questions, do NOT plan around them: tell the user which decisions are open and that the
+interactive way to settle them is `evelan:question-with-docs` (in a repo) or
+`evelan:question-me` (without one), then stop. This is the one place mission control hands
+the wheel back before starting; a planned-around guess costs a multi-hour session.
 
 Then derive from the task the **user-verifiable deliverable** and write it down before
 anything else. Examples:
@@ -87,8 +99,9 @@ the lead subagents see every assumption. After this point the session runs unatt
    - **Never place the plan at the repo root** or anywhere else — the session folder IS the
      handoff. The copy the lead commits on the session branch is authoritative.
 3. **Size packages for one dispatch each.** A package is one coherent change a fresh agent
-   finishes in well under 500 turns with the cheap gate green and a commit. Too small means
-   more dispatch overhead; too large means the turn cap fires. When in doubt, split.
+   finishes in well under 400 turns with the cheap gate green and a commit. Too small means
+   more dispatch overhead; too large means the lead hands off mid-package. When in doubt,
+   split.
 
 ## Phase 2 — Plan review (two lenses)
 
@@ -109,7 +122,7 @@ the revised plan gets implemented.
 ## Phase 3 — Dispatch implementation, one package at a time
 
 Dispatch **`evelan:autopilot-lead`** (Agent tool, `subagent_type: "evelan:autopilot-lead"`,
-background). It is a fixed agent definition: Fable 5.1, small tool allowlist, 500-turn cap. Do
+background). It is a fixed agent definition: Fable 5.1, small tool allowlist, 400-turn cap. Do
 not pass a model override, do not pass worktree isolation, do not use `general-purpose`.
 (Measured: a general-purpose subagent starts every turn with 45-60k tokens of tool
 definitions; the allowlisted agent with about 15-20k.)
@@ -132,10 +145,16 @@ re-read the growing branch diff every time.
 commit. Then dispatch the next `[ ]` package. A `[!]` package or `STATUS: incomplete` is a
 fix-cycle candidate (Phase 5 rules), not a reason to move on silently.
 
-**Partial return (turn cap).** Read `PLAN.md`. If the package advanced (new commits, status
-`[~]` with progress notes), resume the same agent once via `SendMessage` with "continue
-PACKAGE <id>". If it hits the cap a second time, split the package in `PLAN.md` and dispatch
-the parts fresh.
+**Hand-off return (`STATUS: incomplete` with `HANDOFF: <path>`).** The lead reached its context
+budget or turn cap and wrote `HANDOFF.md`. This is the normal continuation path, not a
+failure: dispatch a fresh lead for the same package with the `HANDOFF.md` path in the prompt.
+Never resume the old agent (its context is exactly what we are shedding) and never read its
+transcript. Hand-offs do not count as fix cycles. If the same package hands off three times,
+split it in `PLAN.md`.
+
+**Partial return without a hand-off** (turn cap hit, no `HANDOFF.md`): read `PLAN.md` and
+`git log`. If the package advanced, dispatch a fresh lead told to inspect the branch state,
+keep finished work and continue; if nothing advanced twice, split the package.
 
 **Dispatch prompt, mode `FINALIZE`:** when every package is `[x]`, dispatch one lead with the
 session directory, `FINALIZE`, the goal artifact verbatim, `defer PR`, and "nutze Codex als
@@ -154,15 +173,17 @@ requirement: report it, a replacement would hang identically.) The lead never wa
   whatever the harness offers; if none, check whenever you are re-invoked). Builds, Docker
   images and browser suites legitimately take 10-20 minutes; the earlier 10-minute rule
   produced false stalls.
-- Each check reads the **task status** the harness exposes (running / completed / failed)
-  and, as progress signal, `git log -1 --format=%ct` on the session branch plus the mtime of
-  `PLAN.md`. Never the output file size, never the transcript.
+- Each check runs the plugin binary `autopilot-watchdog <repo> <branch>` (on PATH with the
+  plugin). It prints one line, `PROGRESS ...` or `STALL ... stalls=<n>`, from the branch's
+  last commit and the newest `PLAN.md` mtime, and keeps the stall counter itself. Never
+  judge progress by output file size, never read the transcript. Combine it with the task
+  status the harness exposes (running / completed / failed).
 - **A task that has already returned its block is finished.** Never `TaskStop` it, and ignore
   late background-task notifications from it (a build it moved to the background can complete
   hours later and re-wake it; that is noise, not a stall).
-- **Stalled once** (no progress signal for two checks): send the agent a message — status,
-  current blocker, instruction to continue or to return its block as `incomplete`.
-- **Stalled twice in a row:** stop the agent. Dispatch a fresh lead for the same package told
+- **`stalls=2`** (no progress for two checks): send the agent a message — status, current
+  blocker, instruction to continue or to hand off and return its block as `incomplete`.
+- **`stalls=4`:** stop the agent. Dispatch a fresh lead for the same package told
   to inspect the branch state, keep finished work, and continue. Stall replacements do not
   count as fix cycles (Phase 5).
 - **Genuinely external blocker** (missing credentials, permission the harness cannot grant,
@@ -236,7 +257,7 @@ language of the user's initial prompt.
 
 Cover: what was built · how it was verified (commands, results) · where to check it
 (URL / path, ready to use) · the PR link and CI state · open items and skipped steps with
-reasons · launch notes (missing autocompact window, permission mode).
+reasons · launch notes (hooks not installed in the target repo, permission mode).
 
 ## Red flags — stop and re-read the non-negotiables
 
@@ -246,6 +267,10 @@ reasons · launch notes (missing autocompact window, permission mode).
   and the disk are your only inputs; a stall is handled by the watchdog rules.
 - "One agent for the whole topic is simpler" → one dispatch per package; the context of a
   whole-topic agent grows to half a million tokens per turn and every turn pays for it.
+- "Let it compact and carry on" → a hand-off return gets a fresh lead with `HANDOFF.md`;
+  compaction is not part of this workflow.
+- "The idea is clear enough, I'll decide the rest" → if the shape questions are open, hand
+  back to the user for `evelan:question-with-docs` before Phase 1.
 - "Polling every few minutes to see if it finished" → completion notifies you; the watchdog
   is only for stalls, and a task that returned its block is never stopped.
 - "The goal artifact is close enough" → it stands ready for the user, or it is not done.
