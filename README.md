@@ -89,7 +89,7 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 
 | Skill | What it does |
 | --- | --- |
-| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker, triage labels, `docs/agents/` layout |
+| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker (Jira via Atlassian MCP, GitHub Issues, GitLab or local markdown; Jira is proposed when `atlassian.net` or ticket keys turn up in the repo, GitHub Issues otherwise), triage labels, `docs/agents/` layout |
 | `/evelan:question-with-docs` | Relentless interview to sharpen a plan; writes `CONTEXT.md` and ADRs as it goes |
 | `/evelan:question-me` | Same interview, stateless (no repo) |
 | `evelan:questioning` | The interview primitive the others run on (model-invoked) |

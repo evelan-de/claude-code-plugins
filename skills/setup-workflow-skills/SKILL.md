@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Scaffold the per-repo configuration that the engineering skills assume:
 
-- **Issue tracker**: where issues live (GitHub by default; local markdown is also supported out of the box)
+- **Issue tracker**: where issues live (Jira via the Atlassian MCP, GitHub, GitLab, or local markdown)
 - **Triage labels**: the strings used for the five canonical triage roles
 - **Domain docs**: where `CONTEXT.md` and ADRs live, and the consumer rules for reading them
 
@@ -20,7 +20,11 @@ This is a prompt-driven skill, not a deterministic script. Explore, present what
 
 Look at the current repo to understand its starting state. Read whatever exists; don't assume:
 
-- `git remote -v` and `.git/config`: is this a GitHub repo? Which one?
+- `git remote -v` and `.git/config`: GitHub or GitLab? Which repo?
+- Jira signals: `atlassian.net` or "Jira" in `CLAUDE.md`/`README.md`, ticket keys like `ABC-123`
+  in recent commit subjects or branch names (`git log --oneline -50`, `git branch -a`). Note the
+  key prefix and the site host when found. A GitHub remote alone is not a signal either way:
+  some repos track work in GitHub Issues, others in Jira.
 - `AGENTS.md` and `CLAUDE.md` at the repo root: does either exist? Is there already an `## Agent skills` section in either?
 - `CONTEXT.md` and `CONTEXT-MAP.md` at the repo root
 - `docs/adr/` and any `src/*/docs/adr/` directories
@@ -39,12 +43,18 @@ Lead each section with the recommended answer so the user can accept it in a wor
 
 > Explainer: The "issue tracker" is where issues live for this repo. Skills like `evelan:spec-to-tickets`, `evelan:triage-backlog`, and `evelan:write-spec` read from and write to it. They need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
 
-Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise (or if the user prefers), offer:
+Default posture: if exploration found Jira signals (`atlassian.net`, ticket keys in commits or
+branches), propose **Jira** with the detected project key and site, name GitHub Issues as the
+alternative in the same breath, and ask for confirmation plus the In-Progress and merge status
+names. Without Jira signals and with a GitHub remote, propose **GitHub Issues**.
+If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise
+(or if the user prefers), offer:
 
+- **Jira**: issues live in a Jira project, operated through the Atlassian MCP tools (no CLI)
 - **GitHub**: issues live in the repo's GitHub Issues (uses the `gh` CLI)
 - **GitLab**: issues live in the repo's GitLab Issues (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
 - **Local markdown**: issues live as files under `.scratch/<feature>/` in this repo (good for solo projects or repos without a remote)
-- **Other** (Jira, Linear, etc.): ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
+- **Other** (Linear, Asana, etc.): ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
 
 Record the choice in `docs/agents/issue-tracker.md`. The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off**. Leave it off and don't raise it: a user who wants external PRs in the triage queue can flip the flag in the file later.
 
@@ -103,6 +113,7 @@ Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.
 
 Then write the docs files using the seed templates in this skill folder as a starting point:
 
+- [issue-tracker-jira.md](./issue-tracker-jira.md): Jira via the Atlassian MCP; replace `<PROJECT>` and `<site>`, fill in the In-Progress and merge status names
 - [issue-tracker-github.md](./issue-tracker-github.md): GitHub issue tracker
 - [issue-tracker-gitlab.md](./issue-tracker-gitlab.md): GitLab issue tracker
 - [issue-tracker-local.md](./issue-tracker-local.md): local-markdown issue tracker
