@@ -60,13 +60,23 @@ Ask the user now only when the goal artifact itself could take materially differ
 ## Phase 1 - Plan (main context)
 
 1. Delegate wide read-only exploration to an `Explore` subagent (files, patterns, risks).
+   Its prompt carries the reading rules, or it dumps whole files: locate with `grep -n`,
+   read with `sed -n a,bp` in slices of at most ~80 lines, never `cat` a file, and return
+   paths with line references, patterns and risks, not file contents; digest at most ~2000
+   words.
 2. Create `docs/autopilot/sessions/YYYY-MM-DD-<slug>/` in the target repo with:
-   - `PLAN.md` in autopilot format: scope + non-goals, work packages with Definition of Done,
-     status markers `[ ] / [~] / [x] / [!]`, verification criteria, "Decisions", the goal
-     artifact as end-to-end check. **Every package lists the files, interfaces and test
-     seams it touches.**
+   - `PLAN.md`, the short index every lead reads in full (aim for under 150 lines): branch
+     and design sources, scope + non-goals, the goal artifact as end-to-end check,
+     "Decisions", and the package list with one line per package: id, status marker
+     `[ ] / [~] / [x] / [!]`, title, dependencies. No recon facts here (they belong in
+     `DIGEST.md`), no package details.
+   - `packages/<id>.md`, one file per package, read only by the lead that implements it
+     and by its reviewer: Definition of Done ("the user gets this working"), the files,
+     interfaces and test seams it touches, verification criteria (test cases with inputs
+     and expected outputs), edge cases, dependencies on other packages, and an empty
+     "Result" section the lead fills (commits, gate line, reviewer verdict).
    - `DIGEST.md`: exploration digest (architecture, conventions, gate command, test
-     patterns, risks).
+     patterns, risks, verified anchors with `file:line`).
    Never place the plan anywhere else. The copy the lead commits on the session branch is
    authoritative.
 3. **One package = one dispatch:** a coherent change a fresh agent finishes well under 400
@@ -74,14 +84,15 @@ Ask the user now only when the goal artifact itself could take materially differ
 
 ## Phase 2 - Plan review (two lenses)
 
-1. **Fresh-context agent review:** plan + repo access; completeness, ordering, package
-   sizing, risks, testability.
-2. **Codex review** via `evelan:codex-ask` on the plan file (gaps, wrong assumptions, missing
-   edge cases); `/mission-control` counts as the explicit Codex routing. Codex unavailable →
-   agent review alone, note the skip in the final report.
+1. **Fresh-context agent review:** plan, package files, digest + repo access; completeness,
+   ordering, package sizing, risks, testability. Its prompt carries the same reading rules
+   as the Explore prompt.
+2. **Codex review** via `evelan:codex-ask` on the session folder (gaps, wrong assumptions,
+   missing edge cases); `/mission-control` counts as the explicit Codex routing. Codex
+   unavailable → agent review alone, note the skip in the final report.
 
-Fold every real finding into `PLAN.md` yourself; dismiss only with a recorded reason under
-"Decisions". Only the revised plan gets implemented.
+Fold every real finding into `PLAN.md` or the package file it belongs to yourself; dismiss
+only with a recorded reason under "Decisions". Only the revised plan gets implemented.
 
 ## Phase 3 - Dispatch, one package at a time
 
@@ -91,7 +102,8 @@ worktree isolation, never `general-purpose`.
 **Prompt, mode `PACKAGE <id>`:**
 - absolute path of the session directory;
 - `PACKAGE <id>`: exactly one package with status `[ ]` (the first dispatch creates the
-  session branch, later ones check it out);
+  session branch, later ones check it out); the lead reads `PLAN.md`, `packages/<id>.md`
+  and `DIGEST.md`, nothing else of the folder. Never tell it to read "everything";
 - the goal artifact verbatim;
 - `defer PR`;
 - for a fix or continuation dispatch: the feedback, or the `HANDOFF.md` path.
@@ -173,7 +185,10 @@ Simplified technical language (ASD-STE100 style): short sentences, one statement
 active voice, common words. Language of the user's initial prompt.
 
 Cover: what was built · how it was verified (commands, results) · where to check it (URL /
-path) · PR link and CI state · open items and skipped steps with reasons · launch notes.
+path) · PR link and CI state · open items and skipped steps with reasons · launch notes ·
+the token table from `autopilot-usage <this session's transcript>` (plugin binary on PATH;
+the transcript path is in the hook input or under `~/.claude/projects/<project>/`), so
+every session leaves a measurement behind.
 
 ## Red flags
 

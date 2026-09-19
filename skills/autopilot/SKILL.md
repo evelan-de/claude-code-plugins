@@ -90,7 +90,7 @@ Format:
 ## Decisions made in this dispatch
 - <decision> - <why>   (also in DECISIONS.md)
 ## Pointers
-PLAN.md · DIGEST.md · DECISIONS.md · commits <sha..sha> · gate log
+PLAN.md · packages/<id>.md · DIGEST.md · DECISIONS.md · commits <sha..sha> · gate log
 ## Do not redo
 - <verified things the next agent must not repeat>
 ```
@@ -112,20 +112,26 @@ delete it when the package reaches `[x]`.
 
 ## Orchestrated modes (dispatched by mission control)
 
-The session folder `docs/autopilot/sessions/<slug>/` holds `PLAN.md` (packages, statuses,
-decisions, goal artifact) and `DIGEST.md` (exploration digest). Adopt it verbatim. The goal
-artifact in the plan is binding.
+The session folder `docs/autopilot/sessions/<slug>/` holds `PLAN.md` (the short index:
+scope, goal artifact, decisions, package list with statuses), `packages/<id>.md` (one file
+per package with its details) and `DIGEST.md` (exploration digest). Adopt it verbatim. The
+goal artifact in the plan is binding.
 
 **`PACKAGE <id>`** - implement exactly that package:
 
+0. Read exactly three files, once each, in full: `PLAN.md`, `packages/<id>.md`, `DIGEST.md`.
+   Other package files, the spec and the design docs only where your package file points
+   to a section, and then that section only (`grep -n`, `sed -n a,bp`).
 1. Branch: check out the session branch named in `PLAN.md`; if none exists yet, create it per
    phase 2 and record its name at the top of `PLAN.md`. No worktree, no second branch.
 2. Gate: phase 1. Do **not** create the Stop-hook sentinel in orchestrated mode.
 3. If the dispatch names a `HANDOFF.md`, read it and continue at "Next step". Otherwise set
-   the package `[~]`. Then phases 3 (read `DIGEST.md`; no exploration subagent unless a
-   needed file is missing from the digest), 5, 6 (standard reviewer only, no Codex), 7, 8 for
-   this package. Commit on the session branch. Set `[x]` (or `[!]` with the gap named under
-   the package), append `DECISIONS.md`, commit the artifacts, delete a consumed `HANDOFF.md`.
+   the package `[~]` in the `PLAN.md` package list. Then phases 5, 6 (standard reviewer only,
+   no Codex, with the diff + `packages/<id>.md`), 7, 8 for this package; no exploration
+   subagent unless a needed file is missing from the digest. Commit on the session branch.
+   Set `[x]` (or `[!]` with the gap named in the package file's "Result"), fill "Result"
+   (commits, gate line, reviewer verdict), append `DECISIONS.md`, commit the artifacts,
+   delete a consumed `HANDOFF.md`.
 4. Do not write `REPORT.md`, do not touch `INDEX.md`, do not run phases 9-12.
 5. Return the `evelan:autopilot-lead` output block. Fix dispatch: same rules, package back to
    `[~]` while you work. Budget or turn cap reached: hand off, return `STATUS: incomplete`.
@@ -178,15 +184,22 @@ path. Never in orchestrated mode.
   shared with another session; record its path in `PLAN.md`.
 
 ### 3. Explore (read-only)
-Delegate wide reading to an `Explore` subagent; take back files, patterns, risks. Once. If the
-project has `CONTEXT.md` (domain vocabulary) and ADRs, read them first and use their terms.
+Delegate wide reading to an `Explore` subagent; take back files, patterns, risks. Once. Its
+prompt carries the reading rules, or it dumps whole files: `grep -n` to locate, `sed -n a,bp`
+in slices of at most ~80 lines, never `cat`; return paths with line references and patterns,
+not contents; at most ~2000 words. If the project has `CONTEXT.md` (domain vocabulary) and
+ADRs, read them first and use their terms.
 
-### 4. Plan → `PLAN.md`
-Files/interfaces touched, explicit out-of-scope, verification criteria (test cases with
-inputs and expected outputs, expected typecheck/lint/build result), an end-to-end check.
-Small dependency-ordered packages, each with a Definition of Done ("the user gets this
-working") and a status marker `[ ] / [~] / [x] / [!]`, and the **seams** its tests hit. The
-packages together deliver the whole topic. A non-goal is only genuinely unrelated scope.
+### 4. Plan → `PLAN.md` + `packages/<id>.md`
+`PLAN.md` is the short index (aim for under 150 lines): branch, scope, explicit
+out-of-scope, the end-to-end check, "Decisions", and one line per package with its status
+marker `[ ] / [~] / [x] / [!]`, title and dependencies. Each package gets its own
+`packages/<id>.md`: Definition of Done ("the user gets this working"), files/interfaces
+touched, the **seams** its tests hit, verification criteria (test cases with inputs and
+expected outputs, expected typecheck/lint/build result), edge cases, and an empty "Result"
+section you fill when the package is done. Small dependency-ordered packages that together
+deliver the whole topic. A non-goal is only genuinely unrelated scope. While implementing a
+package, read its file and `PLAN.md`, not the other package files.
 
 ### 5. Implement (TDD)
 - **Tests at seams.** A seam is the public boundary where behaviour is observable: exported
@@ -214,8 +227,9 @@ packages together deliver the whole topic. A non-goal is only genuinely unrelate
 - Sonnet mode: delegate the package to `evelan:autopilot-implementer` with the seams named.
 
 ### 6. Review (fresh context)
-- **Always:** `evelan:autopilot-reviewer` with the diff + `PLAN.md`. Fix every correctness,
-  requirement or safety gap test-first, re-gate.
+- **Always:** `evelan:autopilot-reviewer` with the diff + `packages/<id>.md` (it reads the
+  scope and decisions from `PLAN.md` itself). Fix every correctness, requirement or safety
+  gap test-first, re-gate.
 - **On request** ("thorough review", "architecture review", "Code-Qualität") or a large diff:
   add the **standards axis** (parallel subagent: repo coding standards and lint config as
   ground truth, plus the smell baseline of `evelan:code-review`; repo standard wins).
@@ -286,7 +300,8 @@ created it. Orchestrated: package `[!]`, commit `PLAN.md`, return the block as `
 docs/autopilot/
   INDEX.md                                # newest-first, one line + link per session
   sessions/YYYY-MM-DD-<slug>/
-    PLAN.md          # spec + plan + verification criteria + package status (+ branch name)
+    PLAN.md          # short index: branch, scope, goal artifact, decisions, package list + status
+    packages/<id>.md # one per package: DoD, files, seams, verification criteria, Result
     DIGEST.md        # exploration digest (orchestrated runs; written by mission control)
     DECISIONS.md     # assumptions with rationale
     HANDOFF.md       # transient hand-off; deleted when consumed
