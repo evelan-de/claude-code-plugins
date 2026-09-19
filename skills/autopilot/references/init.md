@@ -1,6 +1,6 @@
-# `/autopilot init` — set up the per-project hard gate and the gate-output filter
+# `/autopilot init` — set up the per-project hooks
 
-Goal: enable two deterministic hooks in the **current** project, safely and idempotently.
+Goal: enable four deterministic hooks in the **current** project, safely and idempotently.
 Never overwrite existing config.
 
 1. **Stop-hook hard gate** (`autopilot-gate.sh`): blocks a standalone autopilot session from
@@ -12,6 +12,14 @@ Never overwrite existing config.
    every session of the project once `.claude/autopilot.json` exists; `# raw` in a command
    bypasses it. Measured motivation: autopilot subagents ran the gate 3-4 times per package
    with full output in context (267 vitest runs in one session).
+3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
+   reads the session's own transcript after each tool call, sums the context the next turn
+   will carry, and once it exceeds the budget (default 250k tokens, `contextBudget` in
+   `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the instruction to write
+   `HANDOFF.md`, commit, and return `STATUS: incomplete`. This replaces auto-compaction as
+   the context limiter: deterministic, no lossy model summary.
+4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart with matcher
+   `compact`): if compaction happens anyway, re-injects where the session artifacts live.
 
 ## Steps
 
@@ -50,19 +58,20 @@ file exists with a different gate, show the diff and keep the existing one unles
 commands are clearly better — explain what you chose.
 
 ### 4. Copy the hooks
-Copy `<plugin>/skills/autopilot/hooks/autopilot-gate.sh` and
-`<plugin>/skills/autopilot/hooks/autopilot-gate-filter.sh` to `.claude/hooks/` and `chmod +x`
-both. (Use `${CLAUDE_PLUGIN_ROOT}` to locate the plugin source.) If a copy already exists and
+Copy `autopilot-gate.sh`, `autopilot-gate-filter.sh`, `autopilot-context-budget.sh` and
+`autopilot-session-start.sh` from `<plugin>/skills/autopilot/hooks/` to `.claude/hooks/` and
+`chmod +x` all four. (Use `${CLAUDE_PLUGIN_ROOT}` to locate the plugin source.) If a copy already exists and
 differs, show the diff and replace it only when the project copy is an older plugin version
 (no local edits); otherwise keep it and say so.
 
 ### 5. Safe-merge the hooks into `.claude/settings.json`
 - Read the existing `.claude/settings.json` (create `{}` if absent).
-- Merge ONLY the `Stop` and `PreToolUse` blocks from `references/settings-snippet.json`.
+- Merge ONLY the `Stop`, `PreToolUse`, `PostToolUse` and `SessionStart` blocks from
+  `references/settings-snippet.json`.
   Preserve every other key and any existing hooks (append, do not replace). If a block is
   already present, change nothing for it (idempotent).
-- The filter hook needs `jq` on the machine; without it the hook is a no-op (`{}`). Say so in
-  the report when `jq` is missing.
+- The filter and context-budget hooks need `jq` on the machine; without it they are no-ops
+  (`{}`). Say so in the report when `jq` is missing.
 - Use `jq` for the merge when available; otherwise edit carefully and re-validate with `jq .`.
 
 ### 6. Add the runtime files to `.gitignore`
@@ -71,6 +80,9 @@ Ensure `.claude/.autopilot-active` (transient sentinel) and `.claude/autopilot-g
 
 ### 7. Verify and report
 Run one filtered command end to end (e.g. the gate itself) and confirm the output starts with
-`GATE GREEN` or `GATE RED` and that `.claude/autopilot-gate.log` gained a line. Then print:
+`GATE GREEN` or `GATE RED` and that `.claude/autopilot-gate.log` gained a line. Run the
+context-budget hook once by hand with a fake input whose transcript is the current session's
+(`echo '{"transcript_path":"<path>","session_id":"init-check"}' | .claude/hooks/autopilot-context-budget.sh`)
+and confirm it prints `{}` (below budget). Then print:
 detected package manager, the resolved gate command, the files created/modified, whether each
 merge was a no-op (already initialized), and whether `jq` is available.
