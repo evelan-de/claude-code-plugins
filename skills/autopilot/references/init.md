@@ -10,8 +10,16 @@ idempotently. Never overwrite existing config.
 2. Lockfile: `pnpm-lock.yaml` → pnpm; `yarn.lock` → yarn; `bun.lockb`/`bun.lock` → bun; `package-lock.json` → npm.
 3. Fallback → `npm`.
 
-Run verbs: npm/pnpm/yarn use `<pm> run <script>` (npm/pnpm) — for scripts; tests run as
-`<pm> test`. (yarn/bun verb edge cases: verify against the project; npm + pnpm are primary.)
+Run verbs per package manager:
+
+| PM   | script            | tests      |
+| ---- | ----------------- | ---------- |
+| npm  | `npm run <name>`  | `npm test` |
+| pnpm | `pnpm run <name>` | `pnpm test`|
+| yarn | `yarn <name>`     | `yarn test`|
+| bun  | `bun run <name>`  | `bun test` |
+
+When unsure (exotic setups), verify against the project's own CI/scripts; npm + pnpm are primary.
 
 ### 2. Select gate steps from `package.json` `scripts` (include only what exists)
 Order: typecheck → lint → test (+ build for the full gate only).

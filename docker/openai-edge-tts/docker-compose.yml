@@ -1,0 +1,16 @@
+name: openai-edge-tts
+
+services:
+  tts:
+    image: travisvn/openai-edge-tts:latest
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - ${TTS_PUBLISH_IP:-127.0.0.1}:${TTS_PORT:-5060}:5050
+    environment:
+      PORT: 5050
+      API_KEY: ${API_KEY}
+      REQUIRE_API_KEY: ${REQUIRE_API_KEY:-True}
+      DEFAULT_VOICE: ${DEFAULT_VOICE:-en-US-AvaNeural}
+      DEFAULT_RESPONSE_FORMAT: ${DEFAULT_RESPONSE_FORMAT:-mp3}
+      DEFAULT_SPEED: ${DEFAULT_SPEED:-1.0}
+      DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-en-US}

@@ -6,8 +6,9 @@ description: >-
   This is a manually-invoked skill: use it ONLY when the user explicitly
   routes work to Codex - "frag Codex", "was sagt Codex zu ...", "lass Codex
   das machen", "delegiere das an Codex", "ask Codex", "delegate this to
-  Codex", "let Codex handle this". Never auto-trigger: without an explicit
-  Codex signal, do the work yourself as usual.
+  Codex", "let Codex handle this" - or when another Evelan skill explicitly
+  routes to it (e.g. evelan:mission-control's plan review). Never auto-trigger:
+  without such an explicit Codex signal, do the work yourself as usual.
 ---
 
 # Codex Ask - general delegation to the Codex CLI

@@ -92,8 +92,9 @@ Runs an autonomous, unattended development loop for **one topic per session**: s
   e.g. `/autopilot DNA-901 add rate limiting to the contact route`
 - Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
 - Thorough review (adds clean-code + reusability lenses): add "thorough review".
+- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim.
 
-The orchestrator runs at your **session model** (Opus recommended). Review always runs on Opus (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
+The session lead runs at your **session model** — standalone that is whatever you started the session with; dispatched by mission-control it is the model the coordinator passes (Opus). Review always runs on Opus (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
 
 **Optional hard gate (per project):** `/autopilot init` sets up a deterministic `Stop` hook in the current project that blocks the model from ending a turn while the gate (typecheck/lint/test) is red. It auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hook into `.claude/hooks/`, and safe-merges the hook into `.claude/settings.json` (idempotent, never overwrites). The hook is inert outside autopilot runs (sentinel-guarded).
 
@@ -102,6 +103,30 @@ The orchestrator runs at your **session model** (Opus recommended). Review alway
 For unattended runs, launch with `--permission-mode auto`.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
+
+### mission-control
+
+Coordinates an autonomous development session **without implementing anything itself**: it
+resolves the task and pins down the user-verifiable **goal artifact** (feature running in
+the local app, a generated report, a finished PDF, …), prepares the autopilot session
+folder (`docs/autopilot/sessions/<slug>/PLAN.md`) in the main context, has the plan
+reviewed by a fresh-context agent **and** cross-model via `evelan:codex-ask` (fixing the
+findings itself), then dispatches **one** background implementation subagent (**Opus model
+override**, general-purpose type) that runs `evelan:autopilot` on that session directory
+with "nutze Codex als Reviewer" and **"defer PR"**. A ~10-minute watchdog nudges a stalled
+agent and replaces it if it stays stuck. At the end mission control verifies the result
+independently (re-runs the gate, exercises the goal artifact), and only then pushes, opens
+the PR and watches CI — red CI goes back to the subagent as file-level instructions. The
+final report uses simplified technical language (ASD-STE100 style) in the language of the
+user's prompt.
+
+**Usage:** `/mission-control <task, ticket key, or spec file>`
+
+Best started with the strongest available session model (Fable 5) — the skill plans in the
+main context and cannot switch the session model itself — and with a permissive permission
+mode (e.g. `--permission-mode auto`), which the dispatched subagents inherit.
+
+**Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
 
 ### reflect-on-changes
 
@@ -171,3 +196,18 @@ General-purpose delegation to the Codex CLI (`codex exec`): writes a structured 
 - Never auto-triggered - only when you explicitly route work to Codex
 
 **Trigger phrases:** "frag Codex", "was sagt Codex zu ...", "lass Codex das machen", "delegiere das an Codex", "ask Codex", "delegate this to Codex"
+
+### e2e-demo
+
+Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions — either or both, concatenated as sequential cuts when a task needs both.
+
+**Features:**
+- Real run first, always — an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
+- Assertions read back real persisted state (DB row, API response), never just a UI toast or a zero exit code
+- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended — no OpenAI account or billing)
+- Narration and the artifact's results table are derived strictly from what the run actually proved — nothing narrated that wasn't checked
+- Human-gated steps (a real browser login, an approval) are named plainly, never faked or automated around
+- Published artifact: goal/issue, what changed, a results table, real screenshots, the narration script
+- Project-agnostic — finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
+
+**Trigger phrases:** "test this properly", "make sure this works", "show me a demo", "I want a report for this", "verify the instructions actually work for a client", "teste das richtig", "zeig mir eine Demo", "beweise dass das funktioniert", "ich will einen Report dazu"
