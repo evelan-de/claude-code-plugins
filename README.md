@@ -69,6 +69,21 @@ Smart dependency updater using ncu (npm-check-updates). Goes beyond simple versi
 
 **Trigger phrases:** "update dependencies", "aktualisiere dependencies", "upgrade packages", "check outdated", "Pakete aktualisieren"
 
+### slim-claude-md
+
+Turns a long project `CLAUDE.md` into a short always-loaded core (target under 150 lines)
+plus path-scoped rules in `.claude/rules/` that load only when an agent touches matching
+files, skills for procedures reached on demand, and pointers to docs that already exist.
+Everything Claude can read off the repo (directory listings, package lists, tech stack,
+file-by-file descriptions, history) is deleted. The skill classifies every block into one of
+five buckets (DELETE, POINTER, SKILL, RULE, CORE), condenses what stays, shows the mapping
+table and the sizes for a go before writing, verifies that every old heading and every
+distinctive string landed somewhere on purpose, and opens one PR per project. Follows the
+official guidance: under 200 lines per file, rules over imports (imports still load at
+launch), "would removing this line cause a mistake?".
+
+**Usage:** `/slim-claude-md` in the project, or "CLAUDE.md eindampfen", "split CLAUDE.md".
+
 ### port-from-repo
 
 Controlled, exact-copy workflow for porting a component, style, layout, or feature from one repo into another. Kills the failure mode of approximating from memory instead of reading and copying the real source.
