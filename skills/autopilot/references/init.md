@@ -10,8 +10,7 @@ Never overwrite existing config.
    the full runner output, keeps the exit status, and appends one evidence line per run to
    `.claude/autopilot-gate.log` (timestamp, HEAD, tree state, exit code, command). Active in
    every session of the project once `.claude/autopilot.json` exists; `# raw` in a command
-   bypasses it. Measured motivation: autopilot subagents ran the gate 3-4 times per package
-   with full output in context (267 vitest runs in one session).
+   bypasses it.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
    reads the session's own transcript after each tool call, sums the context the next turn
    will carry, and once it exceeds the budget (default 250k tokens, `contextBudget` in
