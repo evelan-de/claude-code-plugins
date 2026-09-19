@@ -53,3 +53,33 @@ Findings:
 Expected effect: 2-3x fewer cache-read tokens per session and proportionally shorter wall
 clock. Measure the next orchestrated session the same way (the analysis scripts read the
 transcript JSONL and sum `usage` per assistant record) and compare.
+
+## Follow-up (plugin 1.8.0, same day)
+
+Second review round with Andreas: auto-compaction is not the mechanism to rely on. Anthropic
+documents what compaction drops (skill bodies capped at 5k tokens, hook context, most of the
+history) and offers no hook that fires at a context threshold or blocks compaction. So the
+context limiter is now an explicit hand-off:
+
+- `autopilot-context-budget.sh` (PostToolUse): reads the session's own transcript after each
+  tool call, sums input + cache_creation + cache_read of the last assistant record, and above
+  the budget (default 250k) injects the instruction to write `HANDOFF.md`, commit and return
+  `STATUS: incomplete`. Mission control then dispatches a fresh lead with the hand-off path.
+  Deterministic, no model summary. Verified on real subagent transcripts that the usage fields
+  are present; whether `transcript_path` inside a subagent points to the subagent's own file
+  is undocumented and must be confirmed on the first real run.
+- `autopilot-session-start.sh` (SessionStart, matcher `compact`): if compaction happens
+  anyway, re-injects the session folder pointer. The only documented post-compaction pattern.
+- The auto-compact launch requirement is gone; the lead's `maxTurns` is 400.
+- `bin/autopilot-watchdog`: one progress tick from `git log` and `PLAN.md` mtime with its own
+  stall counter, so the coordinator never improvises a watchdog script or reads output files.
+- Autopilot is decoupled from Superpowers entirely. TDD, debugging and review rules are inline
+  (seams, vertical slices, anti-patterns, two failed fixes then bisect). In the analysed
+  orchestrated sessions the implementer subagents had invoked no Superpowers skill at all; the
+  remaining cost was the per-session hook injection and the interactive workflows that ask
+  questions an unattended run must not ask.
+- Matt Pocock's engineering and productivity skills (MIT) are vendored under `skills/` with
+  Evelan names (see `skills/THIRD-PARTY-NOTICES.md`), as the interactive counterpart:
+  `question-with-docs` before `mission-control` is the recorded rule, `handoff` is the
+  interactive hand-off, `two-axis-review` supplies the standards axis the reviewer runs on
+  request.
