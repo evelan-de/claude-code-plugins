@@ -17,7 +17,7 @@ They are maintained here as Evelan skills from now on and may diverge from upstr
 | to-tickets | spec-to-tickets |
 | implement | implement-spec |
 | tdd | tdd |
-| code-review | two-axis-review |
+| code-review | code-review |
 | diagnosing-bugs | diagnose-bug |
 | domain-modeling | domain-model |
 | codebase-design | codebase-design |

@@ -81,5 +81,5 @@ context limiter is now an explicit hand-off:
 - Matt Pocock's engineering and productivity skills (MIT) are vendored under `skills/` with
   Evelan names (see `skills/THIRD-PARTY-NOTICES.md`), as the interactive counterpart:
   `question-with-docs` before `mission-control` is the recorded rule, `handoff` is the
-  interactive hand-off, `two-axis-review` supplies the standards axis the reviewer runs on
+  interactive hand-off, `code-review` supplies the standards axis the reviewer runs on
   request.

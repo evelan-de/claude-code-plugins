@@ -295,7 +295,7 @@ is no external skill to load.
 - **On demand:** if the prompt asks ("thorough review", "architecture review", "Code-Qualität") or
   the diff is large, additionally run the **standards axis**: a parallel subagent that checks the
   diff against the repo's documented coding standards (`CODING_STANDARDS.md`, `CONTRIBUTING.md`,
-  ESLint/Prettier config as ground truth) plus the smell baseline of `evelan:two-axis-review`
+  ESLint/Prettier config as ground truth) plus the smell baseline of `evelan:code-review`
   (mysterious name, duplicated code, feature envy, data clumps, primitive obsession, long
   parameter list, speculative generality), each a labelled heuristic, repo standard wins.
   Prioritize findings (critical / important / nice-to-have); fix critical + important, record

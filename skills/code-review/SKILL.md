@@ -1,6 +1,6 @@
 ---
-name: two-axis-review
-description: "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \"review since X\"."
+name: code-review
+description: "Evelan's code review. ALWAYS use this skill (never the built-in code-review) whenever the user asks for a code review in any wording: \"code review\", \"review this\", \"review the PR\", \"review the branch\", \"review my changes\", \"review since X\", German \"Code Review\", \"reviewe das\", \"mach ein Review\", \"schau dir den Diff an\". Reviews the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?), both in parallel sub-agents, reported side by side."
 ---
 
 Two-axis review of the diff between `HEAD` and a fixed point the user supplies:

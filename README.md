@@ -95,9 +95,9 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 | `evelan:questioning` | The interview primitive the others run on (model-invoked) |
 | `/evelan:write-spec` | Turn the conversation into a spec on the tracker |
 | `/evelan:spec-to-tickets` | Split a spec into tracer-bullet tickets with blocking edges |
-| `/evelan:implement-spec` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:two-axis-review` |
+| `/evelan:implement-spec` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
 | `evelan:tdd` | Test-first at pre-agreed seams, vertical slices, anti-pattern list |
-| `evelan:two-axis-review` | Review a diff on Standards and Spec in parallel subagents |
+| `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents |
 | `evelan:diagnose-bug` | Diagnosis loop for hard bugs: tight feedback loop first, regression test last |
 | `evelan:domain-model`, `evelan:codebase-design` | Vocabulary references: domain terms and ADRs; deep modules and seams |
 | `/evelan:improve-architecture` | Scan for deepening opportunities, HTML report, then interview |
