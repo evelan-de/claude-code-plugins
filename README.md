@@ -92,13 +92,16 @@ Runs an autonomous, unattended development loop for **one topic per session**: s
   e.g. `/autopilot DNA-901 add rate limiting to the contact route`
 - Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
 - Thorough review (adds clean-code + reusability lenses): add "thorough review".
-- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim.
+- Cross-model review: add "nutze Codex als Reviewer". It runs once per session on the whole branch.
+- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim. With a mode (`PACKAGE <id>` or `FINALIZE`) the skill runs only the phases that mode owns; that is how mission-control dispatches it.
 
-The session lead runs at your **session model** — standalone that is whatever you started the session with; dispatched by mission-control it is the model the coordinator passes (Opus). Review always runs on Opus (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
+The session lead runs at your **session model** — standalone that is whatever you started the session with; dispatched by mission-control it is the `evelan:autopilot-lead` agent (Fable 5.1, small fixed tool set, 500-turn cap). Review always runs on Opus at medium effort (`evelan:autopilot-reviewer`); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it.
 
-**Optional hard gate (per project):** `/autopilot init` sets up a deterministic `Stop` hook in the current project that blocks the model from ending a turn while the gate (typecheck/lint/test) is red. It auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hook into `.claude/hooks/`, and safe-merges the hook into `.claude/settings.json` (idempotent, never overwrites). The hook is inert outside autopilot runs (sentinel-guarded).
+**Context hygiene is part of the skill.** Measured on real sessions, 70-80% of the cost of an autopilot run was cache reads of an oversized context (implementers at 400-570k tokens per turn for a thousand turns, never compacting), and 40% of all tool calls were `grep`/`sed`/`cat`/`git` dumps. The skill therefore mandates bounded reads, tailed outputs, one exploration pass, and a single full gate run per package.
 
-**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `DECISIONS.md`, `REPORT.md`, and `MANUAL_TESTING.md`.
+**Optional per-project hooks:** `/autopilot init` sets up two deterministic hooks in the current project. The `Stop` hook blocks a standalone run from ending a turn while the gate (typecheck/lint/test) is red (inert outside autopilot runs, sentinel-guarded). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line (timestamp, HEAD, tree state, exit code) to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. Init auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies both hooks into `.claude/hooks/`, and safe-merges them into `.claude/settings.json` (idempotent, never overwrites). The filter needs `jq`; put `# raw` in a command to bypass it.
+
+**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `CONTEXT.md` (orchestrated runs), `DECISIONS.md`, `REPORT.md`, and `MANUAL_TESTING.md`.
 
 For unattended runs, launch with `--permission-mode auto`.
 
@@ -109,22 +112,27 @@ For unattended runs, launch with `--permission-mode auto`.
 Coordinates an autonomous development session **without implementing anything itself**: it
 resolves the task and pins down the user-verifiable **goal artifact** (feature running in
 the local app, a generated report, a finished PDF, …), prepares the autopilot session
-folder (`docs/autopilot/sessions/<slug>/PLAN.md`) in the main context, has the plan
-reviewed by a fresh-context agent **and** cross-model via `evelan:codex-ask` (fixing the
-findings itself), then dispatches **one** background implementation subagent (**Opus model
-override**, general-purpose type) that runs `evelan:autopilot` on that session directory
-with "nutze Codex als Reviewer" and **"defer PR"**. A ~10-minute watchdog nudges a stalled
-agent and replaces it if it stays stuck. At the end mission control verifies the result
-independently (re-runs the gate, exercises the goal artifact), and only then pushes, opens
-the PR and watches CI — red CI goes back to the subagent as file-level instructions. The
-final report uses simplified technical language (ASD-STE100 style) in the language of the
-user's prompt.
+folder (`docs/autopilot/sessions/<slug>/` with `PLAN.md` and a `CONTEXT.md` exploration
+digest) in the main context, has the plan reviewed by a fresh-context agent **and**
+cross-model via `evelan:codex-ask` (fixing the findings itself), then dispatches the
+`evelan:autopilot-lead` agent **once per work package** (`PACKAGE <id>`, fresh context each
+time, "defer PR") and once at the end (`FINALIZE`, with the Codex cross-model review on the
+whole branch). A 20-minute watchdog reads task status and branch progress, nudges a stalled
+agent and replaces it if it stays stuck; it never reads subagent transcripts and never
+stops an agent that has returned its result. At the end mission control verifies the result
+independently (re-runs the gate, has a verifier subagent exercise the goal artifact), and
+only then pushes, opens the PR and watches CI — red CI goes back as a fix dispatch with
+file-level instructions. The final report uses simplified technical language (ASD-STE100
+style) in the language of the user's prompt.
 
 **Usage:** `/mission-control <task, ticket key, or spec file>`
 
-Best started with the strongest available session model (Fable 5) — the skill plans in the
-main context and cannot switch the session model itself — and with a permissive permission
-mode (e.g. `--permission-mode auto`), which the dispatched subagents inherit.
+Launch requirements (the skill checks and reports them, it cannot set them): the strongest
+available session model (Fable 5.1, never Fable 5: its cache-read price is four times
+higher and a coordinator is almost pure cache reads), a permissive permission mode
+(e.g. `--permission-mode auto`) which the dispatched subagents inherit, and an auto-compact
+window of about 300k tokens (`claude --autocompact 300k` or `/autocompact 300k`), which
+applies to the coordinator and to the subagents it spawns.
 
 **Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
 
