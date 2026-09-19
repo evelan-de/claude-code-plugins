@@ -1,5 +1,6 @@
 {
   "name": "evelan-plugins",
+  "description": "Evelan team marketplace: shared Claude Code skills, commands and agents",
   "owner": {
     "name": "Evelan"
   },

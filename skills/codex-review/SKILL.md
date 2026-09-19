@@ -95,8 +95,35 @@ cannot pass both - prefer the scoped flag (the explicit range is the harder
 requirement) and tell the user the focus note could not be handed to Codex,
 or fall back to the focused form if the range is really the uncommitted diff.
 
-A model override, only when the user asks for one, goes through
-`-c model="<id>"` - there is no `--model` flag on this subcommand.
+### Model selection
+
+**Default: pass no model.** Codex uses its own default, which is the
+strongest coding model in the catalog - the right one for a review. Override
+only when the user names a model ("review mit Astra", "mit Sol", "nutze
+Luna dafür").
+
+`codex review` has **no `-m/--model` flag** (unlike `codex exec`) - the
+override goes through `-c model="<slug>"`. Resolve the name first rather than
+typing a slug from memory, since the catalog changes with every release:
+
+```bash
+MODEL="$(codex-model resolve astra)" || exit   # -> gpt-6-astra
+codex-cli review -c model="$MODEL" --base "$base" > "$LOG" 2>&1
+```
+
+`codex-model` lives next to `codex-cli` in the plugin's `bin/` and exits 2
+with the list of real slugs on an unknown name (models the catalog marks
+hidden count as unknown), 3 on an ambiguous one. In
+both cases stop and ask the user - do not guess a slug. The catalog comes
+from the installed Codex CLI, so a model missing from the list may just mean
+the CLI is outdated. This matters because
+Codex does not reject a bad slug locally: the run starts and only the backend
+answers `400 ... model is not supported`, after minutes of review time.
+
+Steering a review to a cheaper model is a real trade-off, not a free win -
+say so if the user picks the budget tier for a security-sensitive review.
+Always report which model produced the findings, taken from the `model:`
+line in the log header.
 
 **mktemp:** the template must end in the `X` run (`/tmp/codex-review-XXXXXX`).
 On macOS/BSD `mktemp`, X's followed by a suffix like `...-XXXXXX.log` are

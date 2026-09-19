@@ -176,9 +176,10 @@ Cross-model code review: delegates a review of your local diff to the Codex CLI 
 - Runs in the background with a log file (reviews can take minutes); the untouched log path is always reported
 - Output is passed through raw - only tool-call noise and sandbox warnings are stripped
 - Falls back to a normal Claude review when Codex is rate-limited or unavailable (never leaves you with no review)
+- Optional model choice - say "mit Astra" / "mit Sol" / "nutze Luna" and the slug is resolved and validated against the live Codex catalog before the run (hidden catalog entries are never offered)
 - Never fixes anything on its own; asks which findings to act on
 
-**Usage:** `/codex-review [--uncommitted | --base <branch> | --commit <sha>] [focus instructions]`
+**Usage:** `/codex-review [--uncommitted | --base <branch> | --commit <sha>] [--model <name>] [focus instructions]`
 
 **Trigger phrases:** "Codex-Review", "lass Codex reviewen", "lass Codex drüberschauen", "zweite Meinung von Codex", "Cross-Model-Review". A generic "review this" does NOT trigger it.
 
@@ -191,6 +192,7 @@ General-purpose delegation to the Codex CLI (`codex exec`): writes a structured 
 - Write-safety: git state recorded before the run, dirty-tree warning, post-run `git status` + diffstat so changes are never silent
 - Clean final answer captured via `-o` and relayed verbatim
 - Optional `--output-schema` for structured JSON answers
+- Optional model choice - name a model ("nutze Astra", "mit Sol", "nutze Luna") and it is resolved to a real slug and validated against the live Codex catalog before the run, instead of failing with a backend 400 minutes in
 - Never auto-triggered - only when you explicitly route work to Codex
 
 **Trigger phrases:** "frag Codex", "was sagt Codex zu ...", "lass Codex das machen", "delegiere das an Codex", "ask Codex", "delegate this to Codex"

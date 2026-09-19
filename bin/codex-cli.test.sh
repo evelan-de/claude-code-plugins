@@ -8,6 +8,7 @@ PASS=0; FAIL=0
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/pathbin" "$tmp/appbin" "$tmp/home/.local/bin" "$tmp/emptyhome"
+mkdir -p "$tmp/app dir with spaces"
 
 fake() { # $1 target file  $2 marker
   cat > "$1" <<EOF
@@ -28,6 +29,7 @@ check() { # $1 desc  $2 want_exit  $3 want_substring  $4 got_exit  $5 got_output
 
 fake "$tmp/pathbin/codex" "FROM_PATH"
 fake "$tmp/appbin/codex" "FROM_APP"
+fake "$tmp/app dir with spaces/codex" "FROM_SPACED_APP"
 fake "$tmp/home/.local/bin/codex" "FROM_HOME"
 
 # 1. PATH wins over app bin and HOME fallback
@@ -40,20 +42,40 @@ out="$(PATH="/usr/bin:/bin" HOME="$tmp/home" \
   CODEX_CLI_APP_BIN="$tmp/appbin/codex" sh "$WRAPPER" exec hello 2>&1)"; got=$?
 check "app bin is second" 0 "FROM_APP" "$got" "$out"
 
-# 3. ~/.local/bin/codex is the last fallback
+# 3. An app bundle path with spaces (macOS style) still resolves
+out="$(PATH="/usr/bin:/bin" HOME="$tmp/home" \
+  CODEX_CLI_APP_BIN="$tmp/app dir with spaces/codex" sh "$WRAPPER" exec hello 2>&1)"; got=$?
+check "app bin path with spaces resolves" 0 "FROM_SPACED_APP" "$got" "$out"
+
+# 4. ~/.local/bin/codex is the last fallback
 out="$(PATH="/usr/bin:/bin" HOME="$tmp/home" \
   CODEX_CLI_APP_BIN="$tmp/nonexistent" sh "$WRAPPER" exec hello 2>&1)"; got=$?
 check "HOME local bin is third" 0 "FROM_HOME" "$got" "$out"
 
-# 4. Arguments with spaces are forwarded verbatim as single args
+# 5. Arguments with spaces are forwarded verbatim as single args
 out="$(PATH="$tmp/pathbin:/usr/bin:/bin" HOME="$tmp/emptyhome" \
   CODEX_CLI_APP_BIN="$tmp/nonexistent" sh "$WRAPPER" review --base main "two words" 2>&1)"; got=$?
 check "args forwarded verbatim" 0 "arg:two words" "$got" "$out"
 
-# 5. Nothing resolvable -> exit 127 + clear message
+# 6. Nothing resolvable -> exit 127 + clear message
 out="$(PATH="/usr/bin:/bin" HOME="$tmp/emptyhome" \
   CODEX_CLI_APP_BIN="$tmp/nonexistent" sh "$WRAPPER" --version 2>&1)"; got=$?
 check "not found -> exit 127 + message" 127 "Codex CLI not found" "$got" "$out"
+
+# 7. The not-found message names every probed location and an install hint
+check "not found lists PATH probe" 127 "codex on PATH" "$got" "$out"
+check "not found lists app bin probe" 127 "$tmp/nonexistent" "$got" "$out"
+check "not found lists HOME probe" 127 "$tmp/emptyhome/.local/bin/codex" "$got" "$out"
+check "not found gives install hint" 127 "npm install -g @openai/codex" "$got" "$out"
+
+# 8. Without the override, the wrapper probes both desktop-app bundles
+out="$(PATH="/usr/bin:/bin" HOME="$tmp/emptyhome" sh "$WRAPPER" --version 2>&1)"; got=$?
+if [ "$got" -eq 0 ]; then
+  echo "skip - default app bundles (a real Codex is installed at a default location)"
+else
+  check "default probes ChatGPT.app bundle" 127 "/Applications/ChatGPT.app/Contents/Resources/codex" "$got" "$out"
+  check "default probes Codex.app bundle" 127 "/Applications/Codex.app/Contents/Resources/codex" "$got" "$out"
+fi
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

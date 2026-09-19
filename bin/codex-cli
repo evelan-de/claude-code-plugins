@@ -1,24 +1,70 @@
 #!/bin/sh
 # codex-cli - locate the locally installed Codex CLI and exec it.
 #
-# The Codex desktop app does not put its binary on PATH, and teammates may
-# instead have an npm or homebrew install. Skills call this wrapper so they
-# never hardcode a machine-specific path. Resolution order:
-#   1. `codex` on PATH (npm / homebrew installs)
-#   2. /Applications/Codex.app/Contents/Resources/codex (macOS desktop app)
+# Teammates get Codex from different places: an npm or homebrew install on
+# PATH, or only the binary bundled inside a desktop app, which is not on PATH.
+# Skills call this wrapper so they never hardcode a machine-specific path.
+#
+# Resolution order:
+#   1. `codex` on PATH (npm / homebrew installs) - the maintained install wins
+#   2. the desktop-app bundle: $CODEX_CLI_APP_BIN when set, otherwise
+#        /Applications/ChatGPT.app/Contents/Resources/codex  (Codex lives in
+#          the ChatGPT app since mid-2026)
+#        /Applications/Codex.app/Contents/Resources/codex    (the former
+#          standalone app, kept in case it returns)
 #   3. $HOME/.local/bin/codex
-# All arguments are forwarded verbatim.
+# App bundles ship pre-release builds, which is why a real install on PATH
+# is preferred whenever one exists.
+#
+# On failure the message lists every path that was probed, so the reader
+# can see at once which install is missing. All arguments are forwarded
+# verbatim.
 
-APP_BIN="${CODEX_CLI_APP_BIN:-/Applications/Codex.app/Contents/Resources/codex}"
+if [ -n "${CODEX_CLI_APP_BIN:-}" ]; then
+  APP_BINS="$CODEX_CLI_APP_BIN"
+else
+  APP_BINS="/Applications/ChatGPT.app/Contents/Resources/codex
+/Applications/Codex.app/Contents/Resources/codex"
+fi
+
+CODEX_BIN=""
+PROBED=""
 
 if command -v codex >/dev/null 2>&1; then
   CODEX_BIN="$(command -v codex)"
-elif [ -x "$APP_BIN" ]; then
-  CODEX_BIN="$APP_BIN"
-elif [ -x "$HOME/.local/bin/codex" ]; then
-  CODEX_BIN="$HOME/.local/bin/codex"
 else
-  echo "codex-cli: Codex CLI not found - install it (npm/homebrew) or open Codex.app once, then retry." >&2
+  PROBED="  codex on PATH"
+fi
+
+if [ -z "$CODEX_BIN" ]; then
+  # One candidate per line; paths may contain spaces, so read line-wise.
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ]; then
+      CODEX_BIN="$candidate"
+      break
+    fi
+    PROBED="$PROBED
+  $candidate"
+  done <<EOF
+$APP_BINS
+EOF
+fi
+
+if [ -z "$CODEX_BIN" ]; then
+  if [ -x "$HOME/.local/bin/codex" ]; then
+    CODEX_BIN="$HOME/.local/bin/codex"
+  else
+    PROBED="$PROBED
+  $HOME/.local/bin/codex"
+  fi
+fi
+
+if [ -z "$CODEX_BIN" ]; then
+  echo "codex-cli: Codex CLI not found. Looked for:" >&2
+  printf '%s\n' "$PROBED" >&2
+  echo "Install it with 'npm install -g @openai/codex' or 'brew install codex'," >&2
+  echo "or install the ChatGPT desktop app, then retry." >&2
   exit 127
 fi
 
