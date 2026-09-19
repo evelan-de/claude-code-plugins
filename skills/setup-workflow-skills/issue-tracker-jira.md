@@ -2,20 +2,36 @@
 
 Issues and specs for this repo live in Jira, project key **`<PROJECT>`** on
 `https://<site>.atlassian.net`. Use the Atlassian MCP tools for every operation; there is no
-CLI in the loop. Resolve `cloudId` once per session with `getAccessibleAtlassianResources`.
+CLI in the loop. Resolve `cloudId` once per session with `getAccessibleAtlassianResources` and
+pass it explicitly on every call.
+
+Primary tools (`getJiraIssue`, `createJiraIssue`, `editJiraIssue`, `transitionJiraIssue`,
+`searchJiraIssuesUsingJql`, `addOrEditJiraIssueComment`) are called directly. Every other
+operation runs through `executeRead` / `executeWrite` with its operation name; when a name is
+unknown, `discover` it first, never guess one.
 
 ## Conventions
 
-- **Create an issue**: `createJiraIssue` with `projectKey`, `issueTypeName` (`Task` for tracer-bullet
+- **Create an issue**: `createJiraIssue` with `projectKey`, `issueType` (`Task` for tracer-bullet
   tickets, `Story` for user-facing scope, `Bug` for triage bugs, `Epic` for a wayfinder map),
-  `summary`, `description`. Assignee via `lookupJiraAccountId` by email.
-- **Read an issue**: `getJiraIssue` with the key; comments come with the issue.
+  `summary`, `description`, optional `labels`, `parent` and `assignee` (an accountId). Resolve a
+  name or email with `lookupJiraAccountId`, or `findJiraIssueAssignableUsers` to be sure the
+  user can be assigned in the project.
+- **Read an issue**: `getJiraIssue` with the key (`view: "evidence"` for custom fields and issue
+  links). Comments are separate: `listJiraIssueComments`.
 - **List / search**: `searchJiraIssuesUsingJql`, always scoped: `project = <PROJECT> AND ...`.
-- **Comment**: `addCommentToJiraIssue`.
-- **Labels**: `editJiraIssue` on the `labels` field (add or remove; send the full resulting list).
-- **Status**: `getTransitionsForJiraIssue` then `transitionJiraIssue`. Never assume transition ids.
-- **Link**: `createIssueLink` with the link type from `getIssueLinkTypes` ("Blocks" for
-  dependencies, "Relates" otherwise).
+  Page with `nextPageToken` until `isLast`.
+- **Comment**: `addOrEditJiraIssueComment` (Markdown body).
+- **Labels**: `editJiraIssue` with `fields: { labels: [...] }` (add or remove; send the full
+  resulting list).
+- **Status**: `listJiraIssueTransitions` for the issue, pick the transition whose **target
+  status** matches (the transition's own name often differs), then `transitionJiraIssue` with
+  that `transitionId`. Never assume transition ids. The result reports the status the issue
+  landed in; check it.
+- **Assign**: `editJiraIssue` with `fields: { assignee: { accountId: "…" } }`.
+- **Link**: `createJiraIssueLink` with the link type from `listJiraIssueLinkTypes` ("Blocks" for
+  dependencies, "Relates" otherwise). With "Blocks", the inward issue blocks the outward one.
+  Parent/child is the `parent` field, not a link.
 
 ## Description format (binding)
 
@@ -42,7 +58,8 @@ Create a Jira issue in `<PROJECT>` with the Markdown description; return its key
 
 ## When a skill says "fetch the relevant ticket"
 
-`getJiraIssue` with the key; read description, acceptance criteria, comments and labels.
+`getJiraIssue` with the key, then `listJiraIssueComments`; read description, acceptance
+criteria, comments and labels.
 
 ## Triage labels
 
@@ -54,16 +71,17 @@ Triage queue: `project = <PROJECT> AND labels = needs-triage AND statusCategory 
 Used by `/evelan:wayfinder`. The **map** is an Epic; its **child** tickets are issues in that
 Epic.
 
-- **Map**: `createJiraIssue` with `issueTypeName: "Epic"`, label `wayfinder-map`, the
+- **Map**: `createJiraIssue` with `issueType: "Epic"`, label `wayfinder-map`, the
   Notes / Decisions-so-far / Fog body as Markdown.
 - **Child ticket**: an issue with the Epic as parent (`parent` field on create, or
-  `editJiraIssue`). Label `wayfinder-<type>` (`research`, `prototype`, `questioning`, `task`).
-  Once claimed, assign it to the driving dev.
-- **Blocking**: native "Blocks" links via `createIssueLink` (blocker → child). A ticket is
-  unblocked when every blocker is resolved (`statusCategory = Done`).
+  `editJiraIssue` with `fields: { parent: { key: "<MAP>" } }`). Label `wayfinder-<type>`
+  (`research`, `prototype`, `questioning`, `task`). Once claimed, assign it to the driving dev.
+- **Blocking**: native "Blocks" links via `createJiraIssueLink` (inward = blocker, outward =
+  child). A ticket is unblocked when every blocker is resolved (`statusCategory = Done`).
 - **Frontier query**: `parent = <MAP> AND statusCategory != Done AND assignee IS EMPTY ORDER BY rank ASC`,
   then drop every result that still has an unresolved inward "is blocked by" link (read the
-  `issuelinks` on each candidate); first remaining wins.
+  `issuelinks` on each candidate via `getJiraIssue` with `view: "evidence"`); first remaining
+  wins.
 - **Claim**: set the assignee, the session's first write.
 - **Resolve**: comment the answer, transition to Done, append a context pointer (commit or
   document link) to the map's Decisions-so-far.
