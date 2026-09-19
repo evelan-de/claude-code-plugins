@@ -68,6 +68,24 @@ context limiter is now an explicit hand-off:
   Deterministic, no model summary. Verified on real subagent transcripts that the usage fields
   are present; whether `transcript_path` inside a subagent points to the subagent's own file
   is undocumented and must be confirmed on the first real run.
+
+  **Confirmed on the first real run (evelan-slides, 2026-09-19 evening, plugin 1.8.1): it does
+  not.** `transcript_path` is always the main session's transcript, also inside a subagent
+  (Claude Code 2.1.241 builds it from the session id; only `SubagentStop` carries an
+  `agent_transcript_path`). The hook therefore measured the idle coordinator (314k tokens, a
+  value that never moved) while the lead's real context was 49k-107k, forced a hand-off after
+  two minutes without code, and the coordinator "fixed" it by raising `contextBudget` to 650k.
+  Plugin 1.8.2 resolves `<main transcript>/subagents/agent-<agent_id>.jsonl`, stays silent
+  when that file is missing, takes the minimum of the last three usage records (transcripts
+  contain one-off spikes far above the neighbouring turns), keeps one reminder counter per
+  agent, and names the measured file in the reminder. The 650k setting in evelan-slides must
+  go back to the default.
+
+  Measured in that session, for the record: coordinator 111k tokens at its first turn and
+  333k after one package (Slack and Jira reads, full `git show` of three design docs, writing
+  and revising a 480-line `PLAN.md`); Explore agent 56k → 220k in 83 `cat -n` dumps; lead
+  49k base + 6k skill body, 181k after 165 turns; a lead reads `PLAN.md` in full one to three
+  times per dispatch.
 - `autopilot-session-start.sh` (SessionStart, matcher `compact`): if compaction happens
   anyway, re-injects the session folder pointer. The only documented post-compaction pattern.
 - The auto-compact launch requirement is gone; the lead's `maxTurns` is 400.
