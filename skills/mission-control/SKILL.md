@@ -1,7 +1,7 @@
 ---
 name: mission-control
-description: "Queue control: status, add, retry, stop, log, start. Triggers on \"/mission-control\", \"mission control\", \"was läuft gerade\", \"Warteschlange\", \"queue status\", \"nimm X dazu\", \"stopp die Warteschlange\"."
-argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop | log [item] | start | doctor | schedule HH:MM]"
+description: "Queue: status, add, retry, stop, log, start, pause. Triggers on \"/mission-control\", \"mission control\", \"was läuft gerade\", \"Warteschlange\", \"queue status\", \"nimm X dazu\", \"stopp die Warteschlange\"."
+argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop | log [item] | start | pause [until <date> | <N>d] | resume | doctor | schedule HH:MM]"
 ---
 
 # Mission control
@@ -39,9 +39,17 @@ every command over SSH; otherwise run it locally. No hostname comparison.
 | retry, "nochmal" | `retry <repo> <#pr \| item>` (a PR gets its label back; any other item is re-added as given) |
 | stop, "stopp die Warteschlange" | `stop` (the item stays in the queue or keeps its label; `log <item>` still finds its log) |
 | log, "zeig das Log" | `log [<item>]` (`#12`, a ticket key or a session dir) |
-| "starte jetzt", start | remote: `kickstart`; it refuses while a run is active or when no schedule is installed, relay that message. Local: `run` with Bash `run_in_background`, then say that progress arrives as macOS/Slack notifications and via `status`, not from the background call |
+| "starte jetzt", start | remote: `kickstart`; it refuses while a run is active or when no schedule is installed, relay that message. It works during a pause (that one run goes ahead, the pause stays). Local: `run` with Bash `run_in_background`, then say that progress arrives as macOS/Slack notifications and via `status`, not from the background call |
+| "heute nicht automatisch", "keine automatische Ausführung heute", pause | `pause` (today only; the nightly run skips, manual starts still work) |
+| "Pause bis <Datum>", "pause until <date>" | `pause until <YYYY-MM-DD>` (through that day inclusive). A weekday name ("bis Freitag") needs no tool: from today's date (known in the session) take the next occurrence of that weekday, inclusive (today is a Friday: today), pass that date and reply with it, e.g. `pausiert bis einschließlich Freitag, 2026-09-25`. A date before today is refused with exit 2 (`date is in the past`), relay that. "<N> Tage" is `pause <N>d` |
+| "wieder automatisch", "Pause aufheben", resume | `resume` |
 | doctor | `doctor` |
 | schedule HH:MM | `install-schedule HH:MM` |
+
+`pause`, `resume` and `status` print a warning line when the installed schedule predates the
+pause feature (`schedule installed without --scheduled: run "mission-control install-schedule
+HH:MM" again, ...`). Relay it: the pause is written, but the nightly job ignores it until the
+schedule is reinstalled with that command.
 
 ## Output rule
 
