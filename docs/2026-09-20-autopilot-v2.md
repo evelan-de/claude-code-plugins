@@ -74,8 +74,13 @@ always shows what is left.
 5. notifies: macOS notification and, optionally, a Slack message per finished or blocked
    item (the Slack step is a later addition).
 
-**Requires** a logged-in `claude` CLI on the machine (`claude /login` once per Mac; both Macs
-the MacBook is logged in since 2026-09-20, the office Mini still to be checked) and `gh` for the PR.
+**Requires** a logged-in `claude` CLI on the machine and `gh` for the PR. Both Macs are logged
+in since 2026-09-20. Caveat, verified on the office Mini: Claude Code keeps the login in the macOS
+Keychain, and a session started over SSH (or by launchd outside the user's GUI session) cannot
+read it, so `claude -p` there reports "Not logged in" although the Mac is logged in. The queue
+therefore starts from a Terminal (or tmux) opened in the Mac's own GUI session. For SSH- or
+launchd-triggered starts the alternative is a long-lived token from `claude setup-token`,
+kept in a mode-600 file and exported as `CLAUDE_CODE_OAUTH_TOKEN` by the queue script.
 
 **Open questions for Andreas:**
 
