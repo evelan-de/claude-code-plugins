@@ -115,7 +115,11 @@ blocker to resolve, not a skip. Only steps this environment cannot perform go to
 `MANUAL_TESTING.md`.
 
 ### 5. Finish
-User-facing behaviour or public API changed → README and top-level docs. `build` once.
+**Docs are part of done.** Walk the diff once and update every document the change made
+stale: README and top-level docs for user-facing behaviour or public API; `docs/` pages that
+describe the touched area; `CLAUDE.md` and `.claude/rules/` when a convention, command or
+gate changed; inline doc comments on changed public interfaces. A stale doc is a gap, the
+reviewer flags it. `build` once.
 Write `REPORT.md` (what shipped, verification with commands and results, review findings,
 open items), prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
 delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX

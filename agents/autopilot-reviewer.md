@@ -36,6 +36,10 @@ folder.
 4. **Scope** - Did anything change outside the stated scope in `PLAN.md`?
 5. **Safety** - Any destructive/irreversible action, secret, env, migration, or production
    config touched?
+6. **Docs** - Does any document now describe behaviour the diff changed (README, `docs/`
+   pages for the touched area, `CLAUDE.md` and `.claude/rules/` for changed conventions or
+   commands, doc comments on changed public interfaces)? A stale document is a GAP with the
+   file and the sentence named.
 
 ## Gate
 

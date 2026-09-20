@@ -130,9 +130,27 @@ Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a 
 
 ### autopilot
 
-**Usage:**
-- Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`.
-- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with `claude --model sonnet --effort medium --advisor fable --permission-mode auto`. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+**Quickstart (once per project, then per ticket):**
+
+```bash
+# once per project: gate, hooks, review-bot label
+claude
+> /autopilot init
+
+# per ticket, in your normal session: the plan, with you in the loop
+> /autopilot-plan WEB-1095
+
+# then the run, in a fresh terminal (the plan's hand-over prints this exact line)
+claude --model sonnet --effort medium --advisor fable --permission-mode auto --max-turns 400 --max-budget-usd 60 --fallback-model opus
+> /autopilot docs/autopilot/sessions/<date>-WEB-1095-<slug>
+```
+
+The run ends with a PR (or, in feature-branch mode, a pushed branch), `REPORT.md` in the session folder and the `autopilot-usage` table. If it ran out of context it ends with `Resume with /autopilot <session directory>`: start a fresh session and paste that line.
+
+**Usage details:**
+- Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`, committed on the run's branch.
+- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with the launch line above. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header; the turn and dollar caps stop a runaway run. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+- Docs are part of done: the run updates README, `docs/`, `CLAUDE.md`/`.claude/rules/` and doc comments the change made stale, and the reviewer flags a stale document as a gap.
 - Options in the prompt: "defer PR" (no push, no PR), "ohne Codex" / "no Codex" (skips the Codex cross-model review, which otherwise runs by default after the Claude review whenever the Codex CLI is installed; its findings are fixed or rebutted in `REPORT.md`).
 - Write-less rules are part of the skill (vendored from Ponytail, see `skills/THIRD-PARTY-NOTICES.md`): reuse before write, stdlib and platform before dependencies, shortest root-cause diff, no speculative abstractions. JetBrains measured about 10% lower cost with unchanged quality when the rules sit in the context for the whole session, which is what the skill does.
 - Continue after a hand-off: the same command; the run finds `HANDOFF.md`.
