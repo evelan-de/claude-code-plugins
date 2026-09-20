@@ -20,15 +20,12 @@ They are maintained here as Evelan skills from now on and may diverge from upstr
 | domain-modeling | domain-model |
 | codebase-design | codebase-design |
 | improve-codebase-architecture | improve-architecture |
-| wayfinder | wayfinder |
-| ask-matt | which-skill |
 | setup-matt-pocock-skills | setup-workflow-skills |
 | handoff | handoff |
-| wait-what | wait-what |
 
 Not vendored: the `in-progress`, `misc` and `deprecated` folders. Vendored at first and
 removed on 2026-09-20 (plugin 2.0.0): prototype, research, resolving-merge-conflicts, triage,
-teach, to-questionnaire, wizard, writing-for-agents.
+teach, to-questionnaire, wizard, writing-for-agents, wayfinder, ask-matt (which-skill), wait-what.
 
 ### MIT License
 

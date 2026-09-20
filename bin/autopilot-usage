@@ -8,8 +8,8 @@
 #
 #   agent  type  calls  first_ctx  last_ctx  max_ctx  cache_read_M  cache_write_M  output_k
 #
-# followed by a session total and, for the coordinator, the context of the request that
-# dispatched the first autopilot lead (= what planning cost it for the rest of the session).
+# followed by a session total. The first row, labelled "main", is the run's own session;
+# every further row is a subagent it dispatched (reviewers, explorers).
 #
 # One API response is written to the transcript as several assistant lines (thinking, text,
 # each tool use) that share one message.id and repeat the same usage; they are collapsed to
@@ -59,7 +59,7 @@ row() {
 }
 
 {
-  row coordinator main "$main"
+  row main main "$main"
   if [ -d "$session_dir/subagents" ]; then
     find "$session_dir/subagents" -type f -name 'agent-*.jsonl' | sort | while IFS= read -r f; do
       id="$(basename "$f" .jsonl)"

@@ -3,28 +3,26 @@
 Goal: enable four deterministic hooks in the **current** project, safely and idempotently.
 Never overwrite existing config.
 
-1. **Stop-hook hard gate** (`autopilot-gate.sh`): blocks a standalone autopilot session from
-   ending its turn while the gate is red. Sentinel-guarded, inert otherwise.
+1. **Stop-hook hard gate** (`autopilot-gate.sh`, Stop): blocks the turn from ending while
+   the gate is red; after three consecutive blocks it allows the stop with the reason on stderr.
+   Active while `.claude/.autopilot-active` exists.
+   Needs the gate in `.claude/autopilot.json`; counts blocks in `.claude/.autopilot-gate-blocks`.
 2. **Gate-output filter** (`autopilot-gate-filter.sh`, PreToolUse on Bash): rewrites
-   test/lint/typecheck/build commands so the model sees failures plus the summary instead of
-   the full runner output, keeps the exit status, and appends one evidence line per run to
-   `.claude/autopilot-gate.log` (timestamp, HEAD, tree state, exit code, command). Active in
-   every session of the project once `.claude/autopilot.json` exists; `# raw` in a command
-   bypasses it.
+   test/lint/typecheck/build commands to show failures plus summary, keeps the exit status,
+   appends one evidence line per run to `.claude/autopilot-gate.log`.
+   Active in every session once `.claude/autopilot.json` exists; `# raw` in a command bypasses it.
+   Needs `jq`.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
-   reads the transcript of the agent it runs in after each tool call (inside a subagent:
-   `<session>/subagents/agent-<agent_id>.jsonl`; the `transcript_path` in the hook input is
-   always the main session's file and is only used in a standalone run), takes the context
-   the next turn will carry, and once it exceeds the budget (default 250k tokens,
-   `contextBudget` in `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the
-   instruction to write `HANDOFF.md`, commit, and end the turn with `Resume with /autopilot
-   <session directory>`. The reminder names the measured file. Active while the
-   `.claude/.autopilot-active` sentinel exists (and inside any subagent, where the hook input
-   carries `agent_id`); silent in interactive sessions. Do not raise the budget when a fresh
-   session hits it within minutes: a fresh session starts at roughly 50-80k tokens, so an
-   instant hit means the wrong transcript was measured.
-4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart with matcher
-   `compact`): if compaction happens anyway, re-injects where the session artifacts live.
+   measures the context the next turn will carry and, above the budget (default 250k tokens,
+   `contextBudget` in `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`), injects the
+   instruction to write `HANDOFF.md`, commit and end the turn.
+   Active while `.claude/.autopilot-active` exists or inside a subagent; silent otherwise.
+   Needs `jq` and the transcript of the agent it runs in (an instant hit in a fresh session
+   means the wrong transcript was measured; do not raise the budget).
+4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart, matcher `compact`):
+   prints where the newest session's `PLAN.md` and `HANDOFF.md` live.
+   Active only after a compaction.
+   Needs `docs/autopilot/sessions/` to exist.
 
 ## Steps
 
@@ -80,8 +78,8 @@ differs, show the diff and replace it only when the project copy is an older plu
 - Use `jq` for the merge when available; otherwise edit carefully and re-validate with `jq .`.
 
 ### 6. Add the runtime files to `.gitignore`
-Ensure `.claude/.autopilot-active` (transient sentinel) and `.claude/autopilot-gate.log`
-(machine-local evidence log) are gitignored.
+Ensure `.claude/.autopilot-active` (transient sentinel), `.claude/.autopilot-gate-blocks`
+(block counter) and `.claude/autopilot-gate.log` (machine-local evidence log) are gitignored.
 
 ### 7. Verify and report
 Hooks merged into `settings.json` take effect at the next session start, so test the scripts

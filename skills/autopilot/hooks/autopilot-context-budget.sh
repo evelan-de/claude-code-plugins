@@ -11,8 +11,8 @@
 #
 # Which transcript is measured (verified against Claude Code 2.1.241):
 #   - `transcript_path` in the hook input is ALWAYS the main session's transcript, also when
-#     the hook fires inside a subagent. Measuring it from a subagent reports the idle
-#     coordinator's context: a large number that never moves.
+#     the hook fires inside a subagent. Measuring it from a subagent reports the context of
+#     the run's main session while it waits: a large number that never moves.
 #   - A subagent's own transcript lives at
 #     <main transcript without .jsonl>/subagents/agent-<agent_id>.jsonl
 #     (workflow agents one level deeper). With `agent_id` present, that file is measured; if

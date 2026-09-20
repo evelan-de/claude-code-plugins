@@ -1,0 +1,32 @@
+#!/bin/sh
+# git-default-branch - print the repository's default branch name.
+#
+# Resolution order:
+#   1. refs/remotes/origin/HEAD (what the remote calls its default)
+#   2. main   (remote-tracking or local)
+#   3. master (remote-tracking or local)
+# Exit 1 with a message when none of these exists.
+#
+# Usage: git-default-branch
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "git-default-branch: not inside a git repository." >&2
+  exit 1
+fi
+
+head="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+if [ -n "$head" ]; then
+  printf '%s\n' "${head#origin/}"
+  exit 0
+fi
+
+for name in main master; do
+  if git show-ref --verify --quiet "refs/remotes/origin/$name" \
+    || git show-ref --verify --quiet "refs/heads/$name"; then
+    printf '%s\n' "$name"
+    exit 0
+  fi
+done
+
+echo "git-default-branch: no default branch found (no origin/HEAD, main or master)." >&2
+exit 1

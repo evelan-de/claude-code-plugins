@@ -59,8 +59,13 @@ always shows what is left.
 1. creates a worktree from the repo's integration branch (`git worktree add`), or reuses the
    session branch when the item is a continuation;
 2. starts `claude -p "/autopilot <item> defer PR" --model <model column> --effort <effort
-   column, default medium> --permission-mode auto` in that worktree,
-   with `--max-turns` and a wall-clock timeout, output to `logs/<item>.log`;
+   column, default medium> --permission-mode auto` in that worktree, with a wall-clock
+   timeout, output to `logs/<item>.log`. Further launch flags: `--max-turns` caps the turns
+   of one session. `--max-budget-usd` caps its spend. `--fallback-model opus` keeps the run
+   going when the chosen model is overloaded. `--json-schema` makes the result line
+   machine-readable for the done file. `--append-system-prompt-file` injects the write-less
+   rules once at start. `--exclude-dynamic-system-prompt-sections` keeps the system prompt
+   stable so the prompt cache is reused across items;
 3. watches with `autopilot-watchdog` every 20 minutes (zero tokens); on `stalls=4` it kills
    the session and restarts it once with the hand-off;
 4. on exit: `HANDOFF.md` present → restart with the same item (up to N times); `REPORT.md`
@@ -147,5 +152,5 @@ in `skills/THIRD-PARTY-NOTICES.md` (MIT, DietrichGebert/ponytail, commit `e3ba2a
 **Plan skill borrows from the vendored Pocock skills:** seams agreed with the user before
 slicing (to-spec), tracer-bullet slices with blocking edges, prefactoring first,
 expand/migrate/contract for wide refactors, and a granularity quiz (to-tasks), a named
-destination and "decisions before plans" (wayfinder). A plan for a topic that still has open
-decision tickets on a wayfinder map is refused.
+destination and "decisions before plans". The plan skill refuses a topic that still has open
+decision tickets.

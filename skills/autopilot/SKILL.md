@@ -1,8 +1,7 @@
 ---
 name: autopilot
-description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um". Also handles "autopilot init" to set up the per-project hooks.
-user-invocable: true
-argument-hint: "[init | <session directory> | <ticket key or topic>]   (add 'defer PR' to skip push/PR, 'ohne Codex' / 'no Codex' to skip the Codex cross-model review that runs by default when Codex is installed)"
+description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um".
+argument-hint: "[init | <session dir> | <ticket>] [defer PR] [no Codex]"
 ---
 
 # Autopilot
@@ -43,46 +42,51 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 
 ## Write less
 
-The best code is the code never written; every line you write is written, read by the
-reviewer and read back in every later turn. Before each change, stop at the first rung that
-holds: (1) does it need to exist at all (speculative need → skip, record under
-`DECISIONS.md`); (2) a helper, type or pattern already in this codebase → reuse it; (3) the
-standard library does it; (4) a native platform feature covers it (`<input type="date">`
-over a picker, CSS over JS, a DB constraint over app code); (5) an installed dependency
-solves it (never add one for a few lines); (6) it can be one line; (7) only then the minimum
-that works. No abstraction with one implementation, no factory for one product, no config for
-a value that never changes, no scaffolding "for later". Fewest files, shortest working diff
-that fixes the root cause where all callers route through, not the symptom. A bug fix greps
-every caller first. Explanations: code and the one-line result under the package, no essays.
-Never simplify away input validation at trust boundaries, error handling that prevents data
-loss, security, accessibility basics, the plan's verification criteria or anything the plan
-asks for explicitly. Lazy about the solution, never about understanding the problem: read the
-flow end to end first.
+- Before each change, stop at the first rung that holds: (1) it need not exist (speculative
+  need → skip, record under `DECISIONS.md`); (2) a helper, type or pattern in this codebase →
+  reuse it; (3) the standard library does it; (4) a native platform feature covers it
+  (`<input type="date">` over a picker, CSS over JS, a DB constraint over app code); (5) an
+  installed dependency solves it (never add one for a few lines); (6) it can be one line;
+  (7) only then the minimum that works.
+- No abstraction with one implementation, no factory for one product, no config for a value
+  that never changes, no scaffolding "for later".
+- Fewest files, shortest working diff that fixes the root cause where all callers route
+  through, not the symptom. A bug fix greps every caller first. Read the flow end to end
+  before changing it.
+- Explanations: code and the one-line result under the package, no essays.
+- Never simplify away: input validation at trust boundaries, error handling that prevents
+  data loss, security, accessibility basics, the plan's verification criteria, anything the
+  plan asks for explicitly.
 
 ## Run
+
+Launch: model, effort and advisor are launch parameters chosen by the plan's hand-over line
+(see `/autopilot-plan`); consult the advisor before committing to an approach, on a
+recurring error and before declaring done. At the end print the table of
+`autopilot-usage <this session's transcript>` (newest `.jsonl` under
+`~/.claude/projects/<cwd with "/" replaced by "-">/`).
 
 ### 1. Gate and branch
 Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package manager
 (lockfile) and the existing scripts (`references/init.md`) and persist it. No test runner →
 set one up minimally, project-consistent, before implementing. Create
-`.claude/.autopilot-active` when the Stop hook exists; remove it at the end and on every
-abort. Branch per the plan header: **session mode** checks out `<prefix>/<KEY>-<slug>`, which
-`/autopilot-plan` created with the plan on it (create it from the base only when you wrote
-the plan yourself, and commit the plan there first); **feature-branch mode** checks out the
-named feature branch (create it from the base if missing) and commits straight onto it, so
-several sessions add up to one branch that gets one review at the end. Either way `PLAN.md`
-must be on the checked-out branch before the first package. A continuation checks out the
-existing branch. Work in the current
-checkout; a worktree only when the tree is dirty with foreign changes.
+`.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it at the end and
+on every abort; never commit it. Branch per the plan header: **session mode** checks out
+`<prefix>/<KEY>-<slug>`, which `/autopilot-plan` created with the plan on it (create it from
+the base only when you wrote the plan yourself, and commit the plan there first);
+**feature-branch mode** checks out the named feature branch (create it from the base if
+missing) and commits straight onto it; several sessions add up to one branch with one review
+at the end. `PLAN.md` must be on the checked-out branch before the first package. A
+continuation checks out the existing branch. Work in the current checkout; a worktree only
+when the tree is dirty with foreign changes.
 
 ### 2. Packages, in order
 For each package with `[ ]`: set `[~]`, then
 
-- **Tests at the seams the plan names** (public interfaces only; no private internals, no
-  side-channel assertions). Red before green: one failing test, run that file, confirm it
-  fails on the assertion; minimal code to pass; refactor only what you wrote. Vertical
-  slices, one test at a time. Mock only process boundaries. Reject in your own tests:
-  implementation-coupled, tautological, skipped, `.only`, cannot-fail.
+- **Tests at the seams the plan names** (public interfaces only). Red before green: one
+  failing test, run that file, confirm it fails on the assertion; minimal code to pass;
+  refactor only what you wrote. Vertical slices, one test at a time. Mock only process
+  boundaries. Reject: implementation-coupled, tautological, skipped, `.only`, cannot-fail.
 - **Failures:** one hypothesis, one change, re-run. After the second failed fix on the same
   failure: write observed vs expected, bisect, then fix. Never weaken an assertion.
 - **Docs** directly affected by the package (inline, the touched area's doc file).
@@ -97,95 +101,42 @@ unresolved real gaps go to the top of `REPORT.md` and into the PR description.
 
 **Codex cross-model review, on by default.** After the Claude review is settled, run
 `evelan:codex-review` on the branch (`--base <base branch>`) unless the prompt says
-"ohne Codex" / "no Codex" or `codex-cli --version` fails (then write one line in
-`REPORT.md`: Codex review skipped, why). Nobody picks findings here: treat Codex's findings
-exactly like the reviewer's (fix every correctness, requirement or safety gap test-first,
-re-gate, commit; one cycle), rebut the rest with evidence in `REPORT.md` under "Codex
-review". Codex rate-limited or unavailable → skip with the reason in `REPORT.md`; do not run
-the skill's Claude fallback, the adversarial review already happened.
+"ohne Codex" / "no Codex" or `codex-cli --version` fails (then one line in `REPORT.md`:
+Codex review skipped, why). Treat Codex's findings exactly like the reviewer's (fix every
+correctness, requirement or safety gap test-first, re-gate, commit; one cycle), rebut the
+rest with evidence in `REPORT.md` under "Codex review". Codex rate-limited or unavailable →
+skip with the reason in `REPORT.md`; do not run the skill's Claude fallback.
 
 ### 4. Goal artifact
-Exercise the goal artifact from the plan in the real thing: start the dev server, drive the
-acceptance criteria, valid and invalid input, error states, console and network; or open the
-generated report or document. Fix test-first, re-verify, stop the server. A missing
-precondition is a blocker to resolve, not a skip. Only steps this environment cannot perform
-go to `MANUAL_TESTING.md`.
+Exercise the goal artifact in the real thing: start the dev server, drive the acceptance
+criteria, valid and invalid input, error states, console and network; or open the generated
+report or document. Fix test-first, re-verify, stop the server. A missing precondition is a
+blocker to resolve, not a skip. Only steps this environment cannot perform go to
+`MANUAL_TESTING.md`.
 
 ### 5. Finish
 User-facing behaviour or public API changed → README and top-level docs. `build` once.
 Write `REPORT.md` (what shipped, verification with commands and results, review findings,
 open items), prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
-delete a consumed `HANDOFF.md`, remove the sentinel, commit.
+delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX
+marker: `references/artifacts.md`.
 
 ### 6. PR and CI
 "defer PR" in the prompt → report branch and state, stop. Feature-branch mode → push the
 feature branch (`git push origin <feature>`; pull with rebase first if it moved), no PR; the
-feature branch gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
-(`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix, re-push,
-until green. A green `review` check is not a review: fetch the bot's comments on both
-surfaces (`pulls/<n>/comments`, `issues/<n>/comments`), verify each, fix or rebut with
-evidence; a finding that contradicts a recorded decision is escalated in the PR, not
-implemented.
+feature branch gets its PR when the last session of the feature is done. Otherwise push, open
+**one PR** (`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix,
+re-push, until green. Verify the review bot's comments on both surfaces, fix or rebut; a
+finding that contradicts a recorded decision is escalated in the PR, not implemented.
 
-## Hand-off (`HANDOFF.md`)
+## Hand-off
 
 (1) commit every finished change; (2) write `docs/autopilot/sessions/<slug>/HANDOFF.md`;
 (3) set the package `[~]` in `PLAN.md` with a one-line progress note; (4) commit both;
 (5) end the turn with one line: `Resume with /autopilot <session directory>`. The queue
-runner or the user starts the fresh session.
-
-```
-# HANDOFF - <package> - <ISO timestamp>
-## Where we are
-<package> is [~]: <one sentence>. Branch: <name>, HEAD: <sha>.
-## Verified (with evidence)
-- <what> - <command> → <result line>   (or: .claude/autopilot-gate.log last line)
-## Open
-- <concrete item>
-## Next step
-<the exact first action>
-## Decisions made
-- <decision> - <why>   (also in DECISIONS.md)
-## Do not redo
-- <verified things the next agent must not repeat>
-```
-
-Point to `PLAN.md`, commits and the gate log instead of copying. Redact secrets.
+runner or the user starts the fresh session. HANDOFF.md format: `references/handoff.md`.
 
 ## Stop conditions (abort: `REPORT.md` with the blocker on top, artifacts committed, sentinel removed)
 - The gate cannot go green without a destructive action or human input.
 - The task needs anything on the never-list: force-push, `migrations/`, secrets, env files,
   production config, CI credentials, other people's branches.
-
-## Artifacts - `docs/autopilot/` (committed, part of the PR)
-
-```
-docs/autopilot/
-  INDEX.md                          # newest-first, one line per session
-  sessions/YYYY-MM-DD-<slug>/
-    PLAN.md          # from /autopilot-plan: goal, goal artifact, decisions, packages + status
-    DECISIONS.md     # assumptions the run made, with reasons
-    HANDOFF.md       # transient; deleted when consumed
-    REPORT.md        # shipped work, verification, review findings, open items
-    MANUAL_TESTING.md  # only for steps impossible in this environment
-```
-
-`INDEX.md` marker (prepend below it, never sort or rewrite):
-```
-<!-- NEW ENTRIES GO IMMEDIATELY BELOW THIS LINE -->
-- **YYYY-MM-DD HH:MM** - <title> - <one line> - [PR](<url>) [→](./sessions/<slug>/REPORT.md)
-```
-
-## Model, effort, advisor, permissions, hooks
-The run uses the session's model and effort; pick both at launch, never mid-run (a model
-switch throws away the cache): `claude --model sonnet --effort medium --advisor fable` runs
-on Sonnet at medium effort and lets it consult Fable at decision points (before committing to
-an approach, on a recurring error, before declaring done). **Effort default for autopilot
-runs is `medium`** (`low`, `medium`, `high`, `xhigh`, `max`); the plan's hand-over line
-names the effort, and a run launched without `--effort` inherits the user's `effortLevel`
-setting, so always pass it. Raise it only for a plan that says so (security-critical
-backend, tricky migrations). "Consult the advisor" in the prompt makes it consult more.
-Unattended runs: `--permission-mode auto`. The hooks from `/autopilot init` are optional;
-the hand-off rules apply with or without them. At the end, print the table of
-`autopilot-usage <this session's transcript>` (newest `.jsonl` under
-`~/.claude/projects/<cwd with "/" replaced by "-">/`) so every run leaves a measurement.

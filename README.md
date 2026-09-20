@@ -54,16 +54,16 @@ Plugin updates are distributed automatically when the repo is updated. To manual
 
 ### update-dependencies
 
-Smart dependency updater using ncu (npm-check-updates). Goes beyond simple version bumps — for major updates, it researches breaking changes and can auto-migrate your code.
+Smart dependency updater using ncu (npm-check-updates). Goes beyond simple version bumps - for major updates, it researches breaking changes and can auto-migrate your code.
 
 **Features:**
-- Automatic `ncu` installation check (offers global install or npx fallback)
+- Runs `npx npm-check-updates` once and shows minor and major candidates together
 - Dry-run preview before any changes
-- Parallel subagent research for major updates — finds breaking changes and migration guides
+- Parallel subagent research for major updates - finds breaking changes and migration guides
 - Per-package opt-out after reviewing breaking changes
 - Two execution modes:
-  - **Apply now** — updates packages and auto-migrates code based on migration guides
-  - **Create plan** — writes a detailed migration plan to `docs/plans/` for later execution
+  - **Apply now** - updates packages and auto-migrates code based on migration guides
+  - **Create plan** - writes a detailed migration plan to `docs/plans/` for later execution
 - Always pins exact versions (no `^` or `~`)
 - Runs build/test/lint after migrations to catch regressions
 
@@ -100,7 +100,7 @@ Controlled, exact-copy workflow for porting a component, style, layout, or featu
 
 ### Workflow skills (interactive: from idea to spec to tickets)
 
-Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot: you decide, the agent asks. Start with `/evelan:which-skill` when unsure.
+Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot: you decide, the agent asks.
 
 | Skill | What it does |
 | --- | --- |
@@ -114,10 +114,7 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 | `evelan:diagnose-bug` | Diagnosis loop for hard bugs: tight feedback loop first, regression test last |
 | `evelan:domain-model`, `evelan:codebase-design` | Vocabulary references: domain terms and ADRs; deep modules and seams |
 | `/evelan:improve-architecture` | Scan for deepening opportunities, HTML report, then interview |
-| `/evelan:wayfinder` | Map a huge effort as decision tickets and resolve them one at a time |
 | `/evelan:handoff` | Write a hand-off document for a fresh agent |
-| `/evelan:wait-what` | Re-pitch a message that did not land |
-| `/evelan:which-skill` | Router: which skill or flow fits the situation |
 
 **Rule for autonomous work:** the plan is written with you in the loop (`/evelan:autopilot-plan`, after `/evelan:question-me` for anything with open shape questions); the run itself asks nothing.
 
@@ -152,19 +149,6 @@ Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a 
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
 
-### reflect-on-changes
-
-Runs a short self-reflection check after a round of code changes is complete, before declaring the work done. Forces Claude to honestly interrogate its own work — surfacing what it's least confident about and what it might be missing — so problems get caught before the user finds them.
-
-**Features:**
-- Triggers automatically after meaningful changes (features, refactors, bug fixes, multi-file edits) — not for trivial one-line tweaks
-- Answers two grounded questions before the closing summary:
-  - **What am I least confident about?** — a specific function, assumption, untested path, or guessed dependency
-  - **What might I be missing?** — unstated context, ambiguous requirements, team conventions, or unknown unknowns
-- Presented as a short, clearly-labeled section with no vague hedging
-- Escalates real concerns into a proposed fix or a question instead of burying them in a checklist
-
-**Trigger phrases:** "done", "finished", "that should do it", "ready for review", "let me know what you think"
 
 ### preview
 
@@ -223,15 +207,15 @@ General-purpose delegation to the Codex CLI (`codex exec`): writes a structured 
 
 ### e2e-demo
 
-Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions — either or both, concatenated as sequential cuts when a task needs both.
+Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions - either or both, concatenated as sequential cuts when a task needs both.
 
 **Features:**
-- Real run first, always — an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
+- Real run first, always - an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
 - Assertions read back real persisted state (DB row, API response), never just a UI toast or a zero exit code
-- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended — no OpenAI account or billing)
-- Narration and the artifact's results table are derived strictly from what the run actually proved — nothing narrated that wasn't checked
+- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended - no OpenAI account or billing)
+- Narration and the artifact's results table are derived strictly from what the run actually proved - nothing narrated that wasn't checked
 - Human-gated steps (a real browser login, an approval) are named plainly, never faked or automated around
 - Published artifact: goal/issue, what changed, a results table, real screenshots, the narration script
-- Project-agnostic — finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
+- Project-agnostic - finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
 
 **Trigger phrases:** "test this properly", "make sure this works", "show me a demo", "I want a report for this", "verify the instructions actually work for a client", "teste das richtig", "zeig mir eine Demo", "beweise dass das funktioniert", "ich will einen Report dazu"

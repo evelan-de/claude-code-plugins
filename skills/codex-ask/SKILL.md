@@ -7,209 +7,53 @@ description: >-
   routes work to Codex - "frag Codex", "was sagt Codex zu ...", "lass Codex
   das machen", "delegiere das an Codex", "ask Codex", "delegate this to
   Codex", "let Codex handle this" - or when another Evelan skill explicitly
-  routes to it. Never auto-trigger:
-  without such an explicit Codex signal, do the work yourself as usual.
+  routes to it.
 ---
 
-# Codex Ask - general delegation to the Codex CLI
+# Codex Ask
 
-Hand a well-briefed, self-contained task to Codex and report back honestly
-what came out - including anything it changed on disk. Codex runs without our
-conversation history, so the quality of the result is decided by the brief
-you write, not by the shell command.
+Hand a briefed task to Codex, report its answer and what it changed on disk.
+Shared procedure (preflight, model, background run, reporting):
+`${CLAUDE_PLUGIN_ROOT}/skills/codex-review/references/codex-common.md`.
+Brief template: `references/brief.md` in this folder.
 
-## Preflight and write-safety snapshot
+## Before the run
 
-1. **Resolve the binary:** run `codex-cli --version`. The plugin's `bin/` is
-   on PATH when installed; in a local checkout use `<repo>/bin/codex-cli`.
-   If it exits non-zero, relay its stderr message and stop.
-2. **Snapshot the full working tree** (Codex may write into the workspace). A
-   plain `git status` + `HEAD` is not enough: if the tree is already dirty, the
-   after-run status mixes the user's pre-existing edits with Codex's, and you
-   can no longer report what Codex actually touched. Capture the entire pre-run
-   worktree as a tree object so you can subtract it later:
+1. Preflight per codex-common.md.
+2. `git status --porcelain`. Dirty tree: tell the user Codex's edits will land
+   on top of their uncommitted work and wait for their go-ahead.
+3. `codex-snapshot save`. Note the printed id.
+   Outside a git repo: skip the snapshot and add `--skip-git-repo-check`.
+4. Write the brief (references/brief.md) to a file from `mktemp /tmp/codex-XXXXXX`.
 
-   ```bash
-   PRE_HEAD="$(git rev-parse HEAD)"
-   SNAP_DIR="$(mktemp -d /tmp/codex-ask-snap-XXXXXX)"   # temp dir OUTSIDE the repo
-   GIT_INDEX_FILE="$SNAP_DIR/index" git read-tree HEAD
-   GIT_INDEX_FILE="$SNAP_DIR/index" git add -A          # tracked edits, deletions, AND untracked content
-   PRE_TREE="$(GIT_INDEX_FILE="$SNAP_DIR/index" git write-tree)"
-   rm -rf "$SNAP_DIR"
-   ```
+## Run
 
-   This writes a tree object capturing the current worktree - tracked edits,
-   deletions, and the content of untracked files - without touching your real
-   index or working tree, so Codex still sees the dirty state. Use a temp
-   **directory** outside the repo and an index path that does not pre-exist
-   (`$SNAP_DIR/index`): a pre-created empty file can trip `git read-tree` on
-   some git versions, and an index inside the repo would get swept into the
-   snapshot. `PRE_TREE` + `PRE_HEAD` are your baseline.
-
-   Two limits to know: `git add -A` excludes files ignored by `.gitignore`, so
-   this snapshot covers **git-visible** files only - if the delegated task is
-   expected to touch an ignored artifact, say so and check it separately. And a
-   `git stash create` + untracked-name list does **not** work here: it misses
-   edits to pre-existing untracked files and loses the baseline when a clean
-   tree then gets a Codex commit.
-3. **Warn before running if the tree is already dirty** with our own
-   uncommitted work - the user should know Codex edits will land on top of
-   it. Wait for their go-ahead in that case.
-4. Outside a git repo, add `--skip-git-repo-check` to the invocation and
-   skip the snapshot/diff steps.
-
-If the session's permission setup denies `codex-cli` Bash calls outright, the
-fix is a one-time allow rule for `codex-cli` in `.claude/settings.json` - tell
-the user that rather than routing around the denial.
-
-## The brief
-
-Never forward a one-liner. Write a structured brief to a temp file. Preserve
-the user's intent verbatim - do not invent requirements, constraints, or
-scope they did not state.
-
-```text
-GOAL
-<the user's actual ask, faithfully restated>
-
-CONTEXT
-- Relevant files: <paths Codex should read first>
-- Stack/conventions that matter here: <only the ones that apply>
-
-CONSTRAINTS
-- <what must not change>
-- <project rules that bind this task>
-
-EXPECTED RESULT
-<what a good answer or change looks like>
-
-DEFINITION OF DONE
-<how Codex should verify its own work before finishing>
-```
-
-Fill only the lines that matter - a clean short brief beats a padded one.
-
-## Invocation
+Log file from `mktemp /tmp/codex-XXXXXX`, then in the background:
 
 ```bash
-BRIEF="$(mktemp /tmp/codex-ask-brief-XXXXXX)"
-LAST="$(mktemp /tmp/codex-ask-last-XXXXXX)"
-# write the brief into "$BRIEF", then:
-codex-cli exec \
-  --sandbox workspace-write \
-  -c approval_policy=on-request \
-  -c approvals_reviewer=auto_review \
-  -o "$LAST" \
-  - < "$BRIEF"
+codex-cli exec --sandbox workspace-write -c approval_policy=on-request -c approvals_reviewer=auto_review -o /tmp/codex-<last> - < /tmp/codex-<brief> > /tmp/codex-<log> 2>&1
 ```
 
-- `--sandbox workspace-write`: Codex may edit inside the working directory -
-  that is the point of delegating, and an explicit user choice.
-- `approval_policy=on-request` + `approvals_reviewer=auto_review`:
-  escalations go to Codex's own reviewer agent instead of blocking on a
-  human prompt nobody can answer in a headless run.
-- **The brief goes in on stdin** (the trailing bare `-`), never as a trailing
-  positional - variadic flags such as `--image` swallow a positional prompt
-  and Codex then reports "No prompt provided". This failure mode is
-  documented in `skills/codex-imagegen/SKILL.md`; do not reintroduce it.
-- `-o "$LAST"` captures the clean final message separately from the noisy
+- `-o <file>` (a third mktemp path) captures the final message apart from the
   event stream.
-- Reference images go in via a separate `--image <FILE>` flag per file;
-  `-C <dir>` / `--add-dir <dir>` widen the working scope when the task needs
-  it.
-- **mktemp templates must end in the `X` run** (`/tmp/codex-ask-brief-XXXXXX`).
-  On macOS/BSD `mktemp`, X's followed by a suffix (`...-XXXXXX.txt`) are not
-  expanded - you get a literal, non-random filename that collides on reuse.
-  X's-at-end works on both BSD and GNU.
-
-A delegated task can run long and foreground Bash is capped at 10 minutes,
-so run the command **in the background** (Bash `run_in_background: true`),
-redirect combined output to a log file, and wait for the completion
-notification. No polling, no side work while it runs.
-
-## Model selection
-
-**Default: pass no model at all.** Codex then uses its own default, which is
-the strongest coding model in the catalog. Only override when the user names
-a model ("nutze Astra", "mit Sol", "nutze Luna", "das billige Modell") or
-explicitly asks for a cheap/fast run.
-
-Never paste a slug from memory - the catalog changes with every Codex
-release. Resolve the name first:
-
-```bash
-MODEL="$(codex-model resolve astra)" || exit  # -> gpt-6-astra
-codex-cli exec -m "$MODEL" --sandbox workspace-write ... - < "$BRIEF"
-```
-
-`codex-model` sits next to `codex-cli` in the plugin's `bin/`. It matches an
-exact slug or a unique suffix, so "Astra" / "Sol" / "Terra" / "luna" / "5.5"
-all resolve. Only models the catalog lists for its picker are offered; entries
-Codex marks hidden (internal helpers, capacity fallbacks) are rejected like
-any unknown name. Its exit codes matter:
-
-| Exit | Meaning | What you do |
-|---|---|---|
-| 0 | resolved (or catalog unreadable -> passed through with a warning) | use the printed slug |
-| 2 | unknown name; stderr lists the real ones | stop, show the user the list, ask which |
-| 3 | ambiguous short name | stop, ask for the full slug |
-
-Resolving up front is the point: an unknown slug is **not** rejected locally
-by Codex. The session starts, the request goes out, and only the backend
-answers `400 ... model is not supported`, after the run has already cost
-time. Fail fast instead.
-
-Rough guidance when the user asks for a recommendation, not a specific model:
-the frontier model for real code work and reviews, the cheap tier for
-high-volume, low-judgement tasks (bulk rewrites, extraction, classification).
-`codex-model list` shows what is actually available - do not describe tiers
-you have not verified. The catalog comes from the installed Codex CLI, so an
-outdated CLI hides newer models: when a model the user names is missing from
-the list, check `codex-cli --version` against the latest release before
-telling them it does not exist.
-
-**Report which model ran.** Take it from the `model:` line in the log header
-that Codex writes, not from the model itself - models routinely misreport
-their own identity, so asking one to confirm proves nothing.
-
-## Structured output (optional)
-
-When the user wants a machine-readable answer, write a JSON schema to a file
-and add `--output-schema <FILE>`; the final message then conforms to it.
-Free text is the default - do not add a schema unasked.
+- The brief goes in on stdin (trailing `-`), never as a positional argument:
+  variadic flags such as `--image` swallow a positional prompt.
+- One `--image <FILE>` flag per reference image. `-C <dir>` / `--add-dir <dir>`
+  widen the scope when needed.
+- Model override: `-m <slug>` from `codex-model resolve`.
 
 ## After the run
 
-1. **Relay the answer verbatim:** read `$LAST` and present it unedited.
-   Report the log file path alongside it.
-2. **Show what Codex touched - isolated from any pre-existing dirty work,
-   never silently.** Re-snapshot the worktree the same way and diff the two
-   tree objects, so the user sees Codex's changes alone, not their own
-   uncommitted edits mixed in:
+1. Present the `-o` file unedited, with the log path and the `model:` line.
+2. `codex-snapshot diff <id>` (files changed and commits made since the
+   snapshot; `codex-snapshot patch <id>` for the full patch). Summarize and
+   ask the user whether to keep, adjust or revert. Never commit Codex's
+   changes on your own. The snapshot covers git-visible files only; an ignored
+   artifact the task was meant to touch is checked separately.
+3. Empty final message or failed run: say so with the log excerpt.
 
-   ```bash
-   POST_DIR="$(mktemp -d /tmp/codex-ask-snap-XXXXXX)"
-   GIT_INDEX_FILE="$POST_DIR/index" git read-tree HEAD
-   GIT_INDEX_FILE="$POST_DIR/index" git add -A
-   POST_TREE="$(GIT_INDEX_FILE="$POST_DIR/index" git write-tree)"
-   rm -rf "$POST_DIR"
+## Not here
 
-   git diff --stat "$PRE_TREE" "$POST_TREE"   # exactly Codex's changes, isolated
-   git diff "$PRE_TREE" "$POST_TREE"          # full patch, when you need detail
-   git log --oneline "$PRE_HEAD"..HEAD        # any commits Codex made
-   ```
-
-   Comparing the two worktree snapshots isolates exactly what Codex changed -
-   tracked files, deletions, and untracked content alike - even when the tree
-   was already dirty or Codex committed (the tree diff is independent of HEAD
-   moving; `PRE_HEAD..HEAD` surfaces the commits on top). Summarize the
-   isolated changes and ask the user whether to keep, adjust, or revert. Do not
-   commit Codex's changes on your own.
-3. If `$LAST` is empty or the run failed, say so plainly with the log
-   excerpt - a silent no-op is not an acceptable outcome.
-
-## What not to route here
-
-- Image generation -> `codex-imagegen` skill.
-- Reviewing a diff -> `codex-review` skill.
-- Anything the user did not explicitly tie to Codex -> just do it yourself.
+- Image generation: `codex-imagegen`.
+- Reviewing a diff: `codex-review`.
+- Anything the user did not tie to Codex: do it yourself.

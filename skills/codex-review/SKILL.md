@@ -11,177 +11,77 @@ description: >-
   without an explicit Codex signal.
 ---
 
-# Codex Review - cross-model code review via the Codex CLI
+# Codex Review
 
-Run OpenAI's Codex as a second, independent reviewer over a local diff and
-hand its findings to the user untouched. You are the operator here, not the
-reviewer: you pick the right diff, run the tool, strip the noise, and relay.
-You do not judge, filter, or fix.
+Run `codex review` over a local diff and relay the findings untouched. Use
+the native `codex review` subcommand; do not rebuild it with `codex exec`.
+Shared procedure (preflight, model, background run, reporting):
+`references/codex-common.md` in this folder.
 
-The native `codex review` subcommand is used deliberately - OpenAI maintains
-its review prompt and diff-selection logic. Do not rebuild either with
-`codex exec`.
+## Preflight
 
-## Preflight (in order, abort on first failure)
+1. Preflight per codex-common.md (binary, git repo). Outside a repo: stop.
+2. Select the scope and confirm the diff is non-empty. Empty diff: stop and
+   say so.
 
-1. **Resolve the binary:** run `codex-cli --version`. The plugin's `bin/` is
-   on PATH when installed; in a local checkout use `<repo>/bin/codex-cli`.
-   If it exits non-zero, relay its stderr message to the user and stop -
-   nothing below can work.
-2. **Confirm a git repo:** `git rev-parse --is-inside-work-tree`. If not,
-   tell the user `codex review` needs a repository and stop.
-3. **Select the scope and confirm the diff is non-empty** (next section).
-   Reviewing an empty diff wastes a model call - abort with an explanation
-   instead.
+## Scope
 
-If the session's permission setup denies `codex-cli` Bash calls outright, the
-fix is a one-time allow rule for `codex-cli` in `.claude/settings.json` - tell
-the user that rather than routing around the denial.
+An explicit user argument wins (forward it verbatim). Otherwise:
 
-## Scope selection
+| Situation | Flag | Non-empty check |
+|---|---|---|
+| Working tree dirty (`git status --porcelain` non-empty) | `--uncommitted` | `git status --porcelain` has output |
+| Clean tree on a feature branch | `--base <default branch>` | `git diff <b>...HEAD --stat` has output |
+| User names a commit | `--commit <SHA>` | `git show --stat <sha>` lists files |
 
-An explicit user argument always wins (forward it verbatim). Otherwise:
+Default branch: `git-default-branch` (prints it; exit 1 with a message when
+none is found).
 
-| Situation | Flag |
-|---|---|
-| Working tree dirty (`git status --porcelain` non-empty) | `--uncommitted` |
-| Clean tree on a feature branch | `--base <default branch>` |
-| User points at a specific commit | `--commit <SHA>` |
+## Run
 
-Derive the default branch - never assume it:
+A scope flag and a focus prompt are mutually exclusive; the CLI rejects
+`codex review --base <b> "focus"`. Pick one form, log file from
+`mktemp /tmp/codex-XXXXXX`, background run:
 
-```bash
-base="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
-if [ -z "$base" ]; then git show-ref --verify --quiet refs/remotes/origin/main && base=main; fi
-if [ -z "$base" ]; then git show-ref --verify --quiet refs/remotes/origin/master && base=master; fi
-```
+- Scoped (default): `codex-cli review --base <b> > /tmp/codex-<log> 2>&1`
+  (swap the flag per the table).
+- Focused (user steers: "only the API route", "watch for security"): pass the
+  instructions as the prompt and drop the scope flag. Codex then reviews the
+  current working changes; this form cannot target a `--base`/`--commit`
+  range. Multi-line prompt: `codex-cli review - < /tmp/codex-<prompt> > /tmp/codex-<log> 2>&1`.
 
-Non-empty checks per scope:
+Both a range and focus text requested: use the scoped form and tell the user
+the focus note could not be passed; use the focused form only when the range
+is the uncommitted diff.
 
-- `--uncommitted`: `git status --porcelain` has output.
-- `--base <b>`: `git diff "<b>"...HEAD --stat` has output.
-- `--commit <sha>`: `git show --stat <sha>` shows changed files.
+Model override goes through `-c model=<slug>` (`codex review` has no `-m`):
+`codex-cli review -c model=<slug> --base <b> > /tmp/codex-<log> 2>&1`. Say so
+when the user picks a cheaper model for a security-sensitive review.
 
-## Execution
+## Failure
 
-A scope flag and a focus prompt are **mutually exclusive** - the CLI rejects
-`codex review --base <b> "focus"` with
-`error: the argument '--base <BRANCH>' cannot be used with '[PROMPT]'` (same
-for `--uncommitted` and `--commit`). So pick one of two forms:
+Non-zero exit and no review text in the log = failed review (rate limit,
+quota, auth expired, service down). Then:
 
-- **Scoped review (default, no custom instructions):** pass the scope flag
-  alone. This is the normal path and reviews exactly the diff from the table.
+1. Tell the user Codex could not review, quote the relevant log line, give
+   the log path.
+2. Fall back to a Claude review of the same diff (a review agent available in
+   the session, else review directly) and label it as the Claude fallback
+   review.
 
-  ```bash
-  LOG="$(mktemp /tmp/codex-review-XXXXXX)"
-  codex-cli review --base "$base" > "$LOG" 2>&1   # swap the flag per the table
-  ```
+A non-zero exit with a real review in the log is not a failure. Never pretend
+Codex reviewed when it did not.
 
-- **Focused review (custom instructions, no scope flag):** when the user wants
-  to steer the review ("only the API route", "watch for security issues"),
-  pass the instructions as the `PROMPT` and drop the scope flag. Use `-` to
-  feed a multi-line prompt on stdin. Without a scope flag Codex reviews the
-  current working changes under your guidance - so this form fits the
-  uncommitted case; it cannot target an arbitrary `--base`/`--commit` range.
+Called by another skill (`evelan:autopilot` or `evelan:code-review`): no
+fallback. Report the failure in one line and return; the caller records the
+skip.
 
-  ```bash
-  LOG="$(mktemp /tmp/codex-review-XXXXXX)"
-  printf '%s\n' "only the API route, watch for security issues" \
-    | codex-cli review - > "$LOG" 2>&1
-  ```
+## Output
 
-If the user asks for both a specific base/commit range AND focus text, you
-cannot pass both - prefer the scoped flag (the explicit range is the harder
-requirement) and tell the user the focus note could not be handed to Codex,
-or fall back to the focused form if the range is really the uncommitted diff.
+Relay the review text verbatim: no summary, no dropped or ranked findings, no
+unprompted rebuttal. Only the noise stripping from codex-common.md. Report
+the log path and the `model:` line.
 
-### Model selection
-
-**Default: pass no model.** Codex uses its own default, which is the
-strongest coding model in the catalog - the right one for a review. Override
-only when the user names a model ("review mit Astra", "mit Sol", "nutze
-Luna dafür").
-
-`codex review` has **no `-m/--model` flag** (unlike `codex exec`) - the
-override goes through `-c model="<slug>"`. Resolve the name first rather than
-typing a slug from memory, since the catalog changes with every release:
-
-```bash
-MODEL="$(codex-model resolve astra)" || exit   # -> gpt-6-astra
-codex-cli review -c model="$MODEL" --base "$base" > "$LOG" 2>&1
-```
-
-`codex-model` lives next to `codex-cli` in the plugin's `bin/` and exits 2
-with the list of real slugs on an unknown name (models the catalog marks
-hidden count as unknown), 3 on an ambiguous one. In
-both cases stop and ask the user - do not guess a slug. The catalog comes
-from the installed Codex CLI, so a model missing from the list may just mean
-the CLI is outdated. This matters because
-Codex does not reject a bad slug locally: the run starts and only the backend
-answers `400 ... model is not supported`, after minutes of review time.
-
-Steering a review to a cheaper model is a real trade-off, not a free win -
-say so if the user picks the budget tier for a security-sensitive review.
-Always report which model produced the findings, taken from the `model:`
-line in the log header.
-
-**mktemp:** the template must end in the `X` run (`/tmp/codex-review-XXXXXX`).
-On macOS/BSD `mktemp`, X's followed by a suffix like `...-XXXXXX.log` are
-**not** expanded - you get a literal, non-random filename that collides on the
-next run. X's-at-end works on both BSD and GNU.
-
-A review can run for several minutes and foreground Bash is capped at 10
-minutes, so run it **in the background** (Bash `run_in_background: true`), log
-to a file, and wait for the completion notification. No polling, and do not
-start other work while it runs - the review is the task.
-
-## Fallback when Codex is rate-limited or unavailable
-
-Codex can refuse a run because a usage/rate limit is hit, auth expired, or the
-service is down. Detect this and **fall back to a normal Claude review** rather
-than leaving the user with nothing. Treat the run as failed-to-review when the
-process exits non-zero **and** produced no actual review, especially when the
-log matches a limit/availability signature (case-insensitive):
-
-`rate limit`, `usage limit`, `quota`, `429`, `too many requests`,
-`limit reached`, `reached your usage`, `insufficient_quota`, `unauthorized`,
-`401`, `login`, `not found` (binary).
-
-On such a failure:
-
-1. Tell the user plainly that Codex could not review and why (quote the matched
-   line), with the log path.
-2. **Fall back:** review the same diff yourself as Claude - the normal review
-   flow the user would otherwise get. If a dedicated review agent is available
-   in the session (e.g. a `code-reviewer` subagent, or in an autopilot run the
-   `evelan:autopilot-reviewer`), dispatch that; otherwise review it directly.
-   Label the output clearly as the **Claude fallback review**, not Codex's.
-
-Do not silently swallow a Codex failure and do not pretend Codex reviewed when
-it did not. A genuine transient (e.g. the benign `failed to renew cache TTL`
-line) with a real review still present is **not** a limit - only fall back when
-there is no usable review.
-
-**Called by another skill** (`evelan:autopilot` or `evelan:code-review`): no
-fallback. A Claude review runs there anyway; report the failure in one line
-and return, the calling skill records the skip.
-
-## Output handling - raw passthrough
-
-Codex's review text is relayed **verbatim and unjudged**. Do not summarize
-it, do not drop findings, do not rank them, and do not argue against them
-unprompted. The user asked for a second opinion - deliver it whole.
-
-The only allowed transformation is noise removal. Strip:
-
-- `exec /bin/zsh -lc ...` tool-call blocks and their `succeeded in Nms` /
-  exit-status output,
-- unrelated sandbox warnings (e.g. xcodebuild / DVTFilePathFSEvents lines).
-
-Everything else stays. Always report the path of the untouched log file
-alongside the cleaned output, so the user can read the raw stream.
-
-**Nothing is fixed automatically.** After presenting the findings, ask which
-ones to act on and wait for the user's pick. Exception: inside an autopilot
-run nobody can pick, so return the findings to the autopilot skill, which
-fixes real gaps test-first and rebuts the rest in `REPORT.md`.
+Nothing is fixed automatically. Ask which findings to act on and wait.
+Exception: inside an autopilot run return the findings to the autopilot
+skill, which fixes real gaps test-first and rebuts the rest in `REPORT.md`.

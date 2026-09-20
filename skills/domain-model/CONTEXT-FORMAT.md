@@ -33,7 +33,31 @@ _Avoid_: Client, buyer, account
 
 **Single context (most repos):** One `CONTEXT.md` at the repo root.
 
-**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+```
+/
+├── CONTEXT.md
+├── docs/adr/
+│   ├── 0001-event-sourced-orders.md
+│   └── 0002-postgres-for-write-model.md
+└── src/
+```
+
+**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other. System-wide ADRs stay in `docs/adr/`; context-specific ones live next to their `CONTEXT.md`.
+
+```
+/
+├── CONTEXT-MAP.md
+├── docs/adr/
+└── src/
+    ├── ordering/
+    │   ├── CONTEXT.md
+    │   └── docs/adr/
+    └── billing/
+        ├── CONTEXT.md
+        └── docs/adr/
+```
+
+Map format:
 
 ```md
 # Context Map

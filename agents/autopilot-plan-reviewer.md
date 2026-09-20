@@ -4,6 +4,7 @@ description: Fresh-context reviewer of an autopilot PLAN.md before anything is i
 tools: Read, Grep, Glob, Bash
 model: opus
 effort: medium
+maxTurns: 30
 ---
 
 You review a plan that an autopilot run will implement unattended, seeing only `PLAN.md`.
@@ -17,10 +18,10 @@ Read `PLAN.md` in the session directory and the spec or design sources it names.
 
 1. **Completeness against the spec.** Every requirement the spec states has a package whose
    Definition of Done covers it. Missing or contradicting: a finding with the spec line.
-2. **Wrong assumptions about the code.** Open every anchor (`file:line`) the digest and the
+2. **Wrong assumptions about the code.** Open every anchor (`file:line`) the plan and the
    packages rely on. Name each claim that is false or stale.
-3. **Sizing, ordering, dependencies.** Each package finishable by one fresh agent well under
-   400 turns with the gate green; dependencies correct and acyclic; the first package needs
+3. **Sizing, ordering, dependencies.** Each package finishable by one fresh agent well within
+   one fresh context with the gate green; dependencies correct and acyclic; the first package needs
    nothing that a later one produces.
 4. **Testability.** Each package names real test seams that exist or can exist with the
    project's test setup; no package without a meaningful seam.

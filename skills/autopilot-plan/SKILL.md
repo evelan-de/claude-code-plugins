@@ -1,7 +1,6 @@
 ---
 name: autopilot-plan
 description: Write the plan an autopilot run executes. Interactive, in your own session, for one topic (ticket, spec, or idea). Triggers on "/autopilot-plan", "autopilot plan", "Plan für den Autopiloten", "bereite eine Autopilot-Session vor", "prepare an autopilot session".
-user-invocable: true
 argument-hint: "<ticket key | spec file | topic>   (add 'feature branch <name>' when several sessions share one branch)"
 ---
 
@@ -9,10 +8,7 @@ argument-hint: "<ticket key | spec file | topic>   (add 'feature branch <name>' 
 
 One topic, one plan file, written with the user in the loop. The plan is what `/autopilot`
 executes unattended, so every decision an unattended agent would otherwise guess is made
-here, once. Developers run this too. It borrows the working rules of the interactive
-workflow skills: seams agreed before slicing (`to-spec`), tracer-bullet slices with
-blocking edges and a quiz on granularity (`to-tasks`), and a named destination
-(`wayfinder`).
+here, once. Developers run this too.
 
 **Input:** `$ARGUMENTS`.
 
@@ -22,7 +18,7 @@ blocking edges and a quiz on granularity (`to-tasks`), and a named destination
   or `gh issue view`). Title, description, acceptance criteria, comments.
 - Spec file, `SPEC.md`, or a spec issue from `/evelan:to-spec`: read it; its user stories,
   implementation and testing decisions are the plan's raw material.
-- A `wayfinder:map` with open decision tickets: stop and say so; decisions come before plans.
+- A topic with open decision tickets: stop and say so; decisions come before plans.
 - Otherwise the prompt is the topic. If `CONTEXT.md` or ADRs exist, read them first and use
   their terms.
 
@@ -62,46 +58,7 @@ once: granularity right, edges right, merge or split anything? Iterate until app
 
 ## 5. Write `PLAN.md`
 
-Path: `docs/autopilot/sessions/YYYY-MM-DD-<slug>/PLAN.md` in the repo (slug lowercase,
-hyphenated; ticket key first when there is one). One file, under 200 lines, this shape:
-
-```
-# PLAN - <ticket key or topic> - <YYYY-MM-DD>
-Branch: <prefix>/<KEY>-<slug>   Base: <integration branch>   Ticket: <key or none>
-Branch mode: session | feature-branch <name>     PR: per session | none (feature branch reviewed as a whole)
-Effort: medium   (low | medium | high | xhigh | max; the launch line passes it as --effort)
-Sources: <spec, ADRs, docs the packages point to>
-
-## Destination
-<one paragraph: what the user gets when this plan is done>
-
-## Goal artifact
-<the user-verifiable deliverable, binding for the end check: e.g. "feature works in the
-locally running app at <route>", "report at <path>">
-
-## Scope / Non-goals
-- in: ...
-- out: ...
-
-## Decisions
-- <decision> - <reason>
-
-## Seams
-- <public interface the tests hit> - <prior art: existing test that does the same>
-
-## Packages (dependency order; status [ ] [~] [x] [!])
-### P1 [ ] <title>
-Delivers: <the end-to-end behaviour the user gets, not a layer list>
-Blocked by: none
-Files: <paths as of today>   Seams: <from the list above>
-Verify: <test cases with inputs and expected outputs; typecheck/lint/build expectation>
-Edge cases: <...>
-### P2 [ ] <title>
-Blocked by: P1
-...
-
-## Manual steps (only what this environment cannot do)
-```
+Template: `references/plan-template.md`.
 
 Rules: exact commands, paths and names (they are read within days, not months), no narrative,
 no ticket history. The plan is the whole spec the run sees: nothing lives only in the ticket.
@@ -117,10 +74,13 @@ sources; fold real findings in, dismiss with a reason under "Decisions".
 Commit `PLAN.md` on the branch the plan header names, so the run finds it: session mode →
 create `<prefix>/<KEY>-<slug>` from the base and commit there; feature-branch mode → check out
 the feature branch (create it from the base if missing) and commit there. Commit message
-`docs(autopilot): plan for <key or slug>`. Tell the user the path and the one command that
-runs it: `/autopilot <session directory>`, and the
-launch line that picks the run's model, effort and advisor
-(`claude --model sonnet --effort medium --advisor fable`, see the autopilot skill). Effort is
-`medium` unless the plan's risks call for more; write the chosen effort into the plan header
-(`Effort: medium`) so the queue and the launch line agree. Say what is still open, if
-anything. Do not implement anything here.
+`docs(autopilot): plan for <key or slug>`. Write the chosen effort into the plan header
+(`Effort: medium`) so the queue and the launch line agree. Tell the user the path, the one
+command that runs it (`/autopilot <session directory>`) and the launch line:
+
+```
+claude --model sonnet --effort medium --advisor fable --permission-mode auto --max-turns 400 --max-budget-usd 60 --fallback-model opus
+```
+
+Effort per the plan header (default medium); raise the budget only for a plan that says so.
+Say what is still open, if anything. Do not implement anything here.

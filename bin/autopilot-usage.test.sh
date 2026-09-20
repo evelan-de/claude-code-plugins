@@ -19,7 +19,7 @@ rec() { # $1 file $2 message id $3 input $4 cache_create $5 cache_read $6 output
   done
 }
 
-# coordinator: three requests (the second written as three lines: thinking, text, tool use),
+# main session: three requests (the second written as three lines: thinking, text, tool use),
 # then the dispatch request (two lines: thinking + the Agent tool use), then two more requests
 echo '{"type":"user","message":{"content":"go"}}' >"$MAIN"
 rec "$MAIN" m1 2 100000 0 500
@@ -46,7 +46,7 @@ out="$(sh "$BIN" "$MAIN")"
 echo "$out"
 
 echo "$out" | grep -q '^agent ' && ok "prints a header" || fail "header missing"
-echo "$out" | grep -E '^coordinator +main +6 +100002 +156102 +156102 +0\.7 +0\.16 +3\.0' >/dev/null && ok "coordinator: 6 requests (repeated lines collapsed), first, last, max, cache reads, cache writes, output" || fail "coordinator row: $(echo "$out" | grep '^coordinator')"
+echo "$out" | grep -E '^main +main +6 +100002 +156102 +156102 +0\.7 +0\.16 +3\.0' >/dev/null && ok "main: 6 requests (repeated lines collapsed), first, last, max, cache reads, cache writes, output" || fail "main row: $(echo "$out" | grep '^main ')"
 echo "$out" | grep -E '^agent-lead1 +evelan:autopilot-lead \(lead-P1\) +3 +50002 +80002 +80002 +0\.1 +0\.08 +5\.1' >/dev/null && ok "lead row with type from meta.json, duplicate line counted once" || fail "lead row: $(echo "$out" | grep '^agent-lead1')"
 echo "$out" | grep -E '^agent-explore +\? +2 +56002 +60002 +60002 +0\.1 +0\.06 +20\.0' >/dev/null && ok "agent without meta.json gets type ?" || fail "explore row: $(echo "$out" | grep '^agent-explore')"
 echo "$out" | grep -E '^agent-wf +\? +1 +30002' >/dev/null && ok "nested workflow agent is included" || fail "workflow row missing"
@@ -56,7 +56,7 @@ echo "$out" | grep -E '^TOTAL +12 ' >/dev/null && ok "total requests across all 
 M3="$P/noid.jsonl"
 printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":0,"output_tokens":1}}}\n' >>"$M3"
 printf '{"type":"assistant","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":10,"cache_read_input_tokens":11,"output_tokens":1}}}\n' >>"$M3"
-sh "$BIN" "$M3" | grep -E '^coordinator +main +2 ' >/dev/null && ok "lines without message id count individually" || fail "no-id transcript"
+sh "$BIN" "$M3" | grep -E '^main +main +2 ' >/dev/null && ok "lines without message id count individually" || fail "no-id transcript"
 
 # a session without any lead dispatch prints no planning line
 M2="$P/plain.jsonl"; rec "$M2" p1 2 1000 0 10
