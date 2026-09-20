@@ -1,0 +1,64 @@
+#!/bin/sh
+# codex-image-copy - copy the image Codex generated last to a destination path.
+#
+# Codex's imagegen tool writes to ~/.codex/generated_images/<session>/ first and
+# then copies to the requested destination; on Windows the sandbox can block
+# that copy. This helper picks the newest session directory and its newest
+# ig_*.png (falling back to any png in that session) and copies it out.
+# Bundled sample images and older sessions are never picked.
+#
+# Usage: codex-image-copy <destination-file>
+# Env:   CODEX_IMAGES_DIR overrides ~/.codex/generated_images
+#
+# Exit codes: 0 ok | 1 nothing to copy | 64 usage error
+
+dest="${1:-}"
+if [ -z "$dest" ]; then
+  echo "usage: codex-image-copy <destination-file>" >&2
+  exit 64
+fi
+
+root="${CODEX_IMAGES_DIR:-$HOME/.codex/generated_images}"
+if [ ! -d "$root" ]; then
+  echo "codex-image-copy: no generated images directory at $root" >&2
+  exit 1
+fi
+
+# Newest session directory by modification time.
+session=""
+for d in "$root"/*/; do
+  [ -d "$d" ] || continue
+  if [ -z "$session" ] || [ "$d" -nt "$session" ]; then
+    session="$d"
+  fi
+done
+if [ -z "$session" ]; then
+  echo "codex-image-copy: no session directory under $root" >&2
+  exit 1
+fi
+session="${session%/}"
+
+newest() { # $1 directory  $2 glob pattern inside it (expanded unquoted on purpose)
+  dir="$1"
+  pattern="$2"
+  found=""
+  # shellcheck disable=SC2231  # the pattern must stay unquoted so it expands
+  for f in "$dir"/$pattern; do
+    [ -f "$f" ] || continue
+    if [ -z "$found" ] || [ "$f" -nt "$found" ]; then
+      found="$f"
+    fi
+  done
+  printf '%s' "$found"
+}
+
+src="$(newest "$session" 'ig_*.png')"
+[ -n "$src" ] || src="$(newest "$session" '*.png')"
+if [ -z "$src" ]; then
+  echo "codex-image-copy: no png in newest session $session" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$dest")" || exit 1
+cp "$src" "$dest" || exit 1
+echo "copied $src -> $dest"

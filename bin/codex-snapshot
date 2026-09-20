@@ -1,0 +1,132 @@
+#!/bin/sh
+# codex-snapshot - record the working tree before a Codex run and show what
+# changed afterwards, isolated from edits that were already there.
+#
+# `save` writes the whole working tree (tracked edits, deletions, untracked
+# files; .gitignore'd files excluded) as a git tree object through a temporary
+# index, so the real index and working tree are untouched. The id is
+# "<HEAD sha>:<tree id>". `diff <id>` compares that tree with a fresh one and
+# lists commits made since, so the output is exactly what changed in between,
+# even when the tree was already dirty or HEAD moved.
+#
+# Usage:
+#   codex-snapshot save          # prints the snapshot id
+#   codex-snapshot diff <id>     # files changed since the snapshot (name-status)
+#   codex-snapshot patch <id>    # the full patch since the snapshot
+#
+# Exit codes: 0 ok | 1 not a git repo or bad id | 64 usage error
+
+usage() {
+  echo "usage: codex-snapshot save" >&2
+  echo "       codex-snapshot diff <id>" >&2
+  echo "       codex-snapshot patch <id>" >&2
+  exit 64
+}
+
+require_repo() {
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "codex-snapshot: not inside a git repository." >&2
+    exit 1
+  fi
+}
+
+# Temporary index directory; removed on every exit path (normal, error, signal).
+snap_dir=""
+cleanup() {
+  if [ -n "$snap_dir" ]; then
+    rm -rf "$snap_dir"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+fail() {
+  echo "codex-snapshot: $1" >&2
+  exit 1
+}
+
+is_tree_id() { # 40 lowercase hex chars
+  case "$1" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ]
+}
+
+# Build a tree object for the current working tree; sets $tree. Runs in the
+# main shell (no subshell) so every failure ends the command with exit 1.
+snapshot_tree() {
+  snap_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-snapshot-XXXXXX")" \
+    || fail "cannot create a temporary directory under ${TMPDIR:-/tmp}."
+  idx="$snap_dir/index"
+  if git rev-parse --verify --quiet HEAD >/dev/null; then
+    GIT_INDEX_FILE="$idx" git read-tree HEAD || fail "git read-tree HEAD failed."
+  else
+    GIT_INDEX_FILE="$idx" git read-tree --empty || fail "git read-tree --empty failed."
+  fi
+  GIT_INDEX_FILE="$idx" git add -A || fail "git add -A into the temporary index failed."
+  tree="$(GIT_INDEX_FILE="$idx" git write-tree)" || fail "git write-tree failed."
+  is_tree_id "$tree" || fail "git write-tree returned no tree id ('$tree')."
+  rm -rf "$snap_dir"
+  snap_dir=""
+}
+
+head_sha() {
+  git rev-parse --verify --quiet HEAD 2>/dev/null || printf 'none\n'
+}
+
+parse_id() {
+  id="$1"
+  [ -n "$id" ] || usage
+  case "$id" in
+    *:*) ;;
+    *) fail "bad id '$id' (expected <head>:<tree>)." ;;
+  esac
+  old_head="${id%%:*}"
+  old_tree="${id#*:}"
+  is_tree_id "$old_tree" || fail "bad id '$id' (tree part must be a 40-char hex id)."
+  if ! git cat-file -e "$old_tree" 2>/dev/null; then
+    echo "codex-snapshot: snapshot tree '$old_tree' not found in this repository." >&2
+    exit 1
+  fi
+}
+
+report_commits() {
+  new_head="$(head_sha)"
+  [ "$old_head" = "$new_head" ] && return 0
+  if [ "$old_head" = "none" ]; then
+    echo "commits since snapshot:"
+    git log --oneline HEAD
+    return 0
+  fi
+  if git cat-file -e "$old_head" 2>/dev/null; then
+    echo "commits since snapshot:"
+    git log --oneline "$old_head..HEAD"
+  else
+    echo "commits since snapshot: HEAD moved from $old_head to $new_head"
+  fi
+}
+
+case "${1:-}" in
+  save)
+    require_repo
+    snapshot_tree
+    printf '%s:%s\n' "$(head_sha)" "$tree"
+    ;;
+  diff)
+    require_repo
+    parse_id "${2:-}"
+    snapshot_tree
+    git diff --name-status "$old_tree" "$tree" || fail "git diff failed."
+    report_commits
+    ;;
+  patch)
+    require_repo
+    parse_id "${2:-}"
+    snapshot_tree
+    git diff "$old_tree" "$tree" || fail "git diff failed."
+    report_commits
+    ;;
+  *)
+    usage
+    ;;
+esac

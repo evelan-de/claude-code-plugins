@@ -229,3 +229,16 @@ Decisions and next steps recorded here:
   its base (~110k with connectors) instead of 300-400k, so its reads shrink and an idle
   re-write costs ~$2 instead of ~$7. Measure on the next session with `autopilot-usage`.
 - Every session ends with the `autopilot-usage` table so these numbers keep being real.
+
+## Decision (2026-09-20, plugin 2.0.0): no coordinating model
+
+The complete WEB-1095 session (33 agents, 1,795 requests, ~$220 list) and the published
+guidance (Anthropic's multi-agent write-up: multi-agent pays off for parallel research, not
+coding; agent-teams docs: ~7x tokens; firstmate, bernstein, NEEDLE, `claude agents`: a watcher
+or queue instead of a model in the loop) settled it. Mission control, the lead, implementer and
+planner agents are removed. What stays: `/autopilot-plan` (interactive plan), `/autopilot`
+(one context per run, one review per session, hand-offs), the hooks, `autopilot-usage`, and a
+queue script for overnight batches (design in `docs/2026-09-20-autopilot-v2.md`). Two facts
+from the cache docs to keep in mind: sub-agents get a five-minute cache lifetime, the main
+conversation one hour on a subscription; a request within the lifetime refreshes it, so a
+cheap wake-up beats an expensive re-write after a long idle gap.

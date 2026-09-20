@@ -1,87 +1,73 @@
 ---
 name: code-review
-description: "Evelan's code review. ALWAYS use this skill (never the built-in code-review) whenever the user asks for a code review in any wording: \"code review\", \"review this\", \"review the PR\", \"review the branch\", \"review my changes\", \"review since X\", German \"Code Review\", \"reviewe das\", \"mach ein Review\", \"schau dir den Diff an\". Reviews the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?), both in parallel sub-agents, reported side by side."
+description: "Evelan's code review. ALWAYS use this skill (never the built-in code-review) whenever the user asks for a code review in any wording: \"code review\", \"review this\", \"review the PR\", \"review the branch\", \"review my changes\", \"review since X\", German \"Code Review\", \"reviewe das\", \"mach ein Review\", \"schau dir den Diff an\". Reviews the changes since a fixed point along three axes: Standards, Spec, and Codex (cross-model, when the Codex CLI is installed)."
 ---
 
-Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
+Review the diff between `HEAD` and a fixed point the user supplies, on three axes:
 
 - **Standards**: does the code conform to this repo's documented coding standards?
-- **Spec**: does the code faithfully implement the originating issue / spec?
+- **Spec**: does the code implement the originating issue / spec?
+- **Codex**: an independent cross-model review of the same diff, run whenever the Codex CLI is installed.
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+The two Claude axes run as **parallel sub-agents**; Codex runs in the background next to them; then this skill aggregates. Findings are never merged or reranked across axes.
 
-The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/evelan:setup-workflow-skills`.
+If `docs/agents/issue-tracker.md` is missing, tell the user to run `/evelan:setup-workflow-skills`.
 
 ## Process
 
 ### 1. Pin the fixed point
 
-Whatever the user said is the fixed point (a commit SHA, branch name, tag, `main`, `HEAD~5`, etc.). If they didn't specify one, ask for it.
+Whatever the user said is the fixed point (a commit SHA, branch name, tag, `main`, `HEAD~5`). If they didn't specify one, ask.
 
-Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
+Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, against the merge-base). Note the commits via `git log <fixed-point>..HEAD --oneline`.
 
-Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here, not inside two parallel sub-agents.
+Confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty before spawning anything.
 
 ### 2. Identify the spec source
 
-Look for the originating spec, in this order:
+In this order:
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.), fetched via the workflow in `docs/agents/issue-tracker.md`.
+1. Issue references in the commit messages (`#123`, `Closes #45`, `ABC-123`), fetched via `docs/agents/issue-tracker.md`.
 2. A path the user passed as an argument.
-3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
-4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".
+3. A spec file under `docs/`, `specs/`, or `docs/issues/` matching the branch name or feature.
+4. Ask the user. If there is none, the Spec sub-agent is skipped and the report says "no spec available".
 
 ### 3. Identify the standards sources
 
-Anything in the repo that documents how code should be written, such as `CODING_STANDARDS.md` or `CONTRIBUTING.md`.
+Anything in the repo that documents how code should be written (`CODING_STANDARDS.md`, `CONTRIBUTING.md`, `CLAUDE.md` rules).
 
-On top of whatever the repo documents, the Standards axis always carries the **smell baseline** below: a fixed set of Fowler code smells (_Refactoring_, ch.3) that applies even when a repo documents nothing. Two rules bind it:
+On top of that, the Standards axis always carries the **smell baseline** below (Fowler, _Refactoring_, ch.3). A documented repo standard overrides the baseline. Each smell is a labelled judgement call ("possible Feature Envy"), never a hard violation. Skip anything tooling already enforces.
 
-- **The repo overrides.** A documented repo standard always wins; where it endorses something the baseline would flag, suppress the smell.
-- **Always a judgement call.** Each smell is a labelled heuristic ("possible Feature Envy"), never a hard violation. Like any standard here, skip anything tooling already enforces.
+- **Mysterious Name**: a name that doesn't reveal what it does or holds. -> rename; if no honest name comes, the design is murky.
+- **Duplicated Code**: the same logic shape in more than one hunk or file. -> extract the shared shape.
+- **Feature Envy**: a method that reaches into another object's data more than its own. -> move it onto that data.
+- **Data Clumps**: the same few fields or params keep travelling together. -> bundle them into one type.
+- **Primitive Obsession**: a primitive standing in for a domain concept. -> give the concept its own small type.
+- **Repeated Switches**: the same `switch`/`if`-cascade on the same type recurs. -> polymorphism, or one shared map.
+- **Shotgun Surgery**: one logical change forces scattered edits across many files. -> gather what changes together.
+- **Divergent Change**: one module is edited for several unrelated reasons. -> split so each changes for one reason.
+- **Speculative Generality**: abstraction or hooks for needs the spec doesn't have. -> delete it.
+- **Message Chains**: long `a.b().c().d()` navigation. -> hide the walk behind one method.
+- **Middle Man**: a class or function that mostly delegates onward. -> cut it, call the target direct.
+- **Refused Bequest**: a subclass that ignores most of what it inherits. -> composition instead.
 
-Each smell reads *what it is* → *how to fix*; match it against the diff:
+### 4. Spawn the axes in parallel
 
-- **Mysterious Name**: a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
-- **Duplicated Code**: the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
-- **Feature Envy**: a method that reaches into another object's data more than its own. → move the method onto the data it envies.
-- **Data Clumps**: the same few fields or params keep travelling together (a type wanting to be born). → bundle them into one type, pass that.
-- **Primitive Obsession**: a primitive or string standing in for a domain concept that deserves its own type. → give the concept its own small type.
-- **Repeated Switches**: the same `switch`/`if`-cascade on the same type recurs across the change. → replace with polymorphism, or one map both sites share.
-- **Shotgun Surgery**: one logical change forces scattered edits across many files in the diff. → gather what changes together into one module.
-- **Divergent Change**: one file or module is edited for several unrelated reasons. → split so each module changes for one reason.
-- **Speculative Generality**: abstraction, parameters, or hooks added for needs the spec doesn't have. → delete it; inline back until a real need shows.
-- **Message Chains**: long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
-- **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
-- **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
+**Standards sub-agent prompt**: the diff command and commit list; the standards-source files from step 3 **plus the smell baseline pasted in full**; the brief: "Report, per file/hunk, (a) every place the diff violates a documented standard, citing file and rule; (b) any baseline smell, named, with the hunk quoted. Documented-standard breaches can be hard violations; baseline smells are always judgement calls; a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
 
-### 4. Spawn both sub-agents in parallel
+**Spec sub-agent prompt**: the diff command and commit list; the path or fetched contents of the spec; the brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for; (c) requirements that look implemented but wrong. Quote the spec line for each finding. Under 400 words."
 
-**Standards sub-agent prompt** should include:
-
-- The full diff command and commit list.
-- The list of standards-source files you found in step 3, **plus the smell baseline from step 3** pasted in full (the sub-agent has no other access to it).
-- The brief: "Report, per file/hunk where relevant, (a) every place the diff violates a documented standard: cite the standard (file + the rule); and (b) any baseline smell you spot: name it and quote the hunk. Distinguish hard violations from judgement calls: documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling enforces. Under 400 words."
-
-**Spec sub-agent prompt** should include:
-
-- The diff command and commit list.
-- The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
-
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+**Codex, third axis, automatic.** In the same step, run `codex-cli --version`. If it succeeds,
+start `evelan:codex-review` on the same range (`--base <fixed-point>`, or `--uncommitted`
+when the tree is dirty) in the background alongside the two sub-agents; it needs no extra
+prompt. If the binary is missing, skip it with one line in the report ("Codex: not installed,
+skipped") and nothing else; a developer without Codex gets the two Claude axes. Codex
+rate-limited or failing: same one line with the reason, no Claude fallback (the two axes
+already are the Claude review). The user never has to ask for Codex; "ohne Codex" / "no
+Codex" in the request switches it off.
 
 ### 5. Aggregate
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
+Present the reports under `## Standards`, `## Spec` and `## Codex` headings, verbatim or lightly cleaned (Codex: findings untouched, tool-call noise stripped, log path named). Do not merge or rerank across axes.
 
-End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
-
-## Why two axes
-
-A change can pass one axis and fail the other:
-
-- Code that follows every standard but implements the wrong thing → **Standards pass, Spec fail.**
-- Code that does exactly what the issue asked but breaks the project's conventions → **Spec pass, Standards fail.**
-
-Reporting them separately stops one axis from masking the other.
+End with one line: total findings per axis and the worst issue within each axis. No single winner across axes.

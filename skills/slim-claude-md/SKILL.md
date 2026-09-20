@@ -7,12 +7,6 @@ argument-hint: "[project directory, default: the current one]"
 
 # Slim CLAUDE.md
 
-Every line of `CLAUDE.md` is loaded into every session of every agent in the project, before a
-single project file is read. This skill turns one long file into: a **core** that stays under
-150 lines, **rules** in `.claude/rules/` that load only when an agent touches matching files,
-**skills** for procedures reached on demand, and **pointers** to docs that already exist. Nothing
-Claude can read off the repo survives.
-
 **Input:** `$ARGUMENTS` (project directory; default: the current one).
 
 ## 1. Inventory

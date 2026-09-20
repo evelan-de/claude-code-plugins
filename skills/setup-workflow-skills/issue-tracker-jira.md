@@ -13,7 +13,7 @@ unknown, `discover` it first, never guess one.
 ## Conventions
 
 - **Create an issue**: `createJiraIssue` with `projectKey`, `issueType` (`Task` for tracer-bullet
-  tickets, `Story` for user-facing scope, `Bug` for triage bugs, `Epic` for a wayfinder map),
+  tickets, `Story` for user-facing scope, `Bug` for bugs, `Epic` for a parent of many tickets),
   `summary`, `description`, optional `labels`, `parent` and `assignee` (an accountId). Resolve a
   name or email with `lookupJiraAccountId`, or `findJiraIssueAssignableUsers` to be sure the
   user can be assigned in the project.
@@ -60,28 +60,3 @@ Create a Jira issue in `<PROJECT>` with the Markdown description; return its key
 
 `getJiraIssue` with the key, then `listJiraIssueComments`; read description, acceptance
 criteria, comments and labels.
-
-## Triage labels
-
-Jira labels carry the five triage roles; the strings live in `docs/agents/triage-labels.md`.
-Triage queue: `project = <PROJECT> AND labels = needs-triage AND statusCategory != Done ORDER BY created ASC`.
-
-## Wayfinding operations
-
-Used by `/evelan:wayfinder`. The **map** is an Epic; its **child** tickets are issues in that
-Epic.
-
-- **Map**: `createJiraIssue` with `issueType: "Epic"`, label `wayfinder-map`, the
-  Notes / Decisions-so-far / Fog body as Markdown.
-- **Child ticket**: an issue with the Epic as parent (`parent` field on create, or
-  `editJiraIssue` with `fields: { parent: { key: "<MAP>" } }`). Label `wayfinder-<type>`
-  (`research`, `prototype`, `questioning`, `task`). Once claimed, assign it to the driving dev.
-- **Blocking**: native "Blocks" links via `createJiraIssueLink` (inward = blocker, outward =
-  child). A ticket is unblocked when every blocker is resolved (`statusCategory = Done`).
-- **Frontier query**: `parent = <MAP> AND statusCategory != Done AND assignee IS EMPTY ORDER BY rank ASC`,
-  then drop every result that still has an unresolved inward "is blocked by" link (read the
-  `issuelinks` on each candidate via `getJiraIssue` with `view: "evidence"`); first remaining
-  wins.
-- **Claim**: set the assignee, the session's first write.
-- **Resolve**: comment the answer, transition to Done, append a context pointer (commit or
-  document link) to the map's Decisions-so-far.

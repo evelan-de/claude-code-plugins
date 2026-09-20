@@ -54,16 +54,16 @@ Plugin updates are distributed automatically when the repo is updated. To manual
 
 ### update-dependencies
 
-Smart dependency updater using ncu (npm-check-updates). Goes beyond simple version bumps — for major updates, it researches breaking changes and can auto-migrate your code.
+Smart dependency updater using ncu (npm-check-updates). Goes beyond simple version bumps - for major updates, it researches breaking changes and can auto-migrate your code.
 
 **Features:**
-- Automatic `ncu` installation check (offers global install or npx fallback)
+- Runs `npx npm-check-updates` once and shows minor and major candidates together
 - Dry-run preview before any changes
-- Parallel subagent research for major updates — finds breaking changes and migration guides
+- Parallel subagent research for major updates - finds breaking changes and migration guides
 - Per-package opt-out after reviewing breaking changes
 - Two execution modes:
-  - **Apply now** — updates packages and auto-migrates code based on migration guides
-  - **Create plan** — writes a detailed migration plan to `docs/plans/` for later execution
+  - **Apply now** - updates packages and auto-migrates code based on migration guides
+  - **Create plan** - writes a detailed migration plan to `docs/plans/` for later execution
 - Always pins exact versions (no `^` or `~`)
 - Runs build/test/lint after migrations to catch regressions
 
@@ -100,111 +100,73 @@ Controlled, exact-copy workflow for porting a component, style, layout, or featu
 
 ### Workflow skills (interactive: from idea to spec to tickets)
 
-Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot and mission-control: you decide, the agent asks. Start with `/evelan:which-skill` when unsure.
+Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot: you decide, the agent asks.
 
 | Skill | What it does |
 | --- | --- |
-| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker (Jira via Atlassian MCP, GitHub Issues, GitLab or local markdown; Jira is proposed when `atlassian.net` or ticket keys turn up in the repo, GitHub Issues otherwise), triage labels, `docs/agents/` layout |
-| `/evelan:question-with-docs` | Relentless interview to sharpen a plan; writes `CONTEXT.md` and ADRs as it goes |
-| `/evelan:question-me` | Same interview, stateless (no repo) |
-| `evelan:questioning` | The interview primitive the others run on (model-invoked) |
-| `/evelan:write-spec` | Turn the conversation into a spec on the tracker |
-| `/evelan:spec-to-tickets` | Split a spec into tracer-bullet tickets with blocking edges |
-| `/evelan:implement-spec` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
+| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker (Jira via Atlassian MCP, GitHub Issues or local markdown; Jira is proposed when `atlassian.net` or ticket keys turn up in the repo, GitHub Issues otherwise), `docs/agents/` layout |
+| `/evelan:question-me` | Relentless interview to sharpen a plan or idea; in a repo it writes `CONTEXT.md` and ADRs as it goes |
+| `/evelan:to-spec` | Turn the conversation into a spec on the tracker |
+| `/evelan:to-tasks` | Split a spec into tracer-bullet tasks (tickets on the tracker) with blocking edges |
+| `/evelan:implement` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
 | `evelan:tdd` | Test-first at pre-agreed seams, vertical slices, anti-pattern list |
-| `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents |
+| `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents, plus a Codex cross-model review whenever the Codex CLI is installed (skipped silently otherwise) |
 | `evelan:diagnose-bug` | Diagnosis loop for hard bugs: tight feedback loop first, regression test last |
 | `evelan:domain-model`, `evelan:codebase-design` | Vocabulary references: domain terms and ADRs; deep modules and seams |
 | `/evelan:improve-architecture` | Scan for deepening opportunities, HTML report, then interview |
-| `evelan:prototype`, `evelan:research` | Throwaway prototype for a design question; cited research file from primary sources |
-| `evelan:resolve-merge-conflicts` | Resolve a merge or rebase hunk by hunk by intent |
-| `/evelan:triage-backlog` | Move incoming issues through triage roles into agent-ready briefs |
-| `/evelan:wayfinder` | Map a huge effort as decision tickets and resolve them one at a time |
 | `/evelan:handoff` | Write a hand-off document for a fresh agent |
-| `/evelan:teach`, `/evelan:to-questionnaire`, `/evelan:wait-what` | Learn a concept; questionnaire for someone else; re-pitch a message that did not land |
-| `/evelan:which-skill` | Router: which skill or flow fits the situation |
 
-**Rule for autonomous work:** before `/evelan:mission-control`, the idea has been through `/evelan:question-with-docs`. Mission control checks for decided shape questions and hands back otherwise.
+**Rule for autonomous work:** the plan is written with you in the loop (`/evelan:autopilot-plan`, after `/evelan:question-me` for anything with open shape questions); the run itself asks nothing.
+
+### Autonomous work: three building blocks
+
+Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a model acting as coordinator over other agents cost 30-35% of a session and multiplied agents (33 for one ticket). Anthropic's own guidance says multi-agent setups pay off for parallel research, not for coding. Version 2.0 therefore has no coordinator model: a plan skill, an executor, and a script.
+
+| Block | What | Status |
+| --- | --- | --- |
+| `/evelan:autopilot-plan` | Writes `PLAN.md` for one topic with you in the loop: resolves the ticket or spec, explores with bounded reads, asks the shape questions once, records decisions, lists packages with seams and verification criteria, commits the plan. Developers run it too. Optional fresh-context plan review (`evelan:autopilot-plan-reviewer`). | shipped |
+| `/evelan:autopilot` | Executes a plan unattended in one context: gate, branch, per package test-first with the gate green and a commit, one adversarial review on the whole branch (`evelan:autopilot-reviewer`), the goal artifact exercised in the running app, `REPORT.md`, optional full gate (`gateFull`) before the push, PR with CI watched and the Claude review bot answered (findings fixed or rebutted, re-review requested via label). Outgrows its context → `HANDOFF.md` and a fresh session resumes. No sub-agents for implementation. | shipped |
+| `autopilot-queue` | A script, not a model: takes a list of prepared sessions (or tickets) and runs `/autopilot` for each in turn, in a worktree, restarting on hand-off, notifying you on completion or blockers. Zero tokens for coordination. | design in `docs/2026-09-20-autopilot-v2.md`, format to be agreed |
 
 ### autopilot
 
-Runs an autonomous, unattended development loop for **one topic per session**: spec → plan → TDD implementation → adversarial review → quality gate → PR (CI watched until green).
+**Quickstart (once per project, then per ticket):**
 
-**Usage:**
-- Run a task: `/autopilot <task, ticket key, or spec file>`
-  e.g. `/autopilot DNA-901 add rate limiting to the contact route`
-- Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
-- Thorough review (adds the standards axis: repo coding standards plus a smell baseline): add "thorough review".
-- Cross-model review: add "nutze Codex als Reviewer". It runs once per session on the whole branch.
-- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim. With a mode (`PACKAGE <id>` or `FINALIZE`) the skill runs only the phases that mode owns; that is how mission-control dispatches it.
+```bash
+# once per project: gate, hooks, review-bot label
+claude
+> /autopilot init
 
-The session lead runs at your **session model** — standalone that is whatever you started the session with; dispatched by mission-control it is the `evelan:autopilot-lead` agent (Fable 5.1, small fixed tool set, 400-turn cap). Review always runs on Opus at medium effort (`evelan:autopilot-reviewer`, with a standards axis on request); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it. The skill is self-contained: it does not invoke Superpowers or any other third-party workflow skill; TDD (seams, vertical slices, anti-patterns), debugging and review rules are inline.
+# per ticket, in your normal session: the plan, with you in the loop
+> /autopilot-plan WEB-1095
 
-**Hand-off instead of compaction.** When a run outgrows one context (the context-budget hook reports the budget, or the lead nears its turn cap), the lead commits, writes `HANDOFF.md` into the session folder (state, verified evidence, open items, exact next step, pointers) and returns `STATUS: incomplete`; a fresh agent continues from that file. Auto-compaction is never relied on.
+# then the run, in a fresh terminal (the plan's hand-over prints this exact line)
+claude --model sonnet --effort medium --advisor fable --permission-mode auto --max-turns 400 --max-budget-usd 60 --fallback-model opus
+> /autopilot docs/autopilot/sessions/<date>-WEB-1095-<slug>
+```
 
-**Context hygiene is part of the skill.** Measured on real sessions, 70-80% of the cost of an autopilot run was cache reads of an oversized context (implementers at 400-570k tokens per turn for a thousand turns, never compacting), and 40% of all tool calls were `grep`/`sed`/`cat`/`git` dumps. The skill therefore mandates bounded reads, tailed outputs, one exploration pass, and a single full gate run per package.
+The run ends with a PR (or, in feature-branch mode, a pushed branch), `REPORT.md` in the session folder and the `autopilot-usage` table. If it ran out of context it ends with `Resume with /autopilot <session directory>`: start a fresh session and paste that line.
 
-**Optional per-project hooks:** `/autopilot init` sets up four deterministic hooks in the current project. The `Stop` hook blocks a standalone run from ending a turn while the gate (typecheck/lint/test) is red (inert outside autopilot runs, sentinel-guarded). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line (timestamp, HEAD, tree state, exit code) to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. The `PostToolUse` context-budget hook measures the context the next turn will carry from the transcript of the agent it runs in (inside a subagent that is `<session>/subagents/agent-<id>.jsonl`, never the coordinator's transcript that the hook input names) and, above the budget (default 250k, `contextBudget` in `.claude/autopilot.json`), injects the hand-off instruction, naming the measured file. The `SessionStart` hook (matcher `compact`) re-injects the session folder pointer if compaction happens anyway. Init auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hooks into `.claude/hooks/`, and safe-merges them into `.claude/settings.json` (idempotent, never overwrites). The filter and budget hooks need `jq`; put `# raw` in a command to bypass the filter.
+**Usage details:**
+- Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`, committed on the run's branch.
+- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with the launch line above. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header; the turn and dollar caps stop a runaway run. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+- Docs are part of done: the run updates README, `docs/`, `CLAUDE.md`/`.claude/rules/` and doc comments the change made stale, and the reviewer flags a stale document as a gap.
+- Options in the prompt: "defer PR" (no push, no PR), "ohne Codex" / "no Codex" (skips the Codex cross-model review, which otherwise runs by default after the Claude review whenever the Codex CLI is installed; its findings are fixed or rebutted in `REPORT.md`).
+- Write-less rules are part of the skill (vendored from Ponytail, see `skills/THIRD-PARTY-NOTICES.md`): reuse before write, stdlib and platform before dependencies, shortest root-cause diff, no speculative abstractions. JetBrains measured about 10% lower cost with unchanged quality when the rules sit in the context for the whole session, which is what the skill does.
+- Continue after a hand-off: the same command; the run finds `HANDOFF.md`.
 
-**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md` (the short index: scope, goal artifact, decisions, package list with statuses), `packages/<id>.md` (one file per package with its Definition of Done, files, seams, verification criteria and result; a lead reads only its own), `DIGEST.md` (orchestrated runs), `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
+**Hand-off instead of compaction.** When the context-budget hook reports the budget, the run commits, writes `HANDOFF.md` (state, verified evidence, open items, exact next step) and ends its turn with `Resume with /autopilot <session directory>`. Auto-compaction is never relied on.
 
-**Measuring a session:** `autopilot-usage <main transcript.jsonl>` (plugin binary on PATH, needs `jq`) prints one line per agent of a session (turns, first/last/max context, cache-read and output tokens) plus the coordinator's context at the first lead dispatch, i.e. what planning cost it for the rest of the run. Mission control appends that table to its final summary.
+**Context hygiene is part of the skill:** bounded reads, tailed outputs, one plan read, full gate once per package, one review per session.
 
-For unattended runs, launch with `--permission-mode auto`.
+**Optional per-project hooks:** `/autopilot init` sets up four deterministic hooks in the current project. The `Stop` hook blocks a run from ending a turn while the gate (typecheck/lint/test) is red (sentinel-guarded, inert otherwise). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. The `PostToolUse` context-budget hook measures the context the next turn will carry from the transcript of the agent it runs in and, above the budget (default 250k, `contextBudget` in `.claude/autopilot.json`), injects the hand-off instruction, naming the measured file. The `SessionStart` hook (matcher `compact`) re-injects the session folder pointer if compaction happens anyway. Init auto-detects the package manager, writes the gate to `.claude/autopilot.json` (plus `gateFull` when the project has a full gate script), copies the hooks into `.claude/hooks/`, safe-merges them into `.claude/settings.json`, and checks for the Claude review workflow and its `claude-re-review` label (created when missing). The filter and budget hooks need `jq`; put `# raw` in a command to bypass the filter.
+
+**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
+
+**Measuring a session:** `autopilot-usage <main transcript.jsonl>` (plugin binary on PATH, needs `jq`) prints one line per agent of a session: API requests, first/last/max context, cache reads, cache writes, output. Every run prints it at the end.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
 
-### mission-control
-
-Coordinates an autonomous development session **without implementing anything itself**: it
-resolves the task and pins down the user-verifiable **goal artifact** (feature running in
-the local app, a generated report, a finished PDF, …), has the `evelan:autopilot-planner`
-agent explore the repo and write the session folder (`docs/autopilot/sessions/<slug>/` with
-the `PLAN.md` index, one `packages/<id>.md` per work package and the `DIGEST.md` exploration
-digest) so that the planning content never enters the coordinator's own context, has the
-plan reviewed by the read-only `evelan:autopilot-plan-reviewer` agent **and** cross-model via
-`evelan:codex-ask`, sends the findings back to the planner to fold in, then dispatches the
-`evelan:autopilot-lead` agent **once per work package** (`PACKAGE <id>`, fresh context each
-time, "defer PR") and once at the end (`FINALIZE`, with the Codex cross-model review on the
-whole branch). The coordinator reads `PLAN.md`, returned blocks, `git log` and review
-findings, nothing larger: measured on real sessions, a coordinator that carried the planning
-itself grew to 300-400k tokens and was 30-35% of the session's cost, mostly cache writes. A 20-minute watchdog (`autopilot-watchdog`) reads task status and branch progress,
-nudges a stalled agent and replaces it if it stays stuck; it never reads subagent
-transcripts and never stops an agent that has returned its result. At the end mission control verifies the result
-independently (re-runs the gate, has a verifier subagent exercise the goal artifact), and
-only then pushes, opens the PR and watches CI — red CI goes back as a fix dispatch with
-file-level instructions. The final report uses simplified technical language (ASD-STE100
-style) in the language of the user's prompt.
-
-**Usage:** `/mission-control <task, ticket key, or spec file>`
-
-**Before you start:** the important decisions must already be made. Walk the idea through `/evelan:question-with-docs` (or `/evelan:question-me` outside a repo) until the shape questions are answered, then hand the spec, ticket or `CONTEXT.md`/ADRs to mission control. Mission control checks for this in Phase 0 and hands the wheel back when it finds open shape questions instead of guessing them.
-
-Launch requirements (the skill checks and reports them, it cannot set them): the strongest
-available session model (Fable 5.1, never Fable 5: its cache-read price is four times
-higher and a coordinator is almost pure cache reads), a permissive permission mode
-(e.g. `--permission-mode auto`) which the dispatched subagents inherit, and the project
-hooks installed in the target repo via `/autopilot init` (gate filter and context-budget
-hand-off). A lead that outgrows its context hands off through `HANDOFF.md` and mission
-control dispatches a fresh lead with it; the watchdog is the plugin binary
-`autopilot-watchdog <repo> <branch>` (one `PROGRESS`/`STALL` line from `git log` and the
-`PLAN.md` mtime, stall counter included).
-
-**Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
-
-### reflect-on-changes
-
-Runs a short self-reflection check after a round of code changes is complete, before declaring the work done. Forces Claude to honestly interrogate its own work — surfacing what it's least confident about and what it might be missing — so problems get caught before the user finds them.
-
-**Features:**
-- Triggers automatically after meaningful changes (features, refactors, bug fixes, multi-file edits) — not for trivial one-line tweaks
-- Answers two grounded questions before the closing summary:
-  - **What am I least confident about?** — a specific function, assumption, untested path, or guessed dependency
-  - **What might I be missing?** — unstated context, ambiguous requirements, team conventions, or unknown unknowns
-- Presented as a short, clearly-labeled section with no vague hedging
-- Escalates real concerns into a proposed fix or a question instead of burying them in a checklist
-
-**Trigger phrases:** "done", "finished", "that should do it", "ready for review", "let me know what you think"
 
 ### preview
 
@@ -263,15 +225,15 @@ General-purpose delegation to the Codex CLI (`codex exec`): writes a structured 
 
 ### e2e-demo
 
-Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions — either or both, concatenated as sequential cuts when a task needs both.
+Verifies a finished task against the real running system instead of a read-through of the code, then produces a narrated MP4 and a published web-artifact report from that real run. Two tracks: a real E2E test (Playwright or whatever the project already uses) for browser-facing changes, or a real recorded terminal session (`asciinema` + `agg`) for CLI/infra work like Docker setups and install instructions - either or both, concatenated as sequential cuts when a task needs both.
 
 **Features:**
-- Real run first, always — an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
+- Real run first, always - an E2E test against the real app, or the actual documented commands actually executed, never a mock or a read-through
 - Assertions read back real persisted state (DB row, API response), never just a UI toast or a zero exit code
-- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended — no OpenAI account or billing)
-- Narration and the artifact's results table are derived strictly from what the run actually proved — nothing narrated that wasn't checked
+- Narrated MP4: real video (test framework's own recording, or a terminal session rendered via `agg`) + real synthesized voice from a self-hosted TTS server (`openai-edge-tts` recommended - no OpenAI account or billing)
+- Narration and the artifact's results table are derived strictly from what the run actually proved - nothing narrated that wasn't checked
 - Human-gated steps (a real browser login, an approval) are named plainly, never faked or automated around
 - Published artifact: goal/issue, what changed, a results table, real screenshots, the narration script
-- Project-agnostic — finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
+- Project-agnostic - finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
 
 **Trigger phrases:** "test this properly", "make sure this works", "show me a demo", "I want a report for this", "verify the instructions actually work for a client", "teste das richtig", "zeig mir eine Demo", "beweise dass das funktioniert", "ich will einen Report dazu"

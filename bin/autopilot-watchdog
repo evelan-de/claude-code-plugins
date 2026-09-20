@@ -1,9 +1,9 @@
 #!/bin/sh
-# autopilot-watchdog - one progress tick for a mission-control coordinator.
+# autopilot-watchdog - one progress tick for the autopilot queue runner (or anyone watching a run).
 #
 # usage: autopilot-watchdog <repo-dir> <branch> [state-file]
 #
-# Prints one line the coordinator can read without touching any transcript:
+# Prints one line the caller can read without touching any transcript:
 #   PROGRESS commit=<sha> age=<seconds since last commit> plan_age=<seconds since PLAN.md mtime> stalls=<n>
 # or
 #   STALL    commit=<sha> age=... plan_age=... stalls=<n>
@@ -11,7 +11,7 @@
 # A tick counts as progress when the branch's last commit OR the newest PLAN.md under
 # docs/autopilot/sessions/ changed since the previous tick. State lives in state-file
 # (default $TMPDIR/autopilot-watchdog-<repo hash>-<branch>.state). Consecutive stall ticks
-# are counted so the coordinator applies its stalls=2 / stalls=4 rules from the number
+# are counted so the caller applies its stalls=2 / stalls=4 rules from the number
 # alone. Always exits 0; the verdict is the first word of the output line.
 # POSIX sh, no dependencies beyond git and stat.
 set -u
