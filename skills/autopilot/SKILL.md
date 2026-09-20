@@ -302,7 +302,7 @@ docs/autopilot/
   sessions/YYYY-MM-DD-<slug>/
     PLAN.md          # short index: branch, scope, goal artifact, decisions, package list + status
     packages/<id>.md # one per package: DoD, files, seams, verification criteria, Result
-    DIGEST.md        # exploration digest (orchestrated runs; written by mission control)
+    DIGEST.md        # exploration digest (orchestrated runs; written by the planner agent)
     DECISIONS.md     # assumptions with rationale
     HANDOFF.md       # transient hand-off; deleted when consumed
     REPORT.md        # shipped work, coverage, review findings, PR link, CI, open items
