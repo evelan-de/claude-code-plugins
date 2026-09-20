@@ -1,17 +1,21 @@
 #!/bin/sh
-# autopilot-queue - run prepared autopilot sessions one after another, unattended.
+# mission-control - run prepared autopilot sessions one after another, unattended.
 #
-# usage: autopilot-queue run | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
-#        autopilot-queue install-schedule HH:MM | uninstall-schedule
+# usage: mission-control run | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
+#        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
+#        mission-control install-schedule HH:MM | uninstall-schedule | kickstart
 #
-# One machine-wide queue under $AUTOPILOT_QUEUE_HOME (default ~/.claude/autopilot-queue):
+# One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-control):
 #   queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
 #               dir, ticket key, or a "quoted topic"; the branch column exists for session dirs
 #               only, `add` fills it in); processed top to bottom
 #   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
 #   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
-#   env         optional, mode 600: SLACK_WEBHOOK_URL and AUTOPILOT_QUEUE_* settings
-#   logs/       one log per item, queue.log for lines outside an item, worktrees/ one per item
+#   env         optional, mode 600: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings
+#   logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
+#               renamed once the session dir or ticket key is known), queue.log for lines
+#               outside an item; worktrees/ one per item
+#   run.lock/   pid of the active run and current (the item it is on), removed after the run
 #
 # The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
 # the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
@@ -20,14 +24,16 @@
 #
 # Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
 # 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
+# Every sleep on the run path is a background sleep plus wait, so a trapped signal (stop)
+# interrupts it at once instead of after the watch step.
 #
 # Dependencies: git, gh, curl (Slack), osascript (macOS notification). jq is optional.
-# Test hooks: CLAUDE_BIN, GH_BIN, AUTOPILOT_QUEUE_WATCH_MIN=0 (no stall check),
-# AUTOPILOT_QUEUE_NO_NOTIFY=1.
+# Test hooks: CLAUDE_BIN, GH_BIN, MISSION_CONTROL_WATCH_MIN=0 (no stall check),
+# MISSION_CONTROL_NO_NOTIFY=1.
 # POSIX sh. Never prints a secret: the Slack webhook URL is only ever read into a variable.
 set -u
 
-QHOME="${AUTOPILOT_QUEUE_HOME:-$HOME/.claude/autopilot-queue}"
+QHOME="${MISSION_CONTROL_HOME:-$HOME/.claude/mission-control}"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 GH_BIN="${GH_BIN:-gh}"
 QUEUE="$QHOME/queue.txt"
@@ -37,13 +43,13 @@ ENVFILE="$QHOME/env"
 LOGDIR="$QHOME/logs"
 WTDIR="$QHOME/worktrees"
 LOCK="$QHOME/run.lock"
-PLIST="$HOME/Library/LaunchAgents/de.evelan.autopilot-queue.plist"
+PLIST="$HOME/Library/LaunchAgents/de.evelan.mission-control.plist"
 MARKETPLACE_BIN="$HOME/.claude/plugins/marketplaces/evelan-plugins/bin"
 SESSIONS=docs/autopilot/sessions
 LABEL_READY=autopilot-ready
 LABEL_DONE=autopilot-done
 LABEL_BLOCKED=autopilot-blocked
-CONFIG_VARS="SLACK_WEBHOOK_URL AUTOPILOT_QUEUE_MODEL AUTOPILOT_QUEUE_EFFORT AUTOPILOT_QUEUE_ADVISOR AUTOPILOT_QUEUE_FALLBACK_MODEL AUTOPILOT_QUEUE_BUDGET_USD AUTOPILOT_QUEUE_MAX_RESTARTS AUTOPILOT_QUEUE_TIMEOUT_MIN AUTOPILOT_QUEUE_WATCH_MIN"
+CONFIG_VARS="SLACK_WEBHOOK_URL MISSION_CONTROL_MODEL MISSION_CONTROL_EFFORT MISSION_CONTROL_ADVISOR MISSION_CONTROL_FALLBACK_MODEL MISSION_CONTROL_BUDGET_USD MISSION_CONTROL_MAX_RESTARTS MISSION_CONTROL_TIMEOUT_MIN MISSION_CONTROL_WATCH_MIN"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$script_dir/autopilot-watchdog"
@@ -53,21 +59,46 @@ DEFBRANCH="$script_dir/git-default-branch"
 
 ITEM_LOG=""
 RUN_PIDFILE=""
+SLEEP_PID=""
 SOURCE_FAILED=0
 
 usage() {
-  sed -n '3,5p' "$0" | sed 's/^# //; s/^#//'
+  sed -n '3,6p' "$0" | sed 's/^# //; s/^#//'
   exit 2
 }
 
-die() { echo "autopilot-queue: $*" >&2; exit 1; }
+die() { echo "mission-control: $*" >&2; exit 1; }
 expand_tilde() { case "$1" in \~/*) printf '%s\n' "$HOME/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+hhmm_of_epoch() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || echo "?"; }
+
+# lock_pid: the pid recorded in the lock when that process is alive, else nothing.
+lock_pid() {
+  lp="$(cat "$LOCK/pid" 2>/dev/null || true)"
+  [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && printf '%s\n' "$lp"
+}
+
+# note_current <attempt>: records what the active run is on (read by status), five lines:
+# repo basename, item, attempt, start epoch, item log. Written via a temp file and mv, so
+# status never reads a half-written file.
+note_current() {
+  [ -d "$LOCK" ] || return 0
+  printf '%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" >"$LOCK/current.tmp" \
+    && mv -f "$LOCK/current.tmp" "$LOCK/current"
+}
+
+# nap <seconds>: a sleep that a trapped signal interrupts (POSIX: a trap interrupts wait).
+nap() {
+  sleep "$1" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID"
+  SLEEP_PID=""
+}
 
 # say: one progress line to stdout and to the log. log: log only. The log is the item log
 # while an item is open, else logs/queue.log.
 say() {
-  printf '[autopilot-queue] %s\n' "$*"
+  printf '[mission-control] %s\n' "$*"
   log "$*"
 }
 log() {
@@ -78,7 +109,7 @@ log() {
 # The environment wins over the env file; the env file wins over the defaults.
 load_env() {
   EFFORT_FROM_ENV=""
-  [ -n "${AUTOPILOT_QUEUE_EFFORT:-}" ] && EFFORT_FROM_ENV=1
+  [ -n "${MISSION_CONTROL_EFFORT:-}" ] && EFFORT_FROM_ENV=1
   for v in $CONFIG_VARS; do
     eval "keep=\${$v:-}"
     if [ -n "$keep" ]; then eval "keep_$v=\$keep"; fi
@@ -91,14 +122,14 @@ load_env() {
     eval "keep=\${keep_$v:-}"
     if [ -n "$keep" ]; then eval "$v=\$keep"; fi
   done
-  MODEL="${AUTOPILOT_QUEUE_MODEL:-sonnet}"
-  EFFORT="${AUTOPILOT_QUEUE_EFFORT:-medium}"
-  ADVISOR="${AUTOPILOT_QUEUE_ADVISOR:-fable}"
-  FALLBACK_MODEL="${AUTOPILOT_QUEUE_FALLBACK_MODEL:-opus}"
-  BUDGET="${AUTOPILOT_QUEUE_BUDGET_USD:-60}"
-  MAX_RESTARTS="${AUTOPILOT_QUEUE_MAX_RESTARTS:-3}"
-  TIMEOUT_MIN="${AUTOPILOT_QUEUE_TIMEOUT_MIN:-240}"
-  WATCH_MIN="${AUTOPILOT_QUEUE_WATCH_MIN:-20}"
+  MODEL="${MISSION_CONTROL_MODEL:-sonnet}"
+  EFFORT="${MISSION_CONTROL_EFFORT:-medium}"
+  ADVISOR="${MISSION_CONTROL_ADVISOR:-fable}"
+  FALLBACK_MODEL="${MISSION_CONTROL_FALLBACK_MODEL:-opus}"
+  BUDGET="${MISSION_CONTROL_BUDGET_USD:-60}"
+  MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-3}"
+  TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-240}"
+  WATCH_MIN="${MISSION_CONTROL_WATCH_MIN:-20}"
   TIMEOUT_S="$(awk -v m="$TIMEOUT_MIN" 'BEGIN { printf "%d", m * 60 }')"
   WATCH_S="$(awk -v m="$WATCH_MIN" 'BEGIN { printf "%d", m * 60 }')"
 }
@@ -305,11 +336,11 @@ ensure_labels() {
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 notify() {
-  [ "${AUTOPILOT_QUEUE_NO_NOTIFY:-0}" = 1 ] && return 0
+  [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
   n_text="$1"
   n_esc="$(json_escape "$n_text")"
   if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$n_esc\" with title \"autopilot-queue\"" >/dev/null 2>&1 \
+    osascript -e "display notification \"$n_esc\" with title \"mission-control\"" >/dev/null 2>&1 \
       || log "notification: osascript failed"
   fi
   if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
@@ -341,7 +372,14 @@ acquire_lock() {
   fi
   echo "$$" >"$LOCK/pid"
   trap 'release_lock' EXIT
-  trap 'kill_run; release_lock; exit 130' INT TERM
+  trap 'on_signal' INT TERM
+}
+
+on_signal() {
+  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
+  kill_run
+  release_lock
+  exit 130
 }
 
 release_lock() { rm -rf "$LOCK"; }
@@ -352,7 +390,7 @@ kill_run() {
   kr_pid="$(cat "$RUN_PIDFILE")"
   kill "$kr_pid" 2>/dev/null || return 0
   kr_n=0
-  while kill -0 "$kr_pid" 2>/dev/null && [ "$kr_n" -lt 10 ]; do sleep 1; kr_n=$((kr_n + 1)); done
+  while kill -0 "$kr_pid" 2>/dev/null && [ "$kr_n" -lt 10 ]; do nap 1; kr_n=$((kr_n + 1)); done
   kill -9 "$kr_pid" 2>/dev/null || true
 }
 
@@ -418,10 +456,11 @@ run_attempt() {
     echo "$?" >"$ra_exit"
   ) 2>>"$ITEM_LOG" &
   RUN_RESULT=exited
-  ra_step=30; [ "$WATCH_S" -gt 0 ] || ra_step=0.2
+  # Poll step: the watch interval, at most 30 s; 0.2 s when the stall check is off (tests).
+  ra_step="$WATCH_S"; [ "$ra_step" -le 30 ] || ra_step=30; [ "$ra_step" -gt 0 ] || ra_step=0.2
   ra_tick="$(date +%s)"
   while [ ! -f "$ra_exit" ]; do
-    sleep "$ra_step"
+    nap "$ra_step"
     ra_now="$(date +%s)"
     if [ $((ra_now - ra_start)) -ge "$TIMEOUT_S" ]; then
       RUN_RESULT=timeout; log "timeout after $TIMEOUT_MIN min, killing the run"; kill_run; break
@@ -459,6 +498,15 @@ report_status() {
   esac
 }
 
+# rename_item_log <new name part>: the item log carries the resolved item in its name.
+# PR items start as <ts>-_<n>.log and become <ts>-_<n>-<resolved item>.log.
+rename_item_log() {
+  ril_new="${ITEM_LOG%.log}-$(safe_name "$1").log"
+  [ "$ril_new" != "$ITEM_LOG" ] || return 0
+  mv -f "$ITEM_LOG" "$ril_new" 2>/dev/null || return 0
+  ITEM_LOG="$ril_new"
+}
+
 # process_item <repo> <text|pr> <item or PR number> [queue line] [branch]
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
@@ -466,9 +514,11 @@ process_item() {
   pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
+  pi_began="$(date +%s)"
   mkdir -p "$LOGDIR"
   ITEM_LOG="$LOGDIR/$(date +%Y%m%d-%H%M%S)-$(safe_name "$pi_item").log"
   : >"$ITEM_LOG"
+  note_current 1
   say "$pi_rb $pi_item: resolving"
 
   pi_repo="$(resolve_repo "$pi_repo_in")" || { pi_status=blocked; pi_reason="$pi_repo_in is not a git repository"; }
@@ -503,6 +553,8 @@ process_item() {
         pi_noplan=no-plan
         pi_item="$(ticket_from "$pi_branch")"; [ -n "$pi_item" ] || pi_item="$pi_branch"
       fi
+      rename_item_log "$pi_item"
+      note_current 1
       say "$pi_rb #$pi_ref: item $pi_item${pi_noplan:+ ($pi_noplan)}"
     else
       pi_sd0="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" plan || true)"
@@ -518,6 +570,7 @@ process_item() {
     pi_start="$(date +%s)"
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     while :; do
+      note_current $((pi_restarts + 1))
       say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $MODEL, effort $RUN_EFFORT)"
       run_attempt "$pi_wt" "$pi_item" "$pi_start" "$pi_state"
       if [ "$RUN_RESULT" = timeout ]; then
@@ -577,7 +630,7 @@ finish_item() {
   fi
 
   if [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
-    pi_body="$(mktemp "${TMPDIR:-/tmp}/autopilot-queue.XXXXXX")"
+    pi_body="$(mktemp "${TMPDIR:-/tmp}/mission-control.XXXXXX")"
     if [ "$pi_status" = "done" ]; then
       if [ "$pi_draft" = true ]; then gh_step "gh pr ready" pr ready "$pi_pr_number"; fi
       gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_DONE"
@@ -651,9 +704,9 @@ cmd_run() {
   done <"$r_repos"
   rm -f "$r_repos" "$r_prs"
   if [ "$SOURCE_FAILED" -ne 0 ]; then
-    echo "[autopilot-queue] run finished, one source failed (see above)"; exit 1
+    echo "[mission-control] run finished, one source failed (see above)"; exit 1
   fi
-  echo "[autopilot-queue] run finished"
+  echo "[mission-control] run finished"
 }
 
 cmd_list() {
@@ -688,13 +741,13 @@ cmd_list() {
 }
 
 cmd_add() {
-  [ $# -ge 2 ] || die "usage: autopilot-queue add <repo> <item> [<branch>]"
-  a_repo="$(resolve_repo "$1")" || die "$1 is not a git repository"
+  [ $# -ge 2 ] || die "usage: mission-control add <repo> <item> [<branch>]"
+  a_repo="$(resolve_repo "$(expand_tilde "$1")")" || die "$1 is not a git repository"
   shift
   a_item="$1"; a_branch=""
   case "$a_item" in
     "$SESSIONS"/*)
-      [ $# -le 2 ] || die "usage: autopilot-queue add <repo> <session dir> [<branch>]"
+      [ $# -le 2 ] || die "usage: mission-control add <repo> <session dir> [<branch>]"
       a_item="${a_item%/}"
       a_branch="${2:-}"
       [ -n "$a_branch" ] || a_branch="$(branch_of_dir "$a_repo" "$a_item")" || die "no branch found for $a_item in $a_repo" ;;
@@ -706,7 +759,7 @@ cmd_add() {
 }
 
 cmd_labels() {
-  lb_repo="$(resolve_repo "${1:-.}")" || die "${1:-.} is not a git repository"
+  lb_repo="$(resolve_repo "$(expand_tilde "${1:-.}")")" || die "${1:-.} is not a git repository"
   ensure_labels "$lb_repo"
 }
 
@@ -755,17 +808,169 @@ cmd_doctor() {
   return "$d_fail"
 }
 
+# ---------- status, stop, retry, log, kickstart ----------
+
+# item_logs: item log files, newest first (queue.log and launchd.log excluded).
+item_logs() {
+  [ -d "$LOGDIR" ] || return 0
+  # Log names are made by safe_name (no spaces or newlines), so ls -t is safe here.
+  # shellcheck disable=SC2012,SC2010
+  ls -t "$LOGDIR"/*.log 2>/dev/null | grep -v -e '/queue\.log$' -e '/launchd\.log$'
+}
+
+# last_phase <item log> <repo basename> <item>: the last progress line of the log without
+# its timestamp and "<repo> <item>: " prefix.
+last_phase() {
+  lp_line="$(grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z ' "$1" 2>/dev/null | tail -n 1 | cut -d' ' -f2-)"
+  lp_prefix="$2 $3: "
+  case "$lp_line" in "$lp_prefix"*) lp_line="${lp_line#"$lp_prefix"}" ;; esac
+  printf '%s\n' "${lp_line:-starting}"
+}
+
+cmd_status() {
+  load_env
+  s_pid="$(lock_pid)"
+  if [ -n "$s_pid" ] && [ -f "$LOCK/current" ]; then
+    s_rb="$(sed -n 1p "$LOCK/current")"; s_item="$(sed -n 2p "$LOCK/current")"
+    s_att="$(sed -n 3p "$LOCK/current")"; s_began="$(sed -n 4p "$LOCK/current")"
+    s_log="$(sed -n 5p "$LOCK/current")"
+    s_elapsed=$((($(date +%s) - s_began) / 60))
+    echo "running: $s_rb $s_item (attempt $s_att, since $(hhmm_of_epoch "$s_began"), $s_elapsed min, phase: $(last_phase "$s_log" "$s_rb" "$s_item"))"
+  elif [ -n "$s_pid" ]; then
+    echo "running: pid $s_pid, no item yet"
+  else
+    echo "running: none"
+  fi
+
+  s_n=0
+  [ -f "$QUEUE" ] && s_n="$(grep -c -v -E '^[[:space:]]*(#|$)' "$QUEUE")"
+  echo "queue: $s_n items"
+  [ "$s_n" -gt 0 ] && grep -v -E '^[[:space:]]*(#|$)' "$QUEUE" | head -n 3 | sed 's/^/  /'
+
+  s_repos="$LOGDIR/.repos.status.$$"; s_prs="$LOGDIR/.prs.status.$$"
+  mkdir -p "$LOGDIR"
+  live_repos "$s_repos"
+  s_total=0; s_per=""
+  while IFS= read -r s_repo || [ -n "$s_repo" ]; do
+    s_repo="$(expand_tilde "$s_repo")"
+    s_abs="$(resolve_repo "$s_repo")" || { echo "FAIL - $s_repo: not a git repository"; continue; }
+    list_ready_prs "$s_abs" "$s_prs" || continue
+    s_c="$(grep -c . "$s_prs")"
+    s_total=$((s_total + s_c)); s_per="${s_per:+$s_per, }$(basename "$s_abs") $s_c"
+  done <"$s_repos"
+  rm -f "$s_repos" "$s_prs"
+  echo "labelled PRs: $s_total${s_per:+ ($s_per)}"
+
+  echo "last done:"
+  if [ -f "$DONE" ]; then tail -n 5 "$DONE" | sed 's/^/  /'; else echo "  none"; fi
+
+  if [ -f "$PLIST" ]; then
+    s_h="$(sed -n 's/.*<key>Hour<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
+    s_m="$(sed -n 's/.*<key>Minute<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
+    echo "schedule: installed at $(printf '%02d:%02d' "${s_h:-0}" "${s_m:-0}")"
+  else
+    echo "schedule: not installed"
+  fi
+
+  if [ -n "$s_pid" ]; then echo "lock: held by pid $s_pid"
+  elif [ -d "$LOCK" ]; then echo "lock: stale (pid $(cat "$LOCK/pid" 2>/dev/null || echo '?') is dead, the next run takes it over)"
+  else echo "lock: free"; fi
+  return 0
+}
+
+# cmd_stop: TERM to the run; its trap kills claude (SIGTERM, SIGKILL after 10 s) and
+# releases the lock. Waits up to 45 s. The item stays in queue.txt or keeps its label.
+cmd_stop() {
+  st_pid="$(lock_pid)"
+  [ -n "$st_pid" ] || { echo "nothing running"; return 0; }
+  st_rb="$(sed -n 1p "$LOCK/current" 2>/dev/null)"; st_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
+  kill -TERM "$st_pid" 2>/dev/null || { echo "nothing running"; return 0; }
+  st_n=0
+  while kill -0 "$st_pid" 2>/dev/null && [ "$st_n" -lt 90 ]; do sleep 0.5; st_n=$((st_n + 1)); done
+  if kill -0 "$st_pid" 2>/dev/null; then echo "still running (pid $st_pid)"; return 1; fi
+  echo "stopped${st_rb:+ $st_rb}${st_item:+ $st_item}"
+}
+
+# cmd_retry: "#N" or an all-digit argument is a PR number; a session dir is re-added with
+# the branch its kept worktree is on; anything else is re-added as given.
+cmd_retry() {
+  [ $# -ge 2 ] || die "usage: mission-control retry <repo> <#pr | item>"
+  rt_repo="$(resolve_repo "$(expand_tilde "$1")")" || die "$1 is not a git repository"
+  rt_rb="$(basename "$rt_repo")"; shift
+  rt_n="${1#\#}"
+  case "$rt_n" in ''|*[!0-9]*) rt_is_pr="" ;; *) rt_is_pr=1 ;; esac
+  if [ -n "$rt_is_pr" ]; then
+    [ $# -eq 1 ] || die "usage: mission-control retry <repo> <#pr>"
+    rt_err="$(gh_in "$rt_repo" pr edit "$rt_n" --remove-label "$LABEL_BLOCKED" --add-label "$LABEL_READY" 2>&1 >/dev/null)" \
+      || die "gh pr edit $rt_n failed in $rt_rb: $(printf '%s' "$rt_err" | head -n 1)"
+    echo "retry: PR #$rt_n in $rt_rb labelled $LABEL_READY again (the next run picks it up)"
+    return 0
+  fi
+  case "$1" in
+    "$SESSIONS"/*)
+      rt_item="${1%/}"
+      rt_wt="$WTDIR/$rt_rb-$(safe_name "$rt_item")"
+      rt_branch="$(current_branch "$rt_wt")"
+      cmd_add "$rt_repo" "$rt_item" ${rt_branch:+"$rt_branch"} ;;
+    *) cmd_add "$rt_repo" "$@" ;;
+  esac
+}
+
+# log_item_part <log path>: the file name without directory, ".log" and the leading
+# <timestamp>- (YYYYMMDD-HHMMSS-), so a number never matches the timestamp.
+log_item_part() {
+  lip="${1##*/}"; lip="${lip%.log}"
+  printf '%s\n' "$lip" | sed -E 's/^[0-9]{8}-[0-9]{6}-//'
+}
+
+# find_item_log <key>: the newest item log whose item part contains the key.
+find_item_log() {
+  item_logs | while IFS= read -r fil_f; do
+    fil_part="$(log_item_part "$fil_f")"
+    case "$fil_part" in *"$1"*) printf '%s\n' "$fil_f"; break ;; esac
+  done
+}
+
+# cmd_log [<item>]: the newest item log, or the newest one whose item part contains the
+# argument after safe_name ("#12" -> "_12", a session dir -> its basename).
+cmd_log() {
+  lg_sub="${1:-}"
+  if [ -n "$lg_sub" ]; then
+    lg_file="$(find_item_log "$(safe_name "$lg_sub")")"
+    [ -n "$lg_file" ] || die "no item log with '$lg_sub' in its name under $LOGDIR"
+  else
+    lg_file="$(item_logs | head -n 1)"
+    [ -n "$lg_file" ] || die "no item log under $LOGDIR"
+  fi
+  echo "log: $lg_file"
+  tail -n 40 "$lg_file"
+}
+
+# cmd_kickstart: start the installed LaunchAgent now (inside the GUI session, so the
+# Keychain login is readable). Refuses while a run is active and without a schedule.
+cmd_kickstart() {
+  [ "$(uname)" = Darwin ] || die "kickstart needs macOS (launchd)"
+  ks_pid="$(lock_pid)"
+  if [ -n "$ks_pid" ]; then
+    ks_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
+    die "a run is active (pid $ks_pid, ${ks_item:-no item yet}), stop it first"
+  fi
+  [ -f "$PLIST" ] || die 'no schedule installed; run "mission-control install-schedule HH:MM" once, or start "mission-control run" in a Terminal on this Mac'
+  launchctl kickstart "gui/$(id -u)/de.evelan.mission-control" || die "launchctl kickstart failed"
+  echo "kickstarted: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log)"
+}
+
 cmd_install_schedule() {
   [ "$(uname)" = Darwin ] || die "install-schedule needs macOS (launchd)"
   is_time="${1:-}"
-  case "$is_time" in [0-2][0-9]:[0-5][0-9]) ;; *) die "usage: autopilot-queue install-schedule HH:MM" ;; esac
+  case "$is_time" in [0-2][0-9]:[0-5][0-9]) ;; *) die "usage: mission-control install-schedule HH:MM" ;; esac
   is_h="${is_time%%:*}"; is_m="${is_time#*:}"
   is_h="${is_h#0}"; is_m="${is_m#0}"; [ -n "$is_h" ] || is_h=0; [ -n "$is_m" ] || is_m=0
-  if [ -x "$MARKETPLACE_BIN/autopilot-queue" ]; then
+  if [ -x "$MARKETPLACE_BIN/mission-control" ]; then
     is_bin="$MARKETPLACE_BIN"
   else
     is_bin="$script_dir"
-    echo "warning: $MARKETPLACE_BIN/autopilot-queue not found, the LaunchAgent points at $script_dir/autopilot-queue;"
+    echo "warning: $MARKETPLACE_BIN/mission-control not found, the LaunchAgent points at $script_dir/mission-control;"
     echo "         that path changes with plugin versions, re-run install-schedule after a plugin update"
   fi
   mkdir -p "$(dirname "$PLIST")" "$LOGDIR"
@@ -774,9 +979,9 @@ cmd_install_schedule() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>de.evelan.autopilot-queue</string>
+  <key>Label</key><string>de.evelan.mission-control</string>
   <key>ProgramArguments</key>
-  <array><string>$is_bin/autopilot-queue</string><string>run</string></array>
+  <array><string>$is_bin/mission-control</string><string>run</string></array>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>$is_h</integer><key>Minute</key><integer>$is_m</integer></dict>
   <key>WorkingDirectory</key><string>$HOME</string>
@@ -784,7 +989,7 @@ cmd_install_schedule() {
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$is_bin:/usr/bin:/bin</string>
     <key>HOME</key><string>$HOME</string>
-    <key>AUTOPILOT_QUEUE_HOME</key><string>$QHOME</string>
+    <key>MISSION_CONTROL_HOME</key><string>$QHOME</string>
   </dict>
   <key>StandardOutPath</key><string>$LOGDIR/launchd.log</string>
   <key>StandardErrorPath</key><string>$LOGDIR/launchd.log</string>
@@ -793,7 +998,7 @@ cmd_install_schedule() {
 EOF
   launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "launchctl bootstrap failed for $PLIST"
-  echo "installed: $PLIST (daily at $is_time, runs $is_bin/autopilot-queue in the GUI session so the Keychain login is readable)"
+  echo "installed: $PLIST (daily at $is_time, runs $is_bin/mission-control in the GUI session so the Keychain login is readable)"
 }
 
 cmd_uninstall_schedule() {
@@ -811,8 +1016,13 @@ case "$cmd" in
   add) cmd_add "$@" ;;
   labels) cmd_labels "$@" ;;
   doctor) cmd_doctor ;;
+  status) cmd_status ;;
+  stop) cmd_stop ;;
+  retry) cmd_retry "$@" ;;
+  log) cmd_log "$@" ;;
+  kickstart) cmd_kickstart ;;
   install-schedule) cmd_install_schedule "$@" ;;
   uninstall-schedule) cmd_uninstall_schedule ;;
   -h|--help|help|'') usage ;;
-  *) die "unknown command: $cmd (run | list | add | labels | doctor | install-schedule | uninstall-schedule)" ;;
+  *) die "unknown command: $cmd (run | list | add | labels | doctor | status | stop | retry | log | install-schedule | uninstall-schedule | kickstart)" ;;
 esac

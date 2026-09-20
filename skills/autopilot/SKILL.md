@@ -123,7 +123,7 @@ describe the touched area; `CLAUDE.md` and `.claude/rules/` when a convention, c
 gate changed; inline doc comments on changed public interfaces. A stale doc is a gap, the
 reviewer flags it. `build` once.
 Write `REPORT.md`: first line `Status: done` (or, on an abort, `Status: blocked - <reason>`;
-the queue runner reads this line and treats anything else as blocked), then what shipped,
+mission-control (the queue script) reads this line and treats anything else as blocked), then what shipped,
 verification with commands and results, review findings, open items. Prepend one line to
 `docs/autopilot/INDEX.md` (below the marker, never rewrite),
 delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX
@@ -171,9 +171,9 @@ for; say so in `REPORT.md`.
 (3) set the package `[~]` in `PLAN.md` with a one-line progress note; (4) commit both;
 (5) remove `.claude/.autopilot-active` and `.claude/.autopilot-gate-blocks` so the Stop
 hook lets the turn end (the fresh session recreates the sentinel); (6) end the turn with
-one line: `Resume with /autopilot <session directory>`. The queue runner or the user starts
-the fresh session. HANDOFF.md format: `references/handoff.md`. The queue runner (`autopilot-queue`,
-docs in `references/queue.md`) restarts a handed-off item by itself, up to three times.
+one line: `Resume with /autopilot <session directory>`. Mission control (the queue script) or the user starts
+the fresh session. HANDOFF.md format: `references/handoff.md`. Mission control (`mission-control`,
+docs in `references/mission-control.md`) restarts a handed-off item by itself, up to three times.
 
 ## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, artifacts committed, sentinel removed)
 - The gate cannot go green without a destructive action or human input.

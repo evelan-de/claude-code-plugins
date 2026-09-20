@@ -1,5 +1,5 @@
 #!/bin/sh
-# autopilot-watchdog - one progress tick for the autopilot queue runner (or anyone watching a run).
+# autopilot-watchdog - one progress tick for mission-control, the autopilot queue script (or anyone watching a run).
 #
 # usage: autopilot-watchdog <repo-dir> <branch> [state-file]
 #

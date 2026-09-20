@@ -88,17 +88,17 @@ claude --model sonnet --effort medium --advisor fable --fallback-model opus --pe
 
 Effort per the plan header (default medium). `--advisor` is accepted although `claude --help`
 does not list it. The dollar cap (`--max-budget-usd 60`) exists only in headless mode
-(`claude -p`, used by the queue runner), not in an interactive launch.
+(`claude -p`, used by mission-control), not in an interactive launch.
 
 Then ask once: **run it yourself, or hand it to the queue?** Hand to the queue → push the
 branch, open a draft PR against the base (`gh pr create --draft --label autopilot-ready`,
 title `<KEY>: <destination in a few words>`, body: the Destination and Goal artifact
 paragraphs plus the path of `PLAN.md`; create the label when missing:
-`autopilot-queue labels`) and say: the queue on the office Mini picks it up on its next run,
+`mission-control labels`) and say: the queue on the office Mini picks it up on its next run,
 the result comes back on this PR (label `autopilot-done` or `autopilot-blocked`, report as a
 comment) and in Slack. Developer note: the repo must be listed in the queue's `repos.txt` on
-the Mini; Andreas adds a repo once (`autopilot-queue doctor` prints the list), so a repo not
+the Mini; Andreas adds a repo once (`mission-control doctor` prints the list), so a repo not
 yet on it goes to him with the PR link. Feature-branch mode has no PR: hand-over means pushing
-the feature branch and adding the item to the queue file (`autopilot-queue add <repo>
+the feature branch and adding the item to the queue file (`mission-control add <repo>
 <session dir>`, which records the branch). Say what is still open, if anything. Do not
 implement anything here.

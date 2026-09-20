@@ -128,8 +128,8 @@ fresh; printf '# Fake plugin\n\nSkills: alpha.\n' > "$P/README.md"; run
 check "skill missing from README" 1 "README.md: does not mention skill 'beta'" "$got" "$out"
 
 # 15. removed-concept mention
-fresh; echo "Old flow: mission-control decides." >> "$P/README.md"; run
-check "removed concept" 1 "README.md: line 4: removed concept \"mission-control\"" "$got" "$out"
+fresh; echo "Old flow: autopilot-lead decides." >> "$P/README.md"; run
+check "removed concept" 1 "README.md: line 4: removed concept \"autopilot-lead\"" "$got" "$out"
 
 # 16. excluded files are not scanned for evelan:/removed concepts
 fresh
@@ -137,6 +137,28 @@ echo "evelan:nothing and DIGEST.md" > "$P/skills/THIRD-PARTY-NOTICES.md"
 echo "evelan:nothing and wayfinder" > "$P/skills/alpha/x.test.sh"
 run
 check "THIRD-PARTY-NOTICES.md and *.test.sh are skipped" 0 "plugin-lint: OK" "$got" "$out"
+
+# 17a. unquoted description with ": " -> invalid YAML
+fresh; sed -i.bak 's/^description:.*/description: Queue control: status, add, stop. Triggers on "queue"./' "$P/skills/alpha/SKILL.md"; rm "$P/skills/alpha/SKILL.md.bak"; run
+check "unquoted description with ': '" 1 "skills/alpha/SKILL.md: description: contains ': ' but is not quoted (invalid YAML" "$got" "$out"
+
+# 17b. unquoted description starting with a YAML special character
+fresh; sed -i.bak 's/^description:.*/description: [status | add] control the queue/' "$P/skills/alpha/SKILL.md"; rm "$P/skills/alpha/SKILL.md.bak"; run
+check "unquoted description starting with [" 1 "skills/alpha/SKILL.md: description: starts with '[' but is not quoted (invalid YAML" "$got" "$out"
+
+# 17c. unquoted argument-hint with ": "
+fresh; sed -i.bak 's/^name: alpha$/name: alpha\
+argument-hint: <repo> <item>: the thing/' "$P/skills/alpha/SKILL.md"; rm "$P/skills/alpha/SKILL.md.bak"; run
+check "unquoted argument-hint with ': '" 1 "skills/alpha/SKILL.md: argument-hint: contains ': ' but is not quoted (invalid YAML" "$got" "$out"
+
+# 17d. quoted (double, single) and block-scalar values with ": " or a leading special are fine
+fresh
+sed -i.bak "s/^description:.*/description: \"Queue control: status, add. Triggers on \\\"queue\\\".\"/" "$P/skills/alpha/SKILL.md"; rm "$P/skills/alpha/SKILL.md.bak"
+sed -i.bak "s/^name: alpha\$/name: alpha\\
+argument-hint: '[status | add <repo>: item]'/" "$P/skills/alpha/SKILL.md"; rm "$P/skills/alpha/SKILL.md.bak"
+sed -i.bak 's/^  The beta skill, folded over$/  The beta skill: folded over/' "$P/skills/beta/SKILL.md"; rm "$P/skills/beta/SKILL.md.bak"
+run
+check "quoted and block-scalar values with ': ' pass" 0 "plugin-lint: OK (2 skills, 1 agents)" "$got" "$out"
 
 # 17. no root at all -> exit 2
 out="$(cd "$tmp" && sh "$TOOL" 2>&1)"; got=$?
