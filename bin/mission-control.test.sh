@@ -242,6 +242,11 @@ check "(d) PR 13 labelled autopilot-blocked although no worktree exists" has "pr
 check "(d) PR 13 got a comment" has "pr comment 13 --body-file" "$gh_args"
 check "(d) PR 13 was not run" lacks "PAUL-11" "$cl"
 check "(d) main checkout still on main, clean" is_main_clean
+check "(d) PR 11 log named after the PR number and the resolved session dir" ls "$QH"/logs/*-_11-2026-09-19-PAUL-9-thing.log >/dev/null 2>&1
+check "(d) PR 12 log named after the PR number and the ticket key" ls "$QH"/logs/*-_12-PAUL-10.log >/dev/null 2>&1
+check "(d) no log left under the pre-resolution name" bash -c '! ls "$1"/logs/*-_11.log >/dev/null 2>&1' _ "$QH"
+check "(d) PR 13 (blocked before resolution) keeps the PR-number name" ls "$QH"/logs/*-_13.log >/dev/null 2>&1
+check "(d) the renamed log holds the whole run" grep -q "#11: resolving" "$QH"/logs/*-_11-2026-09-19-PAUL-9-thing.log
 unset FAKE_GH_PRS
 
 # ---------- (d2) TERM during a PR item kills the claude process ----------
@@ -526,13 +531,20 @@ out="$(sh "$TOOL" stop 2>&1)"; got=$?
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
 wait "$runpid" 2>/dev/null
 check "(q) stop exits 0" [ "$got" -eq 0 ]
-check "(q) stop reports stopped" has "stopped" "$out"
+check "(q) stop reports stopped with repo and item" has "stopped proj PAUL-50" "$out"
 check "(q) stop killed the fake claude" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
 check "(q) lock released after stop" [ ! -e "$QH/run.lock" ]
 kill -9 "$cpid" 2>/dev/null
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
 check "(q) status after stop: running none" has "running: none" "$out"
 check "(q) status after stop: lock free" has "lock: free" "$out"
+check "(q) the stopped item is still first in queue.txt" [ "$(sh "$TOOL" list 2>/dev/null | head -n 1 | grep -c "PAUL-50")" = 1 ]
+mkdir -p "$QH/run.lock"; echo 999999 >"$QH/run.lock/pid"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(q) status with a stale lock exits 0" [ "$got" -eq 0 ]
+check "(q) status with a stale lock: running none" has "running: none" "$out"
+check "(q) status names the stale lock" has "lock: stale (pid 999999 is dead" "$out"
+rm -rf "$QH/run.lock"
 out="$(sh "$TOOL" stop 2>&1)"; got=$?
 check "(q) stop without a run says so" has "nothing running" "$out"
 check "(q) stop without a run exits 0" [ "$got" -eq 0 ]
@@ -541,6 +553,40 @@ out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
 check "(q) status tolerates a gh failure with a FAIL line" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
 check "(q) status still exits 0 on a gh failure" [ "$got" -eq 0 ]
 unset FAKE_GH_FAIL FAKE_GH_PRS
+
+# ---------- (q2) stop returns within seconds although the run loop sleeps 30 s ----------
+fresh_home q2
+export FAKE_SCENARIO=sleep MISSION_CONTROL_WATCH_MIN=0.5
+printf '%s PAUL-54\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >"$REC/out" 2>&1 &
+runpid=$!
+for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
+sleep 0.5
+if [ "$(uname)" = Darwin ]; then
+  fakehome="$tmp/fakehome-q2"; mkdir -p "$fakehome"
+  out="$(HOME="$fakehome" sh "$TOOL" kickstart 2>&1)"; got=$?
+  check "(q2) kickstart refuses while a run is active" [ "$got" -eq 1 ]
+  check "(q2) kickstart names the run" has "a run is active (pid $runpid, PAUL-54), stop it first" "$out"
+fi
+t0="$(date +%s)"
+out="$(sh "$TOOL" stop 2>&1)"; got=$?
+t1="$(date +%s)"
+cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
+wait "$runpid" 2>/dev/null
+check "(q2) stop exits 0" [ "$got" -eq 0 ]
+check "(q2) stop reports stopped with the item" has "stopped proj PAUL-54" "$out"
+check "(q2) stop returned within 5 s (sleep interrupted)" [ $((t1 - t0)) -le 5 ]
+check "(q2) fake claude gone" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+check "(q2) item still queued after stop" grep -q "PAUL-54" "$QH/queue.txt"
+out="$(sh "$TOOL" log PAUL-54 2>&1)"; got=$?
+check "(q2) log still finds the stopped item's log" [ "$got" -eq 0 ]
+kill -9 "$cpid" 2>/dev/null
+export MISSION_CONTROL_WATCH_MIN=0
+if [ "$(uname)" = Darwin ]; then
+  out="$(HOME="$fakehome" sh "$TOOL" kickstart 2>&1)"; got=$?
+  check "(q2) kickstart without a schedule exits 1" [ "$got" -eq 1 ]
+  check "(q2) kickstart without a schedule explains both ways" has 'no schedule installed; run "mission-control install-schedule HH:MM" once, or start "mission-control run" in a Terminal on this Mac' "$out"
+fi
 
 # ---------- (r) retry: a PR gets its label back, an item is queued again ----------
 fresh_home r
@@ -554,8 +600,11 @@ check "(r) retry accepts a bare number" has "pr edit 42 --remove-label autopilot
 export FAKE_GH_FAIL="pr edit"
 out="$(sh "$TOOL" retry "$proj" '#43' 2>&1)"; got=$?
 check "(r) retry #pr exits 1 when gh fails" [ "$got" -eq 1 ]
-check "(r) retry #pr names the failure" has "gh pr edit 43 failed" "$out"
+check "(r) retry #pr names the failure with gh's first stderr line" has "gh pr edit 43 failed in proj: fake gh: failing on purpose" "$out"
 unset FAKE_GH_FAIL
+out="$(sh "$TOOL" retry "$proj" 12abc 2>&1)"
+check "(r) retry treats a mixed argument as an item, not a PR" grep -qxF "$proj 12abc" "$QH/queue.txt"
+check "(r) retry did not label a PR for the mixed argument" lacks "pr edit 12abc" "$(cat "$REC/gh.args")"
 sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
 sh "$TOOL" run >/dev/null 2>&1
 check "(r) blocked run left its worktree" [ -e "$QH/worktrees/proj-2026-09-19-PAUL-9-thing/.git" ]
@@ -572,6 +621,12 @@ out="$(sh "$TOOL" retry "$proj" PAUL-31 2>&1)"
 check "(r) retry ticket key queues it" grep -qxF "$proj PAUL-31" "$QH/queue.txt"
 out="$(sh "$TOOL" retry "$tmp/nowhere" '#1' 2>&1)"; got=$?
 check "(r) retry refuses a non-repo" [ "$got" -eq 1 ]
+out="$(HOME="$tmp" sh "$TOOL" retry '~/proj' PAUL-44 2>&1)"
+check "(r) retry expands ~ in the repo path" grep -qxF "$proj PAUL-44" "$QH/queue.txt"
+out="$(HOME="$tmp" sh "$TOOL" add '~/proj' PAUL-45 2>&1)"
+check "(r) add expands ~ in the repo path" grep -qxF "$proj PAUL-45" "$QH/queue.txt"
+out="$(HOME="$tmp" sh "$TOOL" labels '~/proj' 2>&1)"; got=$?
+check "(r) labels expands ~ in the repo path" [ "$got" -eq 0 ]
 
 # ---------- (s) log: newest item log, or by substring ----------
 fresh_home s
@@ -594,6 +649,22 @@ check "(s) log output is at most 41 lines" [ "$(printf '%s\n' "$out" | wc -l | t
 out="$(sh "$TOOL" log NOPE 2>&1)"; got=$?
 check "(s) log with no match exits 1" [ "$got" -eq 1 ]
 check "(s) log with no match says so" has "no item log with 'NOPE'" "$out"
+# hand-made logs: the timestamp part must never match, the item part matches after safe_name
+fresh_home s2
+mkdir -p "$QH/logs"
+printf '2026-12-12T12:12:12Z proj PAUL-70: done\n' >"$QH/logs/20261212-121212-PAUL-70.log"
+sleep 1
+printf '2026-12-12T12:12:13Z proj #34: resolving\n' >"$QH/logs/20261212-121213-_34-2026-09-19-PAUL-2801-export.log"
+out="$(sh "$TOOL" log '#34' 2>&1)"; got=$?
+check "(s2) log '#34' finds the PR item's log" has "_34-2026-09-19-PAUL-2801-export.log" "$(printf '%s\n' "$out" | head -n 1)"
+out="$(sh "$TOOL" log PAUL-2801 2>&1)"; got=$?
+check "(s2) log <ticket key> finds the run whose session dir contains the key" has "_34-2026-09-19-PAUL-2801-export.log" "$(printf '%s\n' "$out" | head -n 1)"
+out="$(sh "$TOOL" log docs/autopilot/sessions/2026-09-19-PAUL-2801-export 2>&1)"; got=$?
+check "(s2) log <session dir> finds it too" [ "$got" -eq 0 ]
+out="$(sh "$TOOL" log 12 2>&1)"; got=$?
+check "(s2) log 12 does not match the timestamp" [ "$got" -eq 1 ]
+out="$(sh "$TOOL" log PAUL-70 2>&1)"
+check "(s2) log PAUL-70 finds the older log" has "20261212-121212-PAUL-70.log" "$(printf '%s\n' "$out" | head -n 1)"
 out="$(sh "$TOOL" bogus 2>&1)"
 check "(s) unknown command lists the new commands" has "status | stop | retry | log" "$out"
 out="$(sh "$TOOL" help 2>&1)"

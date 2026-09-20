@@ -7,7 +7,8 @@
 # problem was found. On success prints "plugin-lint: OK (<n> skills, <m> agents)".
 #
 # Checks:
-#   1. skills/*/SKILL.md: frontmatter present, name matches folder, description set
+#   1. skills/*/SKILL.md: frontmatter present, name matches folder, description set,
+#      description: and argument-hint: are valid YAML plain scalars (or quoted / block)
 #   2. references/<file> mentions exist; every references/ file is mentioned
 #   3. every evelan:<name> resolves to skills/<name>/ or agents/<name>.md
 #   4. .claude-plugin/plugin.json "agents" lists exactly the files in agents/
@@ -55,6 +56,27 @@ frontmatter_value() { # $1 key  (frontmatter on stdin)
     -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
+# Raw value of a frontmatter key (quotes kept, surrounding whitespace removed).
+frontmatter_raw() { # $1 key  (frontmatter on stdin)
+  grep "^$1:" | head -n 1 | sed -e "s/^$1:[[:space:]]*//" -e 's/[[:space:]]*$//'
+}
+
+# A plain (unquoted, non-block) scalar must not contain ": " and must not start
+# with a YAML indicator; either makes the frontmatter unparsable.
+check_plain_scalar() { # $1 file  $2 key  $3 raw value
+  case "$3" in
+    '' | \"* | \'* | '>' | '>-' | '>+' | '|' | '|-' | '|+') return 0 ;;
+  esac
+  case "$3" in
+    *': '*) problem "$1" "$2: contains ': ' but is not quoted (invalid YAML, wrap the value in double quotes)" ;;
+  esac
+  first="$(printf '%s' "$3" | cut -c1)"
+  case "$first" in
+    '[' | '{' | '*' | '&' | '!' | '%' | '@' | '`')
+      problem "$1" "$2: starts with '$first' but is not quoted (invalid YAML, wrap the value in double quotes)" ;;
+  esac
+}
+
 skill_count=0
 agent_count=0
 
@@ -92,6 +114,9 @@ for skill_md in skills/*/SKILL.md; do
         [ -n "$next" ] || problem "$skill_md" "description: block is empty" ;;
     esac
   fi
+  for key in description argument-hint; do
+    check_plain_scalar "$skill_md" "$key" "$(printf '%s\n' "$fm" | frontmatter_raw "$key")"
+  done
 done
 
 # ---------------------------------------------------------------- 2. references
