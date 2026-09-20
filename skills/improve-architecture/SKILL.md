@@ -1,6 +1,6 @@
 ---
 name: improve-architecture
-description: Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.
+description: Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick. Triggers on "/improve-architecture", "deepening opportunities", "Architektur verbessern", "wo lohnt sich ein Refactoring".
 disable-model-invocation: true
 ---
 

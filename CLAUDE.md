@@ -61,3 +61,9 @@ allowed-tools: [Bash, Read, Glob, Grep]
 2. Install plugin: `/plugin install evelan@evelan-plugins`
 
 See `README.md` for full installation instructions including auto-prompt setup for team projects.
+
+## Before every release
+
+Run `sh bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
+README coverage, removed concepts) and every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh`;
+all must pass. Then `claude plugin validate .` and the version bump in `.claude-plugin/plugin.json`.

@@ -5,7 +5,7 @@ key first when there is one). One file, under 200 lines.
 
 ```
 # PLAN - <ticket key or topic> - <YYYY-MM-DD>
-Branch: <prefix>/<KEY>-<slug>   Base: <integration branch>   Ticket: <key or none>
+Branch: <prefix>/<KEY>-<slug>   Base: <integration branch>   Ticket: <key or none>   (prefix per the project's branch convention, else feat)
 Branch mode: session | feature-branch <name>     PR: per session | none (feature branch reviewed as a whole)
 Effort: medium   (low | medium | high | xhigh | max; the launch line passes it as --effort)
 Sources: <spec, ADRs, docs the packages point to>

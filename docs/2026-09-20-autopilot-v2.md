@@ -75,7 +75,7 @@ always shows what is left.
    item (the Slack step is a later addition).
 
 **Requires** a logged-in `claude` CLI on the machine (`claude /login` once per Mac; both Macs
-are currently not logged in for headless use) and `gh` for the PR.
+the MacBook is logged in since 2026-09-20, the office Mini still to be checked) and `gh` for the PR.
 
 **Open questions for Andreas:**
 
@@ -134,7 +134,7 @@ head. Built into the plan and autopilot skills.
 model, a launch parameter. Autopilot runs default to `medium` (the global `effortLevel`
 setting is `high` on Andreas' Macs, so the launch line always passes `--effort`). The plan
 header carries `Effort: <level>`, the plan skill's hand-over line prints the full launch line
-(`claude --model sonnet --effort medium --advisor fable`), and the queue gets an effort column
+(`claude --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto`; the turn and dollar caps exist only in headless `-p` mode), and the queue gets an effort column
 next to the model column. Raised only when the plan's risks call for it.
 
 **Codex review on by default.** After the Claude adversarial review, the run calls

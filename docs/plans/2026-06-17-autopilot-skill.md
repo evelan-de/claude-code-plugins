@@ -1,3 +1,6 @@
+> Superseded on 2026-09-20 by plugin 2.0.0 (see `docs/2026-09-20-autopilot-v2.md`). The
+> implementer subagent and the orchestrated modes described here no longer exist. Kept as history.
+
 # Autopilot Skill Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

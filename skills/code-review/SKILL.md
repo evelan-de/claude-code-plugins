@@ -58,9 +58,9 @@ On top of that, the Standards axis always carries the **smell baseline** below (
 **Spec sub-agent prompt**: the diff command and commit list; the path or fetched contents of the spec; the brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for; (c) requirements that look implemented but wrong. Quote the spec line for each finding. Under 400 words."
 
 **Codex, third axis, automatic.** In the same step, run `codex-cli --version`. If it succeeds,
-start `evelan:codex-review` on the same range (`--base <fixed-point>`, or `--uncommitted`
-when the tree is dirty) in the background alongside the two sub-agents; it needs no extra
-prompt. If the binary is missing, skip it with one line in the report ("Codex: not installed,
+start `evelan:codex-review` on the same range (`--base <fixed-point>`, always, so all
+three axes review the same diff; uncommitted edits are not part of this review) in the
+background alongside the two sub-agents; it needs no extra prompt. If the binary is missing, skip it with one line in the report ("Codex: not installed,
 skipped") and nothing else; a developer without Codex gets the two Claude axes. Codex
 rate-limited or failing: same one line with the reason, no Claude fallback (the two axes
 already are the Claude review). The user never has to ask for Codex; "ohne Codex" / "no

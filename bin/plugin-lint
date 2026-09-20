@@ -1,0 +1,228 @@
+#!/bin/sh
+# plugin-lint - static consistency checks for this plugin repository.
+#
+# Usage: plugin-lint [<plugin root>]   (default: git top level of the cwd)
+#
+# Prints one line per problem ("<file>: <message>") and exits 1 when any
+# problem was found. On success prints "plugin-lint: OK (<n> skills, <m> agents)".
+#
+# Checks:
+#   1. skills/*/SKILL.md: frontmatter present, name matches folder, description set
+#   2. references/<file> mentions exist; every references/ file is mentioned
+#   3. every evelan:<name> resolves to skills/<name>/ or agents/<name>.md
+#   4. .claude-plugin/plugin.json "agents" lists exactly the files in agents/
+#   5. no em dash (U+2014) in shipped text files
+#   6. every skill folder name appears in README.md
+#   7. no mention of removed concepts in shipped files
+#
+# Only git, grep, sed and awk are required.
+
+LC_ALL=C
+export LC_ALL
+
+root="$1"
+if [ -z "$root" ]; then
+  root="$(git rev-parse --show-toplevel 2>/dev/null)"
+fi
+if [ -z "$root" ] || [ ! -d "$root" ]; then
+  echo "plugin-lint: no plugin root (pass a directory or run inside a git repository)." >&2
+  exit 2
+fi
+cd "$root" || exit 2
+
+problems=0
+problem() { # $1 file  $2 message
+  printf '%s: %s\n' "$1" "$2"
+  problems=$((problems + 1))
+}
+
+# Shipped text files under skills/ and agents/ minus the excluded ones.
+shipped_files() {
+  for dir in skills agents; do
+    [ -d "$dir" ] || continue
+    find "$dir" -type f
+  done | grep -v -e '/THIRD-PARTY-NOTICES\.md$' -e '\.test\.sh$'
+}
+
+# Frontmatter body of a SKILL.md (lines between the first two "---" lines).
+frontmatter() {
+  awk 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" { exit } { print }' "$1"
+}
+
+# Value of a frontmatter key with surrounding quotes and whitespace removed.
+frontmatter_value() { # $1 key  (frontmatter on stdin)
+  grep "^$1:" | head -n 1 | sed -e "s/^$1:[[:space:]]*//" \
+    -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
+
+skill_count=0
+agent_count=0
+
+# ---------------------------------------------------------------- 1. frontmatter
+if [ ! -d skills ]; then
+  problem "skills" "directory missing"
+fi
+for skill_md in skills/*/SKILL.md; do
+  [ -f "$skill_md" ] || continue
+  skill_count=$((skill_count + 1))
+  folder="${skill_md#skills/}"
+  folder="${folder%/SKILL.md}"
+  if [ "$(head -n 1 "$skill_md")" != "---" ]; then
+    problem "$skill_md" "frontmatter missing (first line is not ---)"
+    continue
+  fi
+  fm="$(frontmatter "$skill_md")"
+  name="$(printf '%s\n' "$fm" | frontmatter_value name)"
+  if [ -z "$name" ]; then
+    problem "$skill_md" "frontmatter has no name:"
+  elif [ "$name" != "$folder" ]; then
+    problem "$skill_md" "name: is '$name' but the folder is '$folder'"
+  fi
+  if ! printf '%s\n' "$fm" | grep -q '^description:'; then
+    problem "$skill_md" "frontmatter has no description:"
+  else
+    desc="$(printf '%s\n' "$fm" | frontmatter_value description)"
+    case "$desc" in
+      "")
+        problem "$skill_md" "description: is empty" ;;
+      '>' | '>-' | '|' | '|-')
+        # Folded or literal block: the first indented line must carry text.
+        line_no="$(printf '%s\n' "$fm" | grep -n '^description:' | head -n 1 | cut -d: -f1)"
+        next="$(printf '%s\n' "$fm" | sed -n "$((line_no + 1))p" | sed 's/^[[:space:]]*//')"
+        [ -n "$next" ] || problem "$skill_md" "description: block is empty" ;;
+    esac
+  fi
+done
+
+# ---------------------------------------------------------------- 2. references
+# Cross-skill mentions: skills/<s>/references/<f> anywhere in any SKILL.md.
+cross_mentions="$(
+  for skill_md in skills/*/SKILL.md; do
+    [ -f "$skill_md" ] || continue
+    grep -oE 'skills/[A-Za-z0-9_-]+/references/[A-Za-z0-9_.-]+' "$skill_md" \
+      | sed 's/\.*$//' | sed "s|^|$skill_md |"
+  done
+)"
+cross_missing="$(printf '%s\n' "$cross_mentions" | while read -r from path; do
+  [ -n "$path" ] || continue
+  [ -f "$path" ] || printf '%s: %s does not exist\n' "$from" "$path"
+done)"
+if [ -n "$cross_missing" ]; then
+  printf '%s\n' "$cross_missing"
+  problems=$((problems + $(printf '%s\n' "$cross_missing" | grep -c .)))
+fi
+
+for skill_md in skills/*/SKILL.md; do
+  [ -f "$skill_md" ] || continue
+  skill_dir="${skill_md%/SKILL.md}"
+  # Plain mentions of the skill's own references/ (not preceded by a slash).
+  # shellcheck disable=SC2086,SC2046
+  own_mentions="$(cat "$skill_md" $(find "$skill_dir/references" -name '*.md' 2>/dev/null) | grep -oE '(^|[^/A-Za-z0-9_.-])references/[A-Za-z0-9_.-]+' \
+    | sed -e 's/^.*references\//references\//' -e 's/\.*$//' | sort -u)"
+  for mention in $own_mentions; do
+    [ -f "$skill_dir/$mention" ] || problem "$skill_md" "$mention does not exist under $skill_dir/"
+  done
+  [ -d "$skill_dir/references" ] || continue
+  for ref_file in "$skill_dir"/references/*; do
+    [ -f "$ref_file" ] || continue
+    rel="${ref_file#"$skill_dir"/}"
+    if printf '%s\n' "$own_mentions" | grep -qxF "$rel"; then
+      continue
+    fi
+    if printf '%s\n' "$cross_mentions" | awk 'NF == 2 { print $2 }' | grep -qxF "$ref_file"; then
+      continue
+    fi
+    problem "$ref_file" "not mentioned in $skill_md or via \${CLAUDE_PLUGIN_ROOT}/$ref_file in another SKILL.md"
+  done
+done
+
+# ---------------------------------------------------------------- 3. evelan: refs
+evelan_refs="$(
+  { shipped_files; [ -f README.md ] && echo README.md; } \
+    | while read -r f; do grep -onE 'evelan:[A-Za-z0-9_-]+' "$f" 2>/dev/null | sed "s|^|$f:|"; done
+)"
+# Lines look like "file:line:evelan:name".
+unresolved="$(printf '%s\n' "$evelan_refs" | awk -F: 'NF >= 4 { print $1 ":" $2 ":" $4 }' \
+  | while IFS=: read -r f line name; do
+      [ -n "$name" ] || continue
+      if [ ! -d "skills/$name" ] && [ ! -f "agents/$name.md" ]; then
+        printf '%s: line %s: evelan:%s resolves to neither skills/%s/ nor agents/%s.md\n' \
+          "$f" "$line" "$name" "$name" "$name"
+      fi
+    done)"
+if [ -n "$unresolved" ]; then
+  printf '%s\n' "$unresolved"
+  problems=$((problems + $(printf '%s\n' "$unresolved" | grep -c .)))
+fi
+
+# ---------------------------------------------------------------- 4. plugin.json agents
+plugin_json=".claude-plugin/plugin.json"
+if [ ! -f "$plugin_json" ]; then
+  problem "$plugin_json" "missing"
+else
+  listed="$(awk '/"agents"[[:space:]]*:/ { on = 1 } on { print } on && /\]/ { exit }' "$plugin_json" \
+    | grep -oE '"[^"]*\.md"' | sed -e 's/"//g' -e 's|.*/||' | sort)"
+  present="$(
+    for f in agents/*.md; do
+      [ -f "$f" ] && basename "$f"
+    done | sort
+  )"
+  agent_count="$(printf '%s\n' "$present" | grep -c .)"
+  for a in $listed; do
+    printf '%s\n' "$present" | grep -qxF "$a" \
+      || problem "$plugin_json" "agents lists $a but agents/$a does not exist"
+  done
+  for a in $present; do
+    printf '%s\n' "$listed" | grep -qxF "$a" \
+      || problem "$plugin_json" "agents does not list agents/$a"
+  done
+fi
+
+# ---------------------------------------------------------------- 5. em dash
+em_dash="$(printf '\342\200\224')"
+dash_targets=""
+for p in skills agents bin README.md CLAUDE.md .claude-plugin; do
+  [ -e "$p" ] && dash_targets="$dash_targets $p"
+done
+if [ -n "$dash_targets" ]; then
+  # shellcheck disable=SC2086
+  dash_hits="$(grep -rn -- "$em_dash" $dash_targets 2>/dev/null | cut -d: -f1,2)"
+  if [ -n "$dash_hits" ]; then
+    printf '%s\n' "$dash_hits" | awk -F: '{ print $1 ": line " $2 ": em dash (U+2014)" }'
+    problems=$((problems + $(printf '%s\n' "$dash_hits" | grep -c .)))
+  fi
+fi
+
+# ---------------------------------------------------------------- 6. README lists skills
+if [ ! -f README.md ]; then
+  problem "README.md" "missing"
+else
+  for skill_md in skills/*/SKILL.md; do
+    [ -f "$skill_md" ] || continue
+    folder="${skill_md#skills/}"
+    folder="${folder%/SKILL.md}"
+    grep -qF "$folder" README.md || problem "README.md" "does not mention skill '$folder'"
+  done
+fi
+
+# ---------------------------------------------------------------- 7. removed concepts
+removed='mission-control|autopilot-lead|autopilot-implementer|autopilot-planner|DIGEST\.md|STATUS: incomplete|wayfinder|which-skill|wait-what|reflect-on-changes|\.scratch/|ready-for-agent|triage-backlog'
+removed_hits="$(
+  { shipped_files
+    [ -f README.md ] && echo README.md
+    [ -d .claude-plugin ] && find .claude-plugin -type f
+  } | while read -r f; do grep -onE "$removed" "$f" 2>/dev/null | sed "s|^|$f:|"; done
+)"
+if [ -n "$removed_hits" ]; then
+  printf '%s\n' "$removed_hits" \
+    | awk -F: '{ match($0, /^[^:]*:[^:]*:/); rest = substr($0, RLENGTH + 1)
+                 print $1 ": line " $2 ": removed concept \"" rest "\"" }'
+  problems=$((problems + $(printf '%s\n' "$removed_hits" | grep -c .)))
+fi
+
+# ---------------------------------------------------------------- result
+if [ "$problems" -gt 0 ]; then
+  echo "plugin-lint: $problems problem(s) found." >&2
+  exit 1
+fi
+echo "plugin-lint: OK ($skill_count skills, $agent_count agents)"

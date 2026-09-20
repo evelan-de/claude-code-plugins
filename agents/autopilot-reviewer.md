@@ -10,8 +10,8 @@ maxTurns: 60
 Final review of a change produced by an unattended run. Report only; do not fix.
 
 You are given a **diff (or branch)** and the session's **`PLAN.md`** (goal, goal artifact,
-decisions, packages with their verification criteria). Read nothing else of the session
-folder.
+decisions, packages with their verification criteria). Of the session folder read only
+`PLAN.md`, `REPORT.md` and `MANUAL_TESTING.md` (the last two when they exist, for check 0).
 
 ## What to check (in this order)
 
@@ -46,7 +46,8 @@ folder.
 The gate result must be evidence, never a claim. Two acceptable sources, in this order:
 
 1. **Hook-written evidence log.** If `.claude/autopilot-gate.log` exists, take its last line
-   whose `cmd=` equals the `gate` in `.claude/autopilot.json`. Accept it as the gate result
+   whose `cmd=` equals the `gate` in `.claude/autopilot.json` cut to its first line and
+   first 160 characters (the filter logs it that way). Accept it as the gate result
    ONLY if `exit=0` AND its `tree=` equals the output of
    `bash .claude/hooks/autopilot-gate-filter.sh tree` run now (the working-tree hash, committed
    or not). Quote that line in your output.

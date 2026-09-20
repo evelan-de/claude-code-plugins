@@ -72,7 +72,8 @@ Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package 
 set one up minimally, project-consistent, before implementing. Create
 `.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it (and
 `.claude/.autopilot-gate-blocks`) at the end and on every abort; never commit either. Branch per the plan header: **session mode** checks out
-`<prefix>/<KEY>-<slug>`, which `/autopilot-plan` created with the plan on it (create it from
+`<prefix>/<KEY>-<slug>` (prefix per the project's branch convention in `CLAUDE.md`, else
+`feat`), which `/autopilot-plan` created with the plan on it (create it from
 the base only when you wrote the plan yourself, and commit the plan there first);
 **feature-branch mode** checks out the named feature branch (create it from the base if
 missing) and commits straight onto it; several sessions add up to one branch with one review
@@ -96,7 +97,8 @@ For each package with `[ ]`: set `[~]`, then
 
 ### 3. Review, once, on the whole branch
 `evelan:autopilot-reviewer` with the diff against the base branch and `PLAN.md`. Fix every
-correctness, requirement or safety gap test-first, re-gate, commit. At most two cycles;
+correctness, requirement or safety gap test-first, re-gate, commit. At most two cycles, each
+a fresh reviewer dispatch on the updated diff;
 unresolved real gaps go to the top of `REPORT.md` and into the PR description.
 
 **Codex cross-model review, on by default.** After the Claude review is settled, run
@@ -132,7 +134,7 @@ tests), run it once; red → fix, re-run; a precondition it needs (a test databa
 is a blocker to resolve, not a skip. Feature-branch mode → push the feature branch
 (`git push origin <feature>`; pull with rebase first if it moved), no PR; the feature branch
 gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
-(`gh pr create`, ticket key in the title), never merge. `gh run watch`; a red CI check → fix,
+(`gh pr create`, ticket key in the title), never merge. `gh pr checks <n> --watch`; a red CI check → fix,
 re-push, until green. The review check is not CI: red there means the review pipeline is
 broken, never a finding; note it in `REPORT.md` and move on.
 
@@ -162,8 +164,10 @@ for; say so in `REPORT.md`.
 
 (1) commit every finished change; (2) write `docs/autopilot/sessions/<slug>/HANDOFF.md`;
 (3) set the package `[~]` in `PLAN.md` with a one-line progress note; (4) commit both;
-(5) end the turn with one line: `Resume with /autopilot <session directory>`. The queue
-runner or the user starts the fresh session. HANDOFF.md format: `references/handoff.md`.
+(5) remove `.claude/.autopilot-active` and `.claude/.autopilot-gate-blocks` so the Stop
+hook lets the turn end (the fresh session recreates the sentinel); (6) end the turn with
+one line: `Resume with /autopilot <session directory>`. The queue runner or the user starts
+the fresh session. HANDOFF.md format: `references/handoff.md`.
 
 ## Stop conditions (abort: `REPORT.md` with the blocker on top, artifacts committed, sentinel removed)
 - The gate cannot go green without a destructive action or human input.

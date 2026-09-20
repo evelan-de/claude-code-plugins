@@ -85,8 +85,8 @@ Wait for the go or for corrections. Never write on a silent assumption.
      - "apps/web/**/*.{ts,tsx}"
    ---
    ```
-   Every glob must match at least one tracked file (`git ls-files | grep`), or the rule never
-   loads.
+   Every glob must match at least one tracked file (check with `git ls-files -- '<glob>'`), or the
+   rule never loads.
 3. `.claude/skills/<name>/SKILL.md` for SKILL blocks: `name`, a `description` that names when
    to reach it, the procedure as steps.
 4. Replace POINTER blocks by their one line in the core.

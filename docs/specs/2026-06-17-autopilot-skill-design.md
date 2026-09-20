@@ -1,3 +1,6 @@
+> Superseded on 2026-09-20 by plugin 2.0.0: no implementer subagent, no orchestrated modes.
+> Current design: `docs/2026-09-20-autopilot-v2.md`. Kept as history.
+
 # Autopilot Skill — Design
 
 **Date:** 2026-06-17
