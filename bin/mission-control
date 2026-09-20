@@ -349,6 +349,41 @@ branch_of_dir() {
 
 gh_in() { gi_dir="$1"; shift; (cd "$gi_dir" && "$GH_BIN" "$@"); }
 
+# gh_auth_ok: 0 when gh can read its token in this session; checked once per invocation.
+GH_AUTH=""
+gh_auth_ok() {
+  if [ -z "$GH_AUTH" ]; then
+    if "$GH_BIN" auth status >/dev/null 2>&1; then GH_AUTH=1; else GH_AUTH=0; fi
+  fi
+  [ "$GH_AUTH" = 1 ]
+}
+
+in_ssh() { [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; }
+
+# gh_auth_notice: the one line printed instead of polling the repos when gh has no token.
+# Over SSH the token sits in the macOS Keychain, which an SSH session cannot read while the
+# scheduled run in the GUI session can; anywhere else it is a real login problem.
+gh_auth_notice() {
+  if in_ssh; then
+    echo "gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown here, the scheduled run in the GUI session sees them"
+  else
+    echo "gh: not authenticated (run \"gh auth login -h github.com -w\"); labelled PRs unknown"
+  fi
+}
+
+# repos_pollable <repos file>: 0 when the repos can be polled for labelled PRs. With repos
+# listed and gh unable to read its token, prints the notice (via say in a run, so it reaches
+# queue.log), empties the file so no repo is polled, and returns 1. Over SSH that is not a
+# source failure (manual runs there cannot see PRs, the scheduled run can); elsewhere it is.
+repos_pollable() {
+  [ -s "$1" ] || return 0
+  gh_auth_ok && return 0
+  if [ "${2:-}" = run ]; then say "$(gh_auth_notice)"; else gh_auth_notice; fi
+  in_ssh || SOURCE_FAILED=1
+  : >"$1"
+  return 1
+}
+
 # list_ready_prs <repo> <outfile>: writes lines "<number> <branch> <url>" of open PRs labelled
 # autopilot-ready. On failure prints a FAIL line, sets SOURCE_FAILED and returns 1.
 list_ready_prs() {
@@ -780,6 +815,7 @@ cmd_run() {
   done
   r_repos="$LOGDIR/.repos.$$"; r_prs="$LOGDIR/.prs.$$"
   live_repos "$r_repos"
+  repos_pollable "$r_repos" run || true
   while IFS= read -r r_repo || [ -n "$r_repo" ]; do
     r_repo="$(expand_tilde "$r_repo")"
     r_abs="$(resolve_repo "$r_repo")" || { say "$r_repo: not a git repository, skipped"; continue; }
@@ -815,6 +851,7 @@ cmd_list() {
   l_repos="$LOGDIR/.repos.list.$$"; l_prs="$LOGDIR/.prs.list.$$"
   mkdir -p "$LOGDIR"
   live_repos "$l_repos"
+  repos_pollable "$l_repos" || true
   while IFS= read -r l_repo || [ -n "$l_repo" ]; do
     l_repo="$(expand_tilde "$l_repo")"
     l_abs="$(resolve_repo "$l_repo")" || { printf 'pr     %s  (not a git repository)\n' "$l_repo"; continue; }
@@ -939,15 +976,19 @@ cmd_status() {
   mkdir -p "$LOGDIR"
   live_repos "$s_repos"
   s_total=0; s_per=""
-  while IFS= read -r s_repo || [ -n "$s_repo" ]; do
-    s_repo="$(expand_tilde "$s_repo")"
-    s_abs="$(resolve_repo "$s_repo")" || { echo "FAIL - $s_repo: not a git repository"; continue; }
-    list_ready_prs "$s_abs" "$s_prs" || continue
-    s_c="$(grep -c . "$s_prs")"
-    s_total=$((s_total + s_c)); s_per="${s_per:+$s_per, }$(basename "$s_abs") $s_c"
-  done <"$s_repos"
+  if repos_pollable "$s_repos"; then
+    while IFS= read -r s_repo || [ -n "$s_repo" ]; do
+      s_repo="$(expand_tilde "$s_repo")"
+      s_abs="$(resolve_repo "$s_repo")" || { echo "FAIL - $s_repo: not a git repository"; continue; }
+      list_ready_prs "$s_abs" "$s_prs" || continue
+      s_c="$(grep -c . "$s_prs")"
+      s_total=$((s_total + s_c)); s_per="${s_per:+$s_per, }$(basename "$s_abs") $s_c"
+    done <"$s_repos"
+    echo "labelled PRs: $s_total${s_per:+ ($s_per)}"
+  else
+    echo "labelled PRs: unknown (gh not authenticated in this session)"
+  fi
   rm -f "$s_repos" "$s_prs"
-  echo "labelled PRs: $s_total${s_per:+ ($s_per)}"
 
   echo "last done:"
   if [ -f "$DONE" ]; then tail -n 5 "$DONE" | sed 's/^/  /'; else echo "  none"; fi

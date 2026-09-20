@@ -63,7 +63,9 @@ mission-control kickstart                 # run the installed LaunchAgent now, i
 `status` exits 0 and prints, in this order: `running: <repo basename> <item> (attempt N,
 since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `running: none`;
 `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
-(a failing repo gets a `FAIL - ...` line, the count goes on without it); `last done:` with the
+(a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
+token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
+session)` replace the counts, see "Over SSH"); `last done:` with the
 last five `done.txt` lines; `schedule: installed at HH:MM, active`, `schedule: installed at
 HH:MM, paused until <date>` (time read from the plist, date from `paused`), `schedule:
 installed at HH:MM (legacy, ignores pause)` plus the warning line described under "Pause the
@@ -170,7 +172,15 @@ column and runs from the default branch.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
-process is taken over. When `gh pr list --label` fails for a repo, `run` and `list` print
+process is taken over. Before polling the repos, `run`, `list` and `status` check once
+whether `gh` can read its token (`gh auth status`). When it cannot, they print one notice
+instead of one line per repo and skip the polling: over SSH (`SSH_CONNECTION` or `SSH_TTY`
+set) `gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown
+here, the scheduled run in the GUI session sees them`, and `run` and `list` still exit 0;
+anywhere else `gh: not authenticated (run "gh auth login -h github.com -w"); labelled PRs
+unknown`, and `run` and `list` exit 1 (a real login problem). The queue items of `run` are
+processed either way. When `gh` is authenticated and `gh pr list --label` fails for one
+repo (repo not found, network), `run` and `list` print
 `FAIL - <repo>: gh pr list --label autopilot-ready failed (...)`, log it to `queue.log`,
 continue with the other repos and the list, and exit 1 at the end.
 
@@ -187,6 +197,19 @@ schedule: `install-schedule HH:MM` writes
 `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token` (kept in a mode-600 file) before `run`. `doctor` checks the login and
 prints this hint when it fails.
+
+### Over SSH
+
+The GitHub CLI keeps its token in the macOS Keychain as well, so a `status`, `list` or `run`
+that arrives over SSH cannot read it. The script says so once, `gh: token not readable in
+this SSH session (macOS Keychain); labelled PRs unknown here, the scheduled run in the GUI
+session sees them`, and `status` shows `labelled PRs: unknown (gh not authenticated in this
+session)` instead of the counts. That is not a login problem and not 47 broken projects:
+the nightly run starts from the LaunchAgent inside the GUI session, reads the token and
+sees every labelled PR. Only a manual `run` over SSH is blind to PRs; its queue items still
+run. Optional, the owner's call: `gh auth login -h github.com -w --insecure-storage` stores
+the token in a mode-600 file (`~/.config/gh/hosts.yml`) instead of the Keychain, which makes
+SSH-driven commands see PRs too; the trade-off is a plain-text token on disk.
 
 The LaunchAgent runs `~/.claude/plugins/marketplaces/evelan-plugins/bin/mission-control`,
 the marketplace checkout, not the versioned plugin cache: after a plugin update that checkout

@@ -51,6 +51,13 @@ pause feature (`schedule installed without --scheduled: run "mission-control ins
 HH:MM" again, ...`). Relay it: the pause is written, but the nightly job ignores it until the
 schedule is reinstalled with that command.
 
+A line starting with `gh: token not readable in this SSH session (macOS Keychain)` means the
+command ran over SSH and the GitHub CLI could not read its Keychain token there. Relay it as
+it is: the labelled PRs are unknown in this session, the scheduled run in the GUI session sees
+them. It is not a problem with the projects and not "gh is not authenticated for all
+projects"; do not suggest logging in. `gh: not authenticated (run "gh auth login ...")`
+without the SSH wording is a real login problem on that machine: relay the command.
+
 ## Output rule
 
 Relay the script's lines as they are, compact, in the user's language. Never open the env
