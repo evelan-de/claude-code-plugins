@@ -71,12 +71,19 @@ fi
 budget="${budget:-250000}"
 remind_every="${AUTOPILOT_BUDGET_REMIND_EVERY:-10}"
 
-# Context per assistant record = input + cache_creation + cache_read; take the minimum of the
-# last three records that carry usage. tail keeps the scan cheap on multi-megabyte transcripts.
+# Context per API response = input + cache_creation + cache_read. One response is written as
+# several assistant lines (thinking, text, each tool use) that share one message.id and
+# repeat the same usage, so lines are collapsed to one record per message.id first; then the
+# minimum of the last three responses is taken. tail keeps the scan cheap on multi-megabyte
+# transcripts.
 ctx="$(tail -n 400 "$transcript" 2>/dev/null \
-  | jq -r 'select(.type=="assistant") | .message.usage // empty
-           | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0))' 2>/dev/null \
-  | tail -n 3 | sort -n | head -n 1)"
+  | jq -s -r '[ .[] | select(.type=="assistant") | select(.message.usage != null) ]
+      | reduce .[] as $r ({seen: {}, out: []};
+          ($r.message.id // ("line-" + (.out | length | tostring))) as $k
+          | if .seen[$k] then . else .seen[$k] = true | .out += [$r] end)
+      | .out
+      | map(.message.usage | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)))
+      | .[-3:] | min // empty' 2>/dev/null)"
 case "$ctx" in
   ''|*[!0-9]*) echo '{}'; exit 0;;
 esac
