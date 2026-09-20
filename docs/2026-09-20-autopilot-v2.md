@@ -81,7 +81,12 @@ are currently not logged in for headless use) and `gh` for the PR.
 
 - Queue file per repo (`docs/autopilot/QUEUE.txt`, committed) or one machine-wide file?
 - Should the queue open the PR itself, or leave push and PR to the run (the run can do it;
-  the script doing it keeps every run "defer PR" and gives one place to retry)?
+  the script doing it keeps every run "defer PR" and gives one place to retry)? Note since
+  2026-09-20: the run's step 6 also runs `gateFull` before the push and works through the
+  Claude review bot (wait for the comment, fix, `claude-re-review` label, two rounds). If the
+  script owns the PR, it must start one more run for that loop after opening the PR, or the
+  run must own push and PR after all. Recommendation: the run owns push and PR; the queue only
+  retries.
 - Sequential only (one session at a time, as tonight's need), or up to N in parallel later?
 - Ticket keys without a plan: allowed (the run plans conservatively) or refused (plans are
   always written interactively first)?
