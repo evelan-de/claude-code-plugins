@@ -12,6 +12,13 @@ one command, relay its lines, done.
 
 ## Where the queue runs
 
+Step 0, before any command: when the directory `~/.claude/mission-control` does not exist
+(no `host` file, no queue), this machine has no queue and no way to reach one.
+Say so in two lines and stop: Mission Control runs on Andreas' office Mini; hand work over with
+`/autopilot-plan` and the draft PR labelled `autopilot-ready`, results arrive on the PR and in
+Slack `#mission-control`. Run nothing. (The script refuses the queue commands with exit 3 in
+that state as well.)
+
 `~/.claude/mission-control/host` exists only on a machine that does NOT run the queue. It
 holds the SSH alias of the machine that does (e.g. `office-mini`). When the file exists, run
 every command over SSH; otherwise run it locally. No hostname comparison.
