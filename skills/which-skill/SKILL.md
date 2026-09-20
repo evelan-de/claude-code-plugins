@@ -85,15 +85,13 @@ Off the main flow entirely.
 - **`/evelan:teach`**: learn a concept over multiple sessions, using the current directory as a stateful workspace.
 - **`/evelan:writing-for-agents`** is the reference for writing documents agents consume: skills, AGENTS.md, pointed-at docs.
 
-## Unattended builds: Mission Control and Autopilot
+## Unattended builds: plan, then Autopilot
 
-The flows above are interactive: you decide, the agent asks. Evelan's `/evelan:mission-control`
-and `/evelan:autopilot` are the unattended counterpart: they build a decided idea end to end
-without you in the loop. The seam between the two is the decision: **before you start a mission
-control run, walk the idea through `/evelan:question-with-docs`** (or `/evelan:question-me`
-outside a repo) until the shape questions are answered, then hand the resulting spec, ticket or
-`CONTEXT.md`/ADRs to `/evelan:mission-control`. Mission control checks for that and hands the
-wheel back when it finds open shape questions; it never guesses them for you.
+The flows above are interactive: you decide, the agent asks. `/evelan:autopilot` is the
+unattended counterpart: it executes a plan end to end without you in the loop. The seam is the
+plan: **write it with `/evelan:autopilot-plan`** (after `/evelan:question-with-docs` when shape
+questions are open), then run `/evelan:autopilot <session directory>` in a fresh session. The
+run never asks; whatever the plan leaves open, it decides conservatively and records.
 
 ## Precondition
 

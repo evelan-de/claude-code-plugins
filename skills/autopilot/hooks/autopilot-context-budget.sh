@@ -6,8 +6,8 @@
 # transcript of the agent it runs in, takes the context size of the last assistant turns
 # (input + cache_creation + cache_read tokens = the context the next turn will carry) and,
 # once that exceeds the budget, injects a system reminder via additionalContext: write
-# HANDOFF.md into the autopilot session folder, commit, and return the dispatch block as
-# `incomplete` so the coordinator dispatches a fresh lead.
+# HANDOFF.md into the autopilot session folder, commit, and end the turn so a fresh session
+# (started by the user or the queue runner) continues from the file.
 #
 # Which transcript is measured (verified against Claude Code 2.1.241):
 #   - `transcript_path` in the hook input is ALWAYS the main session's transcript, also when
@@ -104,7 +104,7 @@ if [ "$count" -ne 0 ] && [ $((count % remind_every)) -ne 0 ]; then
   echo '{}'; exit 0
 fi
 
-msg="AUTOPILOT CONTEXT BUDGET REACHED: this conversation now carries about ${ctx} tokens per turn (budget ${budget}; measured from $(basename "$transcript")). Do not continue implementing in this context. Hand off now: (1) make sure every finished change is committed on the session branch; (2) write HANDOFF.md into the autopilot session folder (docs/autopilot/sessions/<slug>/) using the format in the evelan:autopilot skill: current package and its status, what is verified (commands + results), what is open, the exact next step, and pointers to PLAN.md, commits and .claude/autopilot-gate.log instead of copies; (3) update the package status in PLAN.md; (4) commit both files; (5) return your output block with STATUS: incomplete and HANDOFF: <path>. A fresh agent will continue from HANDOFF.md."
+msg="AUTOPILOT CONTEXT BUDGET REACHED: this conversation now carries about ${ctx} tokens per turn (budget ${budget}; measured from $(basename "$transcript")). Do not continue implementing in this context. Hand off now: (1) make sure every finished change is committed on the session branch; (2) write HANDOFF.md into the autopilot session folder (docs/autopilot/sessions/<slug>/) using the format in the evelan:autopilot skill: current package and its status, what is verified (commands + results), what is open, the exact next step, and pointers to PLAN.md, commits and .claude/autopilot-gate.log instead of copies; (3) update the package status in PLAN.md; (4) commit both files; (5) end the turn with the single line 'Resume with /autopilot <session directory>' (inside a subagent: return STATUS: incomplete and HANDOFF: <path>). A fresh session will continue from HANDOFF.md."
 
 jq -n --arg m "$msg" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
 exit 0

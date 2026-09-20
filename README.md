@@ -100,7 +100,7 @@ Controlled, exact-copy workflow for porting a component, style, layout, or featu
 
 ### Workflow skills (interactive: from idea to spec to tickets)
 
-Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot and mission-control: you decide, the agent asks. Start with `/evelan:which-skill` when unsure.
+Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see `skills/THIRD-PARTY-NOTICES.md`) and renamed; maintained here as Evelan skills. They are the human-in-the-loop counterpart to autopilot: you decide, the agent asks. Start with `/evelan:which-skill` when unsure.
 
 | Skill | What it does |
 | --- | --- |
@@ -124,73 +124,37 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 | `/evelan:teach`, `/evelan:to-questionnaire`, `/evelan:wait-what` | Learn a concept; questionnaire for someone else; re-pitch a message that did not land |
 | `/evelan:which-skill` | Router: which skill or flow fits the situation |
 
-**Rule for autonomous work:** before `/evelan:mission-control`, the idea has been through `/evelan:question-with-docs`. Mission control checks for decided shape questions and hands back otherwise.
+**Rule for autonomous work:** the plan is written with you in the loop (`/evelan:autopilot-plan`, after `/evelan:question-with-docs` for anything with open shape questions); the run itself asks nothing.
+
+### Autonomous work: three building blocks
+
+Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a model acting as coordinator over other agents cost 30-35% of a session and multiplied agents (33 for one ticket). Anthropic's own guidance says multi-agent setups pay off for parallel research, not for coding. Version 2.0 therefore has no coordinator model: a plan skill, an executor, and a script.
+
+| Block | What | Status |
+| --- | --- | --- |
+| `/evelan:autopilot-plan` | Writes `PLAN.md` for one topic with you in the loop: resolves the ticket or spec, explores with bounded reads, asks the shape questions once, records decisions, lists packages with seams and verification criteria, commits the plan. Developers run it too. Optional fresh-context plan review (`evelan:autopilot-plan-reviewer`). | shipped |
+| `/evelan:autopilot` | Executes a plan unattended in one context: gate, branch, per package test-first with the gate green and a commit, one adversarial review on the whole branch (`evelan:autopilot-reviewer`), the goal artifact exercised in the running app, `REPORT.md`, PR with CI watched. Outgrows its context → `HANDOFF.md` and a fresh session resumes. No sub-agents for implementation. | shipped |
+| `autopilot-queue` | A script, not a model: takes a list of prepared sessions (or tickets) and runs `/autopilot` for each in turn, in a worktree, restarting on hand-off, notifying you on completion or blockers. Zero tokens for coordination. | design in `docs/2026-09-20-autopilot-v2.md`, format to be agreed |
 
 ### autopilot
 
-Runs an autonomous, unattended development loop for **one topic per session**: spec → plan → TDD implementation → adversarial review → quality gate → PR (CI watched until green).
-
 **Usage:**
-- Run a task: `/autopilot <task, ticket key, or spec file>`
-  e.g. `/autopilot DNA-901 add rate limiting to the contact route`
-- Cost-efficient implementation (delegates coding to a Sonnet subagent): add "with sonnet" / "kosteneffizient" / "schnell" to the prompt.
-- Thorough review (adds the standards axis: repo coding standards plus a smell baseline): add "thorough review".
-- Cross-model review: add "nutze Codex als Reviewer". It runs once per session on the whole branch.
-- Coordinated runs (mission-control dispatches always do this): add "defer PR" — the session never pushes and never opens a PR; the coordinator owns push, PR and CI after its own verification. A prepared session directory (`docs/autopilot/sessions/<slug>/` with `PLAN.md`) can be passed as input and is adopted verbatim. With a mode (`PACKAGE <id>` or `FINALIZE`) the skill runs only the phases that mode owns; that is how mission-control dispatches it.
+- Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`.
+- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session with `--permission-mode auto`. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+- Options in the prompt: "defer PR" (no push, no PR), "mit Codex" (adds the Codex cross-model review on the branch).
+- Continue after a hand-off: the same command; the run finds `HANDOFF.md`.
 
-The session lead runs at your **session model** — standalone that is whatever you started the session with; dispatched by mission-control it is the `evelan:autopilot-lead` agent (Fable 5.1, small fixed tool set, 400-turn cap). Review always runs on Opus at medium effort (`evelan:autopilot-reviewer`, with a standards axis on request); implementation delegates to `evelan:autopilot-implementer` (Sonnet) only when you ask for it. The skill is self-contained: it does not invoke Superpowers or any other third-party workflow skill; TDD (seams, vertical slices, anti-patterns), debugging and review rules are inline.
+**Hand-off instead of compaction.** When the context-budget hook reports the budget, the run commits, writes `HANDOFF.md` (state, verified evidence, open items, exact next step) and ends its turn with `Resume with /autopilot <session directory>`. Auto-compaction is never relied on.
 
-**Hand-off instead of compaction.** When a run outgrows one context (the context-budget hook reports the budget, or the lead nears its turn cap), the lead commits, writes `HANDOFF.md` into the session folder (state, verified evidence, open items, exact next step, pointers) and returns `STATUS: incomplete`; a fresh agent continues from that file. Auto-compaction is never relied on.
+**Context hygiene is part of the skill:** bounded reads, tailed outputs, one plan read, full gate once per package, one review per session.
 
-**Context hygiene is part of the skill.** Measured on real sessions, 70-80% of the cost of an autopilot run was cache reads of an oversized context (implementers at 400-570k tokens per turn for a thousand turns, never compacting), and 40% of all tool calls were `grep`/`sed`/`cat`/`git` dumps. The skill therefore mandates bounded reads, tailed outputs, one exploration pass, and a single full gate run per package.
+**Optional per-project hooks:** `/autopilot init` sets up four deterministic hooks in the current project. The `Stop` hook blocks a run from ending a turn while the gate (typecheck/lint/test) is red (sentinel-guarded, inert otherwise). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. The `PostToolUse` context-budget hook measures the context the next turn will carry from the transcript of the agent it runs in and, above the budget (default 250k, `contextBudget` in `.claude/autopilot.json`), injects the hand-off instruction, naming the measured file. The `SessionStart` hook (matcher `compact`) re-injects the session folder pointer if compaction happens anyway. Init auto-detects the package manager, writes the gate to `.claude/autopilot.json`, copies the hooks into `.claude/hooks/`, and safe-merges them into `.claude/settings.json`. The filter and budget hooks need `jq`; put `# raw` in a command to bypass the filter.
 
-**Optional per-project hooks:** `/autopilot init` sets up four deterministic hooks in the current project. The `Stop` hook blocks a standalone run from ending a turn while the gate (typecheck/lint/test) is red (inert outside autopilot runs, sentinel-guarded). The `PreToolUse` gate filter rewrites test/lint/typecheck/build commands so the model sees failures plus the summary instead of the full runner output, keeps the exit status, and appends an evidence line (timestamp, HEAD, tree state, exit code) to `.claude/autopilot-gate.log`, which the reviewer may accept instead of re-running the suite. The `PostToolUse` context-budget hook measures the context the next turn will carry from the transcript of the agent it runs in (inside a subagent that is `<session>/subagents/agent-<id>.jsonl`, never the coordinator's transcript that the hook input names) and, above the budget (default 250k, `contextBudget` in `.claude/autopilot.json`), injects the hand-off instruction, naming the measured file. The `SessionStart` hook (matcher `compact`) re-injects the session folder pointer if compaction happens anyway. Init auto-detects the package manager (npm/pnpm/yarn/bun), writes the gate to `.claude/autopilot.json`, copies the hooks into `.claude/hooks/`, and safe-merges them into `.claude/settings.json` (idempotent, never overwrites). The filter and budget hooks need `jq`; put `# raw` in a command to bypass the filter.
+**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md`, `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
 
-**Artifacts:** each session writes to `docs/autopilot/` (committed, part of the PR): an `INDEX.md` history plus a per-session folder with `PLAN.md` (the short index: scope, goal artifact, decisions, package list with statuses), `packages/<id>.md` (one file per package with its Definition of Done, files, seams, verification criteria and result; a lead reads only its own), `DIGEST.md` (orchestrated runs), `DECISIONS.md`, `HANDOFF.md` (transient), `REPORT.md`, and `MANUAL_TESTING.md`.
-
-**Measuring a session:** `autopilot-usage <main transcript.jsonl>` (plugin binary on PATH, needs `jq`) prints one line per agent of a session (turns, first/last/max context, cache-read and output tokens) plus the coordinator's context at the first lead dispatch, i.e. what planning cost it for the rest of the run. Mission control appends that table to its final summary.
-
-For unattended runs, launch with `--permission-mode auto`.
+**Measuring a session:** `autopilot-usage <main transcript.jsonl>` (plugin binary on PATH, needs `jq`) prints one line per agent of a session: API requests, first/last/max context, cache reads, cache writes, output. Every run prints it at the end.
 
 **Trigger phrases:** "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab"
-
-### mission-control
-
-Coordinates an autonomous development session **without implementing anything itself**: it
-resolves the task and pins down the user-verifiable **goal artifact** (feature running in
-the local app, a generated report, a finished PDF, …), has the `evelan:autopilot-planner`
-agent explore the repo and write the session folder (`docs/autopilot/sessions/<slug>/` with
-the `PLAN.md` index, one `packages/<id>.md` per work package and the `DIGEST.md` exploration
-digest) so that the planning content never enters the coordinator's own context, has the
-plan reviewed by the read-only `evelan:autopilot-plan-reviewer` agent **and** cross-model via
-`evelan:codex-ask`, sends the findings back to the planner to fold in, then dispatches the
-`evelan:autopilot-lead` agent **once per work package** (`PACKAGE <id>`, fresh context each
-time, "defer PR") and once at the end (`FINALIZE`, with the Codex cross-model review on the
-whole branch). The coordinator reads `PLAN.md`, returned blocks, `git log` and review
-findings, nothing larger: measured on real sessions, a coordinator that carried the planning
-itself grew to 300-400k tokens and was 30-35% of the session's cost, mostly cache writes. A 20-minute watchdog (`autopilot-watchdog`) reads task status and branch progress,
-nudges a stalled agent and replaces it if it stays stuck; it never reads subagent
-transcripts and never stops an agent that has returned its result. At the end mission control verifies the result
-independently (re-runs the gate, has a verifier subagent exercise the goal artifact), and
-only then pushes, opens the PR and watches CI — red CI goes back as a fix dispatch with
-file-level instructions. The final report uses simplified technical language (ASD-STE100
-style) in the language of the user's prompt.
-
-**Usage:** `/mission-control <task, ticket key, or spec file>`
-
-**Before you start:** the important decisions must already be made. Walk the idea through `/evelan:question-with-docs` (or `/evelan:question-me` outside a repo) until the shape questions are answered, then hand the spec, ticket or `CONTEXT.md`/ADRs to mission control. Mission control checks for this in Phase 0 and hands the wheel back when it finds open shape questions instead of guessing them.
-
-Launch requirements (the skill checks and reports them, it cannot set them): the strongest
-available session model (Fable 5.1, never Fable 5: its cache-read price is four times
-higher and a coordinator is almost pure cache reads), a permissive permission mode
-(e.g. `--permission-mode auto`) which the dispatched subagents inherit, and the project
-hooks installed in the target repo via `/autopilot init` (gate filter and context-budget
-hand-off). A lead that outgrows its context hands off through `HANDOFF.md` and mission
-control dispatches a fresh lead with it; the watchdog is the plugin binary
-`autopilot-watchdog <repo> <branch>` (one `PROGRESS`/`STALL` line from `git log` and the
-`PLAN.md` mtime, stall counter included).
-
-**Trigger phrases:** "/mission-control", "mission control", "orchestriere", "als Orchestrator", "Orchestrator-Session", "koordiniere die Umsetzung"
 
 ### reflect-on-changes
 

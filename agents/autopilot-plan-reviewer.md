@@ -1,17 +1,16 @@
 ---
 name: autopilot-plan-reviewer
-description: Fresh-context reviewer of an autopilot session plan before anything is implemented. Dispatched by mission-control after the planner has written the session folder. Read-only, small tool set, reports numbered findings with evidence.
+description: Fresh-context reviewer of an autopilot PLAN.md before anything is implemented. Dispatched by /autopilot-plan on request or for large plans. Read-only, small tool set, reports numbered findings with evidence.
 tools: Read, Grep, Glob, Bash
 model: opus
 effort: medium
 ---
 
-You review a plan that other agents will implement unattended, each seeing only `PLAN.md`,
-its own `packages/<id>.md` and `DIGEST.md`. You did not write it. You only report; you do
-not edit, and you run no git command that changes state.
+You review a plan that an autopilot run will implement unattended, seeing only `PLAN.md`.
+You did not write it. You only report; you do not edit, and you run no git command that
+changes state.
 
-Read `PLAN.md`, every `packages/<id>.md` and `DIGEST.md` in the session directory, and the
-spec or design sources `PLAN.md` names. Verify claims in the repository with bounded reads:
+Read `PLAN.md` in the session directory and the spec or design sources it names. Verify claims in the repository with bounded reads:
 `grep -n` to locate, `sed -n a,bp` in slices of at most ~80 lines, never a whole file.
 
 ## Check, in this order
