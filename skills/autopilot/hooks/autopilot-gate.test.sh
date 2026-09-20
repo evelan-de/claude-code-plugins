@@ -79,5 +79,47 @@ invoke "$P" true; check "green gate -> allow (exit 0)" 0 $?
 [ ! -f "$P/.claude/.autopilot-gate-blocks" ] && { echo "ok   - green gate resets the counter"; PASS=$((PASS+1)); } || { echo "FAIL - counter survives green gate"; FAIL=$((FAIL+1)); }
 rm -rf "$P"
 
+# no-jq fallback: run the hook with a PATH that has no jq. First choice is
+# /usr/bin:/bin; when jq lives there too (newer macOS), a shim directory with
+# only the tools the hook needs is used instead.
+NOJQ_PATH=""
+if ! PATH=/usr/bin:/bin command -v jq >/dev/null 2>&1; then
+  NOJQ_PATH=/usr/bin:/bin
+else
+  shim="$(mktemp -d)"
+  for t in bash cat sed head tail rm; do
+    p="$(command -v "$t")" && ln -s "$p" "$shim/$t"
+  done
+  if ! PATH="$shim" command -v jq >/dev/null 2>&1; then
+    NOJQ_PATH="$shim"
+  fi
+fi
+invoke_nojq() {
+  # $1 project dir  $2 raw JSON on stdin  -> exit code in $?, stderr in LAST_ERR
+  local err="$1/stderr.txt"
+  printf '%s' "$2" | CLAUDE_PROJECT_DIR="$1" PATH="$NOJQ_PATH" bash "$HOOK" 2>"$err"
+  local got=$?
+  LAST_ERR="$(cat "$err")"
+  return "$got"
+}
+if [ -z "$NOJQ_PATH" ]; then
+  echo "note - could not build a PATH without jq, skipping the no-jq fallback tests"
+else
+  echo "note - no-jq fallback tests run with PATH=$NOJQ_PATH"
+  P="$(setup yes false)"
+  invoke_nojq "$P" '{"stop_hook_active":false}'
+  invoke_nojq "$P" '{"stop_hook_active":true}'
+  invoke_nojq "$P" '{"stop_hook_active": false, "cwd": "/Users/true"}'
+  check "no jq: false with a later \"true\" string -> fresh stop, block (exit 2)" 2 $?
+  [ "$(cat "$P/.claude/.autopilot-gate-blocks")" = "1" ] && { echo "ok   - no jq: counter restarted at 1"; PASS=$((PASS+1)); } || { echo "FAIL - no jq: counter is $(cat "$P/.claude/.autopilot-gate-blocks")"; FAIL=$((FAIL+1)); }
+  invoke_nojq "$P" '{"stop_hook_active":true}'
+  check "no jq: \"stop_hook_active\":true -> counts up (exit 2)" 2 $?
+  [ "$(cat "$P/.claude/.autopilot-gate-blocks")" = "2" ] && { echo "ok   - no jq: counter is 2"; PASS=$((PASS+1)); } || { echo "FAIL - no jq: counter is $(cat "$P/.claude/.autopilot-gate-blocks")"; FAIL=$((FAIL+1)); }
+  invoke_nojq "$P" '{"stop_hook_active": true}'
+  check "no jq: \"stop_hook_active\": true (spaced) -> counts up (exit 2)" 2 $?
+  [ "$(cat "$P/.claude/.autopilot-gate-blocks")" = "3" ] && { echo "ok   - no jq: counter is 3"; PASS=$((PASS+1)); } || { echo "FAIL - no jq: counter is $(cat "$P/.claude/.autopilot-gate-blocks")"; FAIL=$((FAIL+1)); }
+  rm -rf "$P"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

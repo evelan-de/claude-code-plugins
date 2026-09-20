@@ -61,5 +61,17 @@ touch -t 202401010000 "$images/empty-session"
 out="$(CODEX_IMAGES_DIR="$images" sh "$TOOL" "$tmp/out/c.png" 2>&1)"; got=$?
 check "empty newest session -> exit 1" 1 "no png in newest session" "$got" "$out"
 
+# 7. spaces in the images root and in the session directory name
+spaced="$tmp/img dir"
+mkdir -p "$spaced/sess one"
+printf 'spaced\n' > "$spaced/sess one/ig_a.png"
+out="$(CODEX_IMAGES_DIR="$spaced" sh "$TOOL" "$tmp/out/d.png" 2>&1)"; got=$?
+check "spaces in root and session dir -> copies ig_a.png" 0 "ig_a.png" "$got" "$out"
+if [ "$(cat "$tmp/out/d.png" 2>/dev/null)" = "spaced" ]; then
+  echo "ok   - spaced destination holds the right content"; PASS=$((PASS+1))
+else
+  echo "FAIL - spaced destination content: $(cat "$tmp/out/d.png" 2>&1)"; FAIL=$((FAIL+1))
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

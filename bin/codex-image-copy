@@ -36,10 +36,14 @@ if [ -z "$session" ]; then
   echo "codex-image-copy: no session directory under $root" >&2
   exit 1
 fi
+session="${session%/}"
 
-newest() { # $1 glob pattern inside the session dir
+newest() { # $1 directory  $2 glob pattern inside it (expanded unquoted on purpose)
+  dir="$1"
+  pattern="$2"
   found=""
-  for f in $1; do
+  # shellcheck disable=SC2231  # the pattern must stay unquoted so it expands
+  for f in "$dir"/$pattern; do
     [ -f "$f" ] || continue
     if [ -z "$found" ] || [ "$f" -nt "$found" ]; then
       found="$f"
@@ -48,8 +52,8 @@ newest() { # $1 glob pattern inside the session dir
   printf '%s' "$found"
 }
 
-src="$(newest "$session"ig_*.png)"
-[ -n "$src" ] || src="$(newest "$session"*.png)"
+src="$(newest "$session" 'ig_*.png')"
+[ -n "$src" ] || src="$(newest "$session" '*.png')"
 if [ -z "$src" ]; then
   echo "codex-image-copy: no png in newest session $session" >&2
   exit 1

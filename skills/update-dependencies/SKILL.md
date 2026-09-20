@@ -53,13 +53,15 @@ affected files, references). Tell the user the path and stop.
    exactly that. Never guess a version. The final `package.json` has no `^`
    or `~`.
 3. Ask before `rm -rf node_modules`; then `npm install`.
-4. Migrate code per the research: find usages with Grep/Glob, edit them. Low
-   confidence or unclear step: skip it and flag it for the user.
-5. Gate: typecheck, lint, test, build (the project's commands).
-6. Red: read the error, identify the major that caused it, pin that package
-   to the latest minor/patch of its previous major
-   (`npm view <package> versions --json` to find it), `npm install`, gate
-   again. Report each rollback with its reason.
+4. Migrate code per the research, one major at a time: find usages with
+   Grep/Glob, edit them, then run the gate (typecheck, lint, test, build, the
+   project's commands) before the next major, so a red gate points at one
+   package. Low confidence or unclear step: skip it and flag it for the user.
+5. Red: read the error, pin the package that caused it to the latest
+   minor/patch of its previous major (`npm view <package> versions --json`
+   to find it), `npm install`, gate again. Report each rollback with its
+   reason.
+6. Full gate once at the end.
 
 ## 5. Summary
 

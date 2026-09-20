@@ -10,7 +10,7 @@ The issue tracker configuration should have been provided to you. If not, tell t
 
 ## Process
 
-1. Explore the repo to understand the current state of the codebase, if you haven't already.
+1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's glossary terms (`CONTEXT.md`) throughout the spec and respect ADRs in the area you touch, where they exist.
 
 2. Sketch the seams at which the feature will be tested. Prefer existing seams to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can. The fewer seams across the codebase, the better; the ideal number is one.
 

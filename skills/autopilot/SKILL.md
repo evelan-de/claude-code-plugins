@@ -31,7 +31,7 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 
 - **Bounded reads.** `grep -n` to locate, `sed -n a,bp` to read; never a whole file, never
   `git diff` without a path, never `git show` a whole commit.
-- **Tail long outputs** (`| tail -n 40`) unless reading a specific failure.
+- **Bound long outputs** with the tool's own flags (`git log -n 20`, `grep -m 20`, `--reporter=dot`), never a pipe; gate commands are already filtered by the hook.
 - **Never re-read** what is in your context. Read `PLAN.md` once.
 - **Gate discipline.** Red-green: only the affected test file. Full cheap gate once per
   package, before its commit. Never "to see where we are".
@@ -70,8 +70,8 @@ recurring error and before declaring done. At the end print the table of
 Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package manager
 (lockfile) and the existing scripts (`references/init.md`) and persist it. No test runner →
 set one up minimally, project-consistent, before implementing. Create
-`.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it at the end and
-on every abort; never commit it. Branch per the plan header: **session mode** checks out
+`.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it (and
+`.claude/.autopilot-gate-blocks`) at the end and on every abort; never commit either. Branch per the plan header: **session mode** checks out
 `<prefix>/<KEY>-<slug>`, which `/autopilot-plan` created with the plan on it (create it from
 the base only when you wrote the plan yourself, and commit the plan there first);
 **feature-branch mode** checks out the named feature branch (create it from the base if
@@ -128,23 +128,30 @@ tests), run it once; red → fix, re-run; a precondition it needs (a test databa
 is a blocker to resolve, not a skip. Feature-branch mode → push the feature branch
 (`git push origin <feature>`; pull with rebase first if it moved), no PR; the feature branch
 gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
-(`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix, re-push,
-until green.
+(`gh pr create`, ticket key in the title), never merge. `gh run watch`; a red CI check → fix,
+re-push, until green. The review check is not CI: red there means the review pipeline is
+broken, never a finding; note it in `REPORT.md` and move on.
 
 **Review bot.** Projects with a Claude review workflow (`.github/workflows/claude-code-review.yml`)
 review each PR once, asynchronously; the project's `CLAUDE.md` or its review doc names the
-contract, read it. Default contract: findings arrive as inline comments
-(`gh api repos/{owner}/{repo}/pulls/<n>/comments`) plus one top-level comment
-(`gh api repos/{owner}/{repo}/issues/<n>/comments`); a green `review` check proves nothing,
-only a comment does; a PR over the size gate (100 reviewable files or 5000 lines) gets a
-notice instead of a review; a later push is not re-reviewed unless the label
-`claude-re-review` is added. Loop: (1) wait for the comment (poll both surfaces every
-minute, up to 20 minutes; the size notice or "No issues found" ends the loop); (2) verify
+contract, read it. Default contract: findings arrive as inline comments on the diff
+(`gh api repos/{owner}/{repo}/pulls/<n>/comments`); a PR without findings gets one
+top-level comment "No issues found" and a PR the bot could not review gets a
+"Code review skipped/incomplete" notice (`gh api repos/{owner}/{repo}/issues/<n>/comments`);
+a PR over the size gate (100 reviewable files or 5000 lines) gets a top-level notice from
+`github-actions[bot]` instead of a review. A green `review` check proves nothing, only a
+comment does. A later push is not re-reviewed unless the label `claude-re-review` is added;
+the workflow removes the label when its run ends. Loop: (1) wait for the review: poll both
+surfaces every minute, up to 40 minutes, all authors; a round ends with the first inline
+comment batch, "No issues found", a skipped/incomplete notice or the size notice (the size
+notice ends the whole loop: the label would force a review that cannot finish); (2) verify
 each finding in the code, fix real ones test-first, re-gate, commit, push; (3) rebut the
 rest with evidence in a PR comment; a finding that contradicts a recorded decision is
 escalated in the PR, not implemented; (4) after a fix push add the label
-(`gh pr edit <n> --add-label claude-re-review`) and wait again. At most two rounds; whatever
-remains goes into `REPORT.md` and the PR description. No workflow file → no review to wait
+(`gh pr edit <n> --add-label claude-re-review`) and wait for round two: its result is a
+Claude comment whose `created_at` is after the fix push, or the label gone with no new
+comment (pipeline broken, note it). At most two rounds; whatever remains goes into
+`REPORT.md` and the PR description. No workflow file → no review to wait
 for; say so in `REPORT.md`.
 
 ## Hand-off

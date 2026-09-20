@@ -101,5 +101,49 @@ printf 'y\n' > "$empty/y.txt"
 out="$(cd "$empty" && sh "$TOOL" diff "$id2" 2>&1)"; got=$?
 check "diff in a repo without commits" 0 "A	y.txt" "$got" "$out"
 
+# 9. mktemp failure -> exit 1, nothing on stdout, message on stderr
+errf="$tmp/stderr.txt"
+out="$(cd "$repo" && TMPDIR=/nonexistent sh "$TOOL" save 2>"$errf")"; got=$?
+err="$(cat "$errf")"
+if [ "$got" -eq 1 ] && [ -z "$out" ]; then
+  echo "ok   - unusable TMPDIR -> exit 1 with empty stdout"; PASS=$((PASS+1))
+else
+  echo "FAIL - unusable TMPDIR (exit $got, stdout: $out)"; FAIL=$((FAIL+1))
+fi
+check "unusable TMPDIR -> message on stderr" 1 "codex-snapshot:" "$got" "$err"
+
+# 10. save leaves no temp directory behind, on success and when a git step fails
+snapdir="$tmp/snaptmp"
+mkdir -p "$snapdir"
+out="$(cd "$repo" && TMPDIR="$snapdir" sh "$TOOL" save 2>&1)"; got=$?
+check "save with a custom TMPDIR works" 0 "$(gitc rev-parse HEAD):" "$got" "$out"
+leftover="$(find "$snapdir" -maxdepth 1 -name 'codex-snapshot-*' | wc -l | tr -d ' ')"
+if [ "$leftover" = "0" ]; then
+  echo "ok   - no codex-snapshot-* directory left behind after save"; PASS=$((PASS+1))
+else
+  echo "FAIL - $leftover codex-snapshot-* directories left in $snapdir"; FAIL=$((FAIL+1))
+fi
+printf 'secret\n' > "$repo/unreadable.txt"
+chmod 000 "$repo/unreadable.txt"
+out="$(cd "$repo" && TMPDIR="$snapdir" sh "$TOOL" save 2>/dev/null)"; got=$?
+chmod 644 "$repo/unreadable.txt"; rm -f "$repo/unreadable.txt"
+if [ "$got" -eq 1 ] && [ -z "$out" ]; then
+  echo "ok   - failing git add -> exit 1 with empty stdout"; PASS=$((PASS+1))
+else
+  echo "FAIL - failing git add (exit $got, stdout: $out)"; FAIL=$((FAIL+1))
+fi
+leftover="$(find "$snapdir" -maxdepth 1 -name 'codex-snapshot-*' | wc -l | tr -d ' ')"
+if [ "$leftover" = "0" ]; then
+  echo "ok   - no codex-snapshot-* directory left behind after a failed save"; PASS=$((PASS+1))
+else
+  echo "FAIL - $leftover codex-snapshot-* directories left after a failed save"; FAIL=$((FAIL+1))
+fi
+
+# 11. tree id that is not 40 hex chars -> exit 1
+out="$(cd "$repo" && sh "$TOOL" diff "$(gitc rev-parse HEAD):HEAD" 2>&1)"; got=$?
+check "non-hex tree id -> exit 1" 1 "bad id" "$got" "$out"
+out="$(cd "$repo" && sh "$TOOL" diff "$(gitc rev-parse HEAD):abc123" 2>&1)"; got=$?
+check "short tree id -> exit 1" 1 "bad id" "$got" "$out"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

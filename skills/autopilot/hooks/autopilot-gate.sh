@@ -10,6 +10,7 @@
 # (a stop with stop_hook_active=false starts a new count). After the third
 # consecutive block the stop is allowed with the reason on stderr, so a run that
 # cannot go green does not loop forever. A green gate resets the counter.
+# On abort, remove the counter file together with the sentinel (.autopilot-active).
 set -uo pipefail
 
 INPUT="$(cat 2>/dev/null || true)"
@@ -25,8 +26,9 @@ MAX_BLOCKS=3
 if command -v jq >/dev/null 2>&1; then
   ACTIVE="$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)"
 else
+  # Exact spellings only; a wider pattern would match any later "true" in the JSON.
   case "$INPUT" in
-    *'"stop_hook_active"'*[[:space:]]*true*|*'"stop_hook_active":true'*) ACTIVE=true;;
+    *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) ACTIVE=true;;
     *) ACTIVE=false;;
   esac
 fi
