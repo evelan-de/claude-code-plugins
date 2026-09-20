@@ -7,7 +7,8 @@ docs/autopilot/
     PLAN.md          # from /autopilot-plan: goal, goal artifact, decisions, packages + status
     DECISIONS.md     # assumptions the run made, with reasons
     HANDOFF.md       # transient; deleted when consumed
-    REPORT.md        # shipped work, verification, review findings, open items
+    REPORT.md        # first line `Status: done` or `Status: blocked - <reason>`; then shipped work,
+                     # verification, review findings, open items (the queue runner reads the first line)
     MANUAL_TESTING.md  # only for steps impossible in this environment
 ```
 
