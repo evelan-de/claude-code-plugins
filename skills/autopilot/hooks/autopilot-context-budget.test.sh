@@ -13,19 +13,22 @@ P="$(mktemp -d)"; mkdir -p "$P/.claude" "$P/tr"
 export TMPDIR="$P/tmp"; mkdir -p "$TMPDIR"
 
 mk_transcript() {
-  # $1 file  $2 cache_read of the last three assistant records (ctx = $2 + 2003)
-  # $3 optional cache_read of one extra, final outlier record
+  # $1 file  $2 cache_read of the last three API responses (ctx = $2 + 2003)
+  # $3 optional cache_read of one extra, final outlier response, written as THREE lines that
+  #    share one message.id (thinking, text, tool use), as real transcripts do
   local f="$1" cr="$2" spike="${3:-}"
   mkdir -p "$(dirname "$f")"
   {
     echo '{"type":"user","message":{"content":"hi"}}'
-    echo '{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_read_input_tokens":50000}}}'
+    echo '{"type":"assistant","message":{"id":"m0","usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_read_input_tokens":50000}}}'
     echo '{"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}'
-    for _ in 1 2 3; do
-      printf '{"type":"assistant","message":{"usage":{"input_tokens":3,"cache_creation_input_tokens":2000,"cache_read_input_tokens":%s}}}\n' "$cr"
+    for i in 1 2 3; do
+      printf '{"type":"assistant","message":{"id":"m%s","usage":{"input_tokens":3,"cache_creation_input_tokens":2000,"cache_read_input_tokens":%s}}}\n' "$i" "$cr"
     done
     if [ -n "$spike" ]; then
-      printf '{"type":"assistant","message":{"usage":{"input_tokens":3,"cache_creation_input_tokens":2000,"cache_read_input_tokens":%s}}}\n' "$spike"
+      for _ in 1 2 3; do
+        printf '{"type":"assistant","message":{"id":"spike","usage":{"input_tokens":3,"cache_creation_input_tokens":2000,"cache_read_input_tokens":%s}}}\n' "$spike"
+      done
     fi
   } >"$f"
 }

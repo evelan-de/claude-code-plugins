@@ -161,3 +161,67 @@ Findings and what 1.9.0 does about them:
    autopilot-lead dispatch") so every session answers this question itself.
 5. **Truncating outputs was proposed and rejected** (Andreas: cut-off output is missing
    information, not saved tokens). Reading discipline stays a rule, not a filter.
+
+## Correction and cost model (2026-09-20, plugin 1.10.x)
+
+Both reviews of the 1.9.0 work found that `autopilot-usage` and the hook counted every
+transcript line as a request. One API response is written as several assistant lines
+(thinking, text, each tool use) that share one `message.id`. All figures in the 1.9.0 section
+above are therefore two- to four-fold too high in "turns" and cache reads; the ratios between
+agents hold. Re-measured with one record per `message.id`:
+
+| Session | requests | cache reads | cache writes | output | coordinator share |
+| --- | --- | --- | --- | --- | --- |
+| local-recording (2 packages + 3 hand-offs, 10 agents) | 356 | 49.5M | 2.0M | 109k | 54 requests, 10.0M reads, 0.49M writes, 80k output |
+| evelan-slides (4 packages, 14 agents) | 562 | 82.9M | 2.5M | 157k | 95 requests, 24.6M reads, 0.71M writes, 116k output |
+| plugins repo, interactive, single context (2026-09-19) | 190 | 70.7M | 2.0M | 289k | one context grown to 694k |
+
+Prices (Fable 5.1, list, 2026-09): input $10/M, output $50/M, cache write $12.50/M (5-minute
+TTL) or $20/M (1-hour TTL, which these sessions use), cache read $0.25/M. A cache write costs
+50-80 times a cache read. Subscription limits are not published in tokens; the list price is
+the proxy used here.
+
+What that makes of a session (evelan-slides): reads $21, writes $49, output $8, about $78. The
+local-recording session: reads $12, writes $40, output $5, about $58. The interactive
+single-context session: reads $18, writes $40, output $14, about $72 for one afternoon of work
+in ONE context that grew to 694k. The old standalone autopilot runs measured in September
+(500k+ average context, hundreds of requests) sat at $100+ per topic at today's read price
+and four times that before the price cut.
+
+Where the money goes, and what the split costs:
+
+1. **Cache writes are the largest item, not reads.** Everything that enters a context is
+   written once (tool output, generated text, a fresh agent's base). The split adds one base
+   write per agent: 10-14 agents × 50-110k = 0.6-0.9M tokens = $12-18 per session, 20-25%.
+   Reducing the base (plugins removed, CLAUDE.md files condensed, Paul from 24k to 2k) cuts
+   this directly, and it cuts the reads of every request in every design.
+2. **The coordinator is 30-35% of the session** (writes 0.5-0.7M because its context grows to
+   300-400k during planning and is re-written in full after it sat idle for more than the
+   cache TTL: 248k re-written after 164 min idle in local-recording, 348k after 151 min in
+   evelan-slides; reads 10-25M; output 80-116k, more than all leads together, because it
+   writes and revises the plan). Explore and plan review add another 8-12%. Orchestration
+   overhead: about 40% on top of the implementation work.
+3. **A fresh agent pays for itself when it makes enough requests.** Break-even: base write
+   `B × $20/M` against the reads it avoids `n × C × $0.25/M` (n requests that would otherwise
+   carry C more tokens), i.e. `n × C ≈ 80 × B`. With B = 55k and C = 200k: about 22 requests.
+   Leads (19-80 requests) and Explore (22-53) pay off; reviewers (15-44 requests, base 26-42k)
+   about break even and add the fresh-eyes value; a plan-review agent with 7-10 requests and
+   an 82k `general-purpose` base does not pay off on tokens (it found real gaps, so keep it,
+   but on a small-base agent).
+4. **A single context is not the alternative for these sessions.** The content alone (sum of
+   all agents' growth) is 1.4-2M tokens, above the window, so a single run would hand off
+   anyway; and every request in a large context pays reads on the whole of it (the
+   interactive session above: 70M reads in 190 requests, 372k average).
+
+Decisions and next steps recorded here:
+
+- Standalone `/autopilot` (run mode with hand-offs, no coordinator) for topics of one to three
+  packages; mission control for larger topics or when the goal-artifact verification is
+  needed. The coordinator's fixed cost is roughly $20-25 per session plus a few dollars per
+  package.
+- Plan review on a small-base agent (allowlisted tools like `autopilot-reviewer`), never
+  `general-purpose`.
+- Keep the coordinator small: planning content out of its context (a planner agent that
+  returns file paths) is worth revisiting now that writes are priced correctly: each idle
+  re-write of a 350k coordinator costs $7.
+- Every session ends with the `autopilot-usage` table so these numbers keep being real.

@@ -6,15 +6,18 @@
 # Reads the main transcript and every subagent transcript next to it
 # (<transcript without .jsonl>/subagents/**/agent-*.jsonl) and prints one line per agent:
 #
-#   agent            type                      turns  first_ctx  last_ctx  max_ctx  cache_read_M  output_k
+#   agent  type  calls  first_ctx  last_ctx  max_ctx  cache_read_M  cache_write_M  output_k
 #
-# followed by a session total and, for the coordinator, the context it carried when it
+# followed by a session total and, for the coordinator, the context of the request that
 # dispatched the first autopilot lead (= what planning cost it for the rest of the session).
 #
-# ctx = input + cache_creation + cache_read tokens of an assistant record (the context that
-# request carried). cache_read_M = sum of cache_read over all turns in millions (the billing
-# driver of a long session). output_k = sum of output tokens in thousands. The agent type
-# comes from the sidecar <agent>.meta.json when present.
+# One API response is written to the transcript as several assistant lines (thinking, text,
+# each tool use) that share one message.id and repeat the same usage; they are collapsed to
+# one record per message.id, so "calls" counts API requests. ctx = input + cache_creation +
+# cache_read tokens of a request (the context it carried). cache_read_M / cache_write_M = the
+# sums over all requests in millions (cache reads are the billing driver of a long session;
+# cache writes are what a fresh agent pays to load its base once). output_k = output tokens
+# in thousands. The agent type comes from the sidecar <agent>.meta.json when present.
 #
 # Needs jq. Always exits 0 with a table, or 2 on usage errors. Never touches the transcripts.
 set -u
@@ -30,17 +33,28 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 session_dir="${main%.jsonl}"
-usage_jq='
-  [ .[] | select(.type=="assistant") | .message.usage // empty
-    | { ctx: ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)),
-        cr: (.cache_read_input_tokens // 0), out: (.output_tokens // 0) } ]
-  | if length == 0 then "0\t0\t0\t0\t0\t0"
-    else [ length, .[0].ctx, .[-1].ctx, (map(.ctx) | max), (map(.cr) | add), (map(.out) | add) ] | map(tostring) | join("\t")
+
+# Shared jq prelude: assistant records with usage, one per message.id, in transcript order.
+dedupe='
+  def requests:
+    [ .[] | select(.type=="assistant") | select(.message.usage != null) ]
+    | reduce .[] as $r ({seen: {}, out: []};
+        ($r.message.id // ("line-" + (.out | length | tostring))) as $k
+        | if .seen[$k] then . else .seen[$k] = true | .out += [$r] end)
+    | .out;
+  def ctx: ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0));
+'
+
+usage_jq="$dedupe"'
+  [ requests[] | .message.usage
+    | { ctx: ctx, cr: (.cache_read_input_tokens // 0), cw: (.cache_creation_input_tokens // 0), out: (.output_tokens // 0) } ]
+  | if length == 0 then "0\t0\t0\t0\t0\t0\t0"
+    else [ length, .[0].ctx, .[-1].ctx, (map(.ctx) | max), (map(.cr) | add), (map(.cw) | add), (map(.out) | add) ] | map(tostring) | join("\t")
     end'
 
 row() {
   # $1 label  $2 type  $3 transcript
-  stats="$(jq -s -r "$usage_jq" "$3" 2>/dev/null || echo "0	0	0	0	0	0")"
+  stats="$(jq -s -r "$usage_jq" "$3" 2>/dev/null || printf '0\t0\t0\t0\t0\t0\t0')"
   printf '%s\t%s\t%s\n' "$1" "$2" "$stats"
 }
 
@@ -50,31 +64,30 @@ row() {
     find "$session_dir/subagents" -type f -name 'agent-*.jsonl' | sort | while IFS= read -r f; do
       id="$(basename "$f" .jsonl)"
       meta="${f%.jsonl}.meta.json"
-      type="?"
+      agent_type="?"
       if [ -f "$meta" ]; then
-        type="$(jq -r '(.agentType // "?") + (if .name then " (" + .name + ")" else "" end)' "$meta" 2>/dev/null || echo "?")"
+        agent_type="$(jq -r '(.agentType // "?") + (if .name then " (" + .name + ")" else "" end)' "$meta" 2>/dev/null || echo "?")"
       fi
-      row "$id" "$type" "$f"
+      row "$id" "$agent_type" "$f"
     done
   fi
 } | awk -F'\t' '
-  BEGIN { printf "%-26s %-40s %6s %10s %9s %9s %13s %9s\n", "agent", "type", "turns", "first_ctx", "last_ctx", "max_ctx", "cache_read_M", "output_k" }
+  BEGIN { printf "%-26s %-40s %6s %10s %9s %9s %13s %14s %9s\n", "agent", "type", "calls", "first_ctx", "last_ctx", "max_ctx", "cache_read_M", "cache_write_M", "output_k" }
   {
-    printf "%-26s %-40s %6d %10d %9d %9d %13.1f %9.1f\n", $1, substr($2,1,40), $3, $4, $5, $6, $7/1000000, $8/1000
-    turns += $3; cr += $7; out += $8
+    printf "%-26s %-40s %6d %10d %9d %9d %13.1f %14.2f %9.1f\n", $1, substr($2,1,40), $3, $4, $5, $6, $7/1000000, $8/1000000, $9/1000
+    calls += $3; cr += $7; cw += $8; out += $9
   }
-  END { printf "%-26s %-40s %6d %10s %9s %9s %13.1f %9.1f\n", "TOTAL", "", turns, "", "", "", cr/1000000, out/1000 }'
+  END { printf "%-26s %-40s %6d %10s %9s %9s %13.1f %14.2f %9.1f\n", "TOTAL", "", calls, "", "", "", cr/1000000, cw/1000000, out/1000 }'
 
-# Planning cost of the coordinator: context of the last assistant record before the first
-# dispatch of an autopilot lead (Agent tool call whose subagent_type names autopilot-lead).
+# Planning cost of the coordinator: the context of the request that dispatched the first
+# autopilot lead (the assistant record carrying the Agent tool_use whose subagent_type names
+# autopilot-lead; its usage is the context that request carried).
 plan_ctx="$(jq -s -r '
-  ( [ .[] | select(.type=="assistant") ] ) as $a
-  | ($a | to_entries | map(select(.value.message.content
-        | if type=="array" then any(.[]; .type=="tool_use" and .name=="Agent" and ((.input.subagent_type // "") | test("autopilot-lead"))) else false end))
-      | .[0].key) as $i
-  | if $i == null then "none"
-    else ($a[0:$i] | map(.message.usage // empty | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0))) | last // 0 | tostring)
-    end' "$main" 2>/dev/null || echo none)"
+  [ .[] | select(.type=="assistant")
+    | select(.message.content | if type=="array" then any(.[]; .type=="tool_use" and .name=="Agent" and ((.input.subagent_type // "") | test("autopilot-lead"))) else false end)
+    | .message.usage // empty
+    | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) ]
+  | if length == 0 then "none" else (.[0] | tostring) end' "$main" 2>/dev/null || echo none)"
 if [ "$plan_ctx" != "none" ]; then
   echo "coordinator context at the first autopilot-lead dispatch (planning cost carried for the rest of the session): $plan_ctx"
 fi
