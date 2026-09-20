@@ -91,6 +91,17 @@ directly. Write the gate command into a temp file preceded by a `# CMD: <gate>` 
 (`bash "${CLAUDE_PLUGIN_ROOT}/skills/autopilot/hooks/autopilot-context-budget.test.sh"`) and
 confirm `FAIL=0`; then run the project copy once with a fake input
 (`echo '{"transcript_path":"<this session's transcript>","agent_id":"init-check"}' | bash .claude/hooks/autopilot-context-budget.sh`)
-and confirm it prints `{}` (no such subagent transcript exists, so it must stay silent). Then print: detected package manager, the resolved gate command,
+and confirm it prints `{}` (no such subagent transcript exists, so it must stay silent).
+
+**Review bot check.** If `.github/workflows/claude-code-review.yml` exists, the run will wait
+for its comments and request re-reviews with a label (autopilot skill, step 6). Confirm the
+label exists: `gh label list --search claude-re-review`. Missing → create it
+(`gh label create claude-re-review --description "Request one more full Claude review of this PR's current state" --color 5319E7`)
+and say so; a missing label makes every re-review request fail silently. If the workflow
+uses another label name (read the workflow file), report it: the run follows the project's
+`CLAUDE.md`, which must name it.
+
+Then print: detected package manager, the resolved gate command and `gateFull` when wired,
 the files created/modified, whether each merge was a no-op (already initialized), whether `jq`
-is available, and that the hooks become active in the next session.
+is available, whether a review workflow and its label were found, and that the hooks become
+active in the next session.
