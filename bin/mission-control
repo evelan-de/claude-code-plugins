@@ -105,6 +105,26 @@ pause_date() {
   printf '%s\n' "$pd"
 }
 
+# plist_time: HH:MM of the installed LaunchAgent, read from its StartCalendarInterval.
+plist_time() {
+  pt_h="$(sed -n 's/.*<key>Hour<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
+  pt_m="$(sed -n 's/.*<key>Minute<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
+  printf '%02d:%02d\n' "${pt_h:-0}" "${pt_m:-0}"
+}
+
+# plist_legacy: 0 when a LaunchAgent is installed whose ProgramArguments lack --scheduled
+# (written before the pause feature): that job ignores the pause file.
+plist_legacy() {
+  [ -f "$PLIST" ] || return 1
+  ! grep -q '<string>--scheduled</string>' "$PLIST"
+}
+
+# warn_legacy_plist: one line on stdout when the installed LaunchAgent ignores the pause.
+warn_legacy_plist() {
+  plist_legacy || return 0
+  echo "schedule installed without --scheduled: run \"mission-control install-schedule $(plist_time)\" again, otherwise the nightly job ignores the pause"
+}
+
 # lock_pid: the pid recorded in the lock when that process is alive, else nothing.
 lock_pid() {
   lp="$(cat "$LOCK/pid" 2>/dev/null || true)"
@@ -714,7 +734,8 @@ live_repos() {
 
 # scheduled_gate: for "run --scheduled" only. A force-once file (kickstart) is consumed and
 # overrides a pause once; a valid pause skips the run before the lock or the queue is
-# touched; an expired pause file is removed.
+# touched; an expired pause file is removed; an unreadable one (empty, no date) is removed
+# and said, the run goes ahead.
 scheduled_gate() {
   if [ -e "$FORCE" ]; then
     rm -f "$FORCE"
@@ -729,7 +750,11 @@ scheduled_gate() {
     fi
     sg_old="$(head -n 1 "$PAUSE" 2>/dev/null | tr -d '[:space:]')"
     rm -f "$PAUSE"
-    log "pause expired (${sg_old:-unreadable date}), file removed"
+    if valid_date "$sg_old"; then
+      log "pause expired ($sg_old), file removed"
+    else
+      say "pause file unreadable (${sg_old:-empty}), removed, run goes ahead"
+    fi
   fi
 }
 
@@ -927,11 +952,16 @@ cmd_status() {
   echo "last done:"
   if [ -f "$DONE" ]; then tail -n 5 "$DONE" | sed 's/^/  /'; else echo "  none"; fi
 
-  if [ -f "$PLIST" ]; then
-    s_h="$(sed -n 's/.*<key>Hour<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
-    s_m="$(sed -n 's/.*<key>Minute<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
+  if plist_legacy; then
+    echo "schedule: installed at $(plist_time) (legacy, ignores pause)"
+    warn_legacy_plist
+  elif [ -f "$PLIST" ]; then
     s_until="$(pause_date || true)"
-    echo "schedule: installed at $(printf '%02d:%02d' "${s_h:-0}" "${s_m:-0}"), ${s_until:+paused until $s_until}${s_until:-active}"
+    if [ -n "$s_until" ]; then
+      echo "schedule: installed at $(plist_time), paused until $s_until"
+    else
+      echo "schedule: installed at $(plist_time), active"
+    fi
   else
     echo "schedule: not installed"
   fi
@@ -1069,13 +1099,15 @@ EOF
 }
 
 # cmd_pause [until <YYYY-MM-DD> | <N>d]: no argument pauses today only. The file holds the
-# last paused day; the scheduled run skips through that day inclusive.
+# last paused day; the scheduled run skips through that day inclusive. A date before today
+# is refused (exit 2): it would be a pause that is over before it starts.
 cmd_pause() {
   case "$#:${1:-}" in
     0:) p_until="$(today)" ;;
     2:until)
       p_until="$2"
-      valid_date "$p_until" || die_usage "not a date: '$p_until' (want YYYY-MM-DD, e.g. pause until $(date_plus_days 1))" ;;
+      valid_date "$p_until" || die_usage "not a date: '$p_until' (want YYYY-MM-DD, e.g. pause until $(date_plus_days 1))"
+      [ "$(printf '%s' "$p_until" | tr -d -)" -ge "$(today | tr -d -)" ] || die_usage "date is in the past: $p_until" ;;
     1:*)
       p_n="${1%d}"
       case "$1" in *d) ;; *) p_n="" ;; esac
@@ -1088,6 +1120,7 @@ cmd_pause() {
   printf '%s\n' "$p_until" >"$PAUSE" || die "cannot write $PAUSE"
   log "paused until $p_until"
   echo "paused until $p_until"
+  warn_legacy_plist
 }
 
 cmd_resume() {
@@ -1098,6 +1131,7 @@ cmd_resume() {
   else
     echo "not paused"
   fi
+  warn_legacy_plist
 }
 
 cmd_uninstall_schedule() {

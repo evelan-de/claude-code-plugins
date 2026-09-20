@@ -65,9 +65,11 @@ since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `ru
 `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
 (a failing repo gets a `FAIL - ...` line, the count goes on without it); `last done:` with the
 last five `done.txt` lines; `schedule: installed at HH:MM, active`, `schedule: installed at
-HH:MM, paused until <date>` (time read from the plist, date from `paused`) or `schedule: not
-installed`; `lock: held by pid N`, `free`, or `stale` when the recorded pid is dead. No
-secrets: the env file is never printed.
+HH:MM, paused until <date>` (time read from the plist, date from `paused`), `schedule:
+installed at HH:MM (legacy, ignores pause)` plus the warning line described under "Pause the
+schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `lock: held by
+pid N`, `free`, or `stale` when the recorded pid is dead. No secrets: the env file is never
+printed.
 
 `stop` sends TERM to the run's pid when the lock holds a live one; the run's trap kills the
 claude process (SIGTERM, SIGKILL after 10 s) and releases the lock. Every sleep in the run
@@ -205,15 +207,26 @@ mission-control resume                    # "resumed", or "not paused"
 ```
 
 `pause` prints `paused until <date>` and writes that date. A date that is not a real
-calendar day (`2026-02-30`, `31.12.2026`, a weekday name) is refused with exit 2 and the
-file stays as it was.
+calendar day (`2026-02-30`, `31.12.2026`, a weekday name) is refused with exit 2 (`not a
+date: '...'`), and so is a date before today (`date is in the past: <date>`); the file stays
+as it was in both cases. Today itself is allowed.
 
 What a pause does: the LaunchAgent starts `run --scheduled`. While the pause is valid (its
 date is today or later) that run prints and logs `paused until <date>: scheduled run skipped
 (manual runs still work)` and exits 0 without taking the lock or touching the queue. The
-first scheduled run after the date removes the file, logs `pause expired` in `queue.log` and
-goes on as usual. `status` shows `schedule: installed at HH:MM, paused until <date>` while
-the pause is valid, `..., active` otherwise.
+first scheduled run after the date removes the file, logs `pause expired (<date>), file
+removed` in `queue.log` and goes on as usual. A `paused` file without a readable date
+(empty, or hand-edited) is removed too; that run prints and logs `pause file unreadable
+(<content or empty>), removed, run goes ahead`. `status` shows `schedule: installed at
+HH:MM, paused until <date>` while the pause is valid, `..., active` otherwise.
+
+Legacy schedule: a LaunchAgent installed before the pause feature runs plain `run`, without
+`--scheduled`, so it never looks at the pause file. `pause`, `resume` and `status` detect
+that (the plist's `ProgramArguments` lack `--scheduled`) and print `schedule installed
+without --scheduled: run "mission-control install-schedule HH:MM" again, otherwise the
+nightly job ignores the pause` with the time read from the plist; `status` shows
+`schedule: installed at HH:MM (legacy, ignores pause)` instead of active or paused. The
+pause file is still written; reinstalling the schedule makes it count.
 
 What a pause does not do: a manual `mission-control run` (no flag) ignores it entirely, and
 `kickstart` overrides it once: it writes `force-once`, which the scheduled run it starts

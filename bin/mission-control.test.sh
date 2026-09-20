@@ -139,6 +139,16 @@ fresh_home() {
   export MISSION_CONTROL_HOME="$QH" FAKE_RECORD="$REC"
 }
 
+# write_plist <fake HOME> <hour> <minute> [legacy]: a LaunchAgent plist as install-schedule
+# writes it; "legacy" leaves out --scheduled (a plist from before the pause feature).
+write_plist() {
+  mkdir -p "$1/Library/LaunchAgents"
+  wp_args='<string>run</string><string>--scheduled</string>'
+  [ "${4:-}" = legacy ] && wp_args='<string>run</string>'
+  printf '<dict><key>ProgramArguments</key><array><string>/x/mission-control</string>%s</array><key>StartCalendarInterval</key><dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict></dict>\n' \
+    "$wp_args" "$2" "$3" >"$1/Library/LaunchAgents/de.evelan.mission-control.plist"
+}
+
 # ---------- (a) text item, REPORT.md with Status: done -> done ----------
 fresh_home a
 export FAKE_SCENARIO=report
@@ -538,10 +548,9 @@ check "(q) status shows the last done lines" has "  2026-09-19T20:00:00Z $proj P
 check "(q) status says no schedule" has "schedule: not installed" "$out"
 check "(q) status names the lock holder" has "lock: held by pid $runpid" "$out"
 check "(q) status never prints the webhook variable" lacks "SLACK_WEBHOOK_URL" "$out"
-mkdir -p "$fakehome/Library/LaunchAgents"
-printf '<dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>5</integer></dict>\n' >"$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+write_plist "$fakehome" 22 5
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
-check "(q) status reads the schedule time from the plist" has "schedule: installed at 22:05" "$out"
+check "(q) status reads the schedule time from the plist" has "schedule: installed at 22:05, active" "$out"
 out="$(sh "$TOOL" stop 2>&1)"; got=$?
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
 wait "$runpid" 2>/dev/null
@@ -691,16 +700,16 @@ yesterday="$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)"
 in3days="$(date -v+3d +%Y-%m-%d 2>/dev/null || date -d "+3 days" +%Y-%m-%d)"
 fresh_home t
 export FAKE_SCENARIO=report
-fakehome="$tmp/fakehome-t"; mkdir -p "$fakehome/Library/LaunchAgents"
-printf '<dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>\n' >"$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+fakehome="$tmp/fakehome-t"; write_plist "$fakehome" 22 0
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
 check "(t) status: schedule active without a pause file" has "schedule: installed at 22:00, active" "$out"
-out="$(sh "$TOOL" pause 2>&1)"; got=$?
+out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"; got=$?
 check "(t) pause exits 0" [ "$got" -eq 0 ]
 check "(t) pause says paused until today" [ "$out" = "paused until $today" ]
 check "(t) pause file holds today's date" [ "$(cat "$QH/paused")" = "$today" ]
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
-check "(t) status: schedule paused until today" has "schedule: installed at 22:00, paused until $today" "$out"
+check "(t) status: schedule paused until today, nothing after the date" bash -c 'printf "%s\n" "$1" | grep -qx "schedule: installed at 22:00, paused until $2"' _ "$out" "$today"
+check "(t) status: the date appears once on the schedule line" [ "$(printf '%s\n' "$out" | grep -c "$today$today")" = 0 ]
 printf '%s PAUL-80\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
 check "(t) scheduled run exits 0 while paused" [ "$got" -eq 0 ]
@@ -713,11 +722,11 @@ out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(t) manual run exits 0 while paused" [ "$got" -eq 0 ]
 check "(t) manual run processed the item" grep -q " PAUL-80 done " "$QH/done.txt"
 check "(t) manual run kept the pause" [ "$(cat "$QH/paused")" = "$today" ]
-out="$(sh "$TOOL" resume 2>&1)"; got=$?
+out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
 check "(t) resume exits 0" [ "$got" -eq 0 ]
 check "(t) resume says resumed" [ "$out" = "resumed" ]
 check "(t) resume removed the file" [ ! -e "$QH/paused" ]
-out="$(sh "$TOOL" resume 2>&1)"; got=$?
+out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
 check "(t) resume without a pause exits 0" [ "$got" -eq 0 ]
 check "(t) resume without a pause says not paused" [ "$out" = "not paused" ]
 # expired pause: removed, run proceeds
@@ -727,23 +736,52 @@ out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
 check "(t) expired pause: scheduled run exits 0" [ "$got" -eq 0 ]
 check "(t) expired pause: item processed" grep -q " PAUL-81 done " "$QH/done.txt"
 check "(t) expired pause: file removed" [ ! -e "$QH/paused" ]
-check "(t) expired pause: logged" grep -q "pause expired" "$QH/logs/queue.log"
+check "(t) expired pause: logged" grep -q "pause expired ($yesterday), file removed" "$QH/logs/queue.log"
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
 check "(t) status: active again after the expired pause" has "schedule: installed at 22:00, active" "$out"
-# pause until <date>, pause <N>d, invalid dates
-out="$(sh "$TOOL" pause until 2099-12-31 2>&1)"; got=$?
+# unreadable pause file (empty, garbage): removed and said, run proceeds
+for junk in "" garbage; do
+  printf '%s' "$junk" >"$QH/paused"
+  printf '%s PAUL-81\n' "$proj" >"$QH/queue.txt"
+  out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+  shown="${junk:-empty}"
+  check "(t) unreadable pause '$shown': scheduled run exits 0" [ "$got" -eq 0 ]
+  check "(t) unreadable pause '$shown': said on stdout" has "[mission-control] pause file unreadable ($shown), removed, run goes ahead" "$out"
+  check "(t) unreadable pause '$shown': logged" grep -q "pause file unreadable ($shown), removed, run goes ahead" "$QH/logs/queue.log"
+  check "(t) unreadable pause '$shown': not called expired" lacks "expired ($shown)" "$out"
+  check "(t) unreadable pause '$shown': file removed" [ ! -e "$QH/paused" ]
+  check "(t) unreadable pause '$shown': item processed" grep -q " PAUL-81 done " "$QH/done.txt"
+done
+check "(t) unreadable pause: run went ahead both times" [ "$(grep -c " PAUL-81 done " "$QH/done.txt")" = 3 ]
+# pause until <date>, pause <N>d, invalid dates, a date in the past
+out="$(HOME="$fakehome" sh "$TOOL" pause until 2099-12-31 2>&1)"; got=$?
 check "(t) pause until exits 0" [ "$got" -eq 0 ]
 check "(t) pause until says the date" [ "$out" = "paused until 2099-12-31" ]
 check "(t) pause until writes the date" [ "$(cat "$QH/paused")" = "2099-12-31" ]
-out="$(sh "$TOOL" pause 3d 2>&1)"; got=$?
+out="$(HOME="$fakehome" sh "$TOOL" pause until "$today" 2>&1)"; got=$?
+check "(t) pause until today is allowed" [ "$got" -eq 0 ]
+out="$(HOME="$fakehome" sh "$TOOL" pause 3d 2>&1)"; got=$?
 check "(t) pause 3d exits 0" [ "$got" -eq 0 ]
 check "(t) pause 3d says the date three days ahead" [ "$out" = "paused until $in3days" ]
 check "(t) pause 3d writes that date" [ "$(cat "$QH/paused")" = "$in3days" ]
-for bad in "until 2026-02-30" "until 31.12.2026" "until yesterday" "until" "3" "x3d" "3d extra"; do
+out="$(HOME="$fakehome" sh "$TOOL" pause until "$yesterday" 2>&1)"; got=$?
+check "(t) pause until <yesterday> exits 2" [ "$got" -eq 2 ]
+check "(t) pause until <yesterday> says the date is in the past" [ "$out" = "mission-control: date is in the past: $yesterday" ]
+check "(t) pause until <yesterday> left the previous pause untouched" [ "$(cat "$QH/paused")" = "$in3days" ]
+pause_usage="usage: mission-control pause [until <YYYY-MM-DD> | <N>d]"
+for case in \
+  "until 2026-02-30|not a date: '2026-02-30' (want YYYY-MM-DD" \
+  "until 31.12.2026|not a date: '31.12.2026' (want YYYY-MM-DD" \
+  "until yesterday|not a date: 'yesterday' (want YYYY-MM-DD" \
+  "until|$pause_usage (got: until)" \
+  "3|$pause_usage (got: 3)" \
+  "x3d|$pause_usage (got: x3d)" \
+  "3d extra|$pause_usage"; do
+  bad="${case%%|*}"; want="${case#*|}"
   # shellcheck disable=SC2086
-  out="$(sh "$TOOL" pause $bad 2>&1)"; got=$?
+  out="$(HOME="$fakehome" sh "$TOOL" pause $bad 2>&1)"; got=$?
   check "(t) pause $bad exits 2" [ "$got" -eq 2 ]
-  check "(t) pause $bad names the problem" has "mission-control:" "$out"
+  check "(t) pause $bad names the problem" has "mission-control: $want" "$out"
 done
 check "(t) an invalid pause left the previous pause untouched" [ "$(cat "$QH/paused")" = "$in3days" ]
 # force-once: consumed by the scheduled run, overrides the pause once
@@ -794,7 +832,7 @@ EOF
   check "(t2) kickstart exits 0 during a pause" [ "$got" -eq 0 ]
   check "(t2) kickstart called launchctl kickstart" has "kickstart gui/" "$(tail -n 1 "$REC/launchctl.args")"
   check "(t2) kickstart wrote force-once" [ -e "$QH/force-once" ]
-  check "(t2) kickstart says the pause is overridden once" has "pause" "$out"
+  check "(t2) kickstart says the pause is overridden once" has "the pause until $today is overridden for this run only" "$out"
   export FAKE_SCENARIO=report
   printf '%s PAUL-84\n' "$proj" >"$QH/queue.txt"
   out="$(sh "$TOOL" run --scheduled 2>&1)"
@@ -810,6 +848,35 @@ EOF
   check "(t2) refused kickstart (active run) wrote no force-once" [ ! -e "$QH/force-once" ]
   rm -rf "$QH/run.lock"
 fi
+
+# ---------- (t3) legacy plist (no --scheduled): pause, resume and status warn ----------
+fresh_home t3
+fakehome="$tmp/fakehome-t3"; write_plist "$fakehome" 21 15 legacy
+legacy_warn='schedule installed without --scheduled: run "mission-control install-schedule 21:15" again, otherwise the nightly job ignores the pause'
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(t3) status exits 0 with a legacy plist" [ "$got" -eq 0 ]
+check "(t3) status shows the legacy schedule line" has "schedule: installed at 21:15 (legacy, ignores pause)" "$out"
+check "(t3) status prints the warning with the plist time" has "$legacy_warn" "$out"
+out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"; got=$?
+check "(t3) pause exits 0 with a legacy plist" [ "$got" -eq 0 ]
+check "(t3) pause still writes the file" [ "$(cat "$QH/paused")" = "$today" ]
+check "(t3) pause says paused" has "paused until $today" "$out"
+check "(t3) pause prints the warning" has "$legacy_warn" "$out"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(t3) status with a legacy plist and a pause still says legacy" has "schedule: installed at 21:15 (legacy, ignores pause)" "$out"
+check "(t3) status with a legacy plist never says paused until" lacks "paused until" "$out"
+out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
+check "(t3) resume exits 0 with a legacy plist" [ "$got" -eq 0 ]
+check "(t3) resume says resumed" has "resumed" "$out"
+check "(t3) resume prints the warning" has "$legacy_warn" "$out"
+write_plist "$fakehome" 21 15
+out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"
+check "(t3) a plist with --scheduled gets no warning from pause" [ "$out" = "paused until $today" ]
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(t3) a plist with --scheduled gets no warning from status" lacks "without --scheduled" "$out"
+rm -f "$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"
+check "(t3) no plist: no warning from resume" [ "$out" = "resumed" ]
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
