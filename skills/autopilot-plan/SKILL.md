@@ -7,10 +7,15 @@ argument-hint: "<ticket key | spec file | topic>   (a topic without a ticket get
 # Autopilot plan
 
 One topic, one plan file, written with the user in the loop. The plan is what `/autopilot`
-executes unattended, so every decision an unattended agent would otherwise guess is made
-here, once. Developers run this too.
+executes unattended on a cheaper model. It carries every decision, every insertion point,
+every signature, every assertion. The run implements steps; it does not invent them.
 
 **Input:** `$ARGUMENTS`.
+
+## 0. Model
+
+Default planner: Fable; Opus is fine. On Sonnet or Haiku say so in one line ("planning on
+<model>; Fable or Opus is the intended planner") and continue.
 
 ## 1. Resolve the input
 
@@ -26,13 +31,15 @@ here, once. Developers run this too.
   from the destination, scope and goal artifact, in the tracker's description format. Use the
   new key everywhere a key is used (plan header, slug, branch name, commits, PR title).
 
-## 2. Explore, bounded
+## 2. Explore, whole files
 
-Locate with `grep -n`, read with `sed -n a,bp` in slices of at most ~80 lines, never a whole
-file. Find: the files and interfaces the topic touches, the existing patterns to follow, the
-test setup and gate command (`.claude/autopilot.json`), the risks (migrations, auth, CI
-constraints, flaky areas), and **prefactoring** that would make the change easy ("make the
-change easy, then make the easy change"). Verify every anchor you will write down by opening it.
+Locate with `grep -n`, then read every file a package will touch **whole**, plus the tests
+next to it and the types it imports. No read cap. Find: the files and interfaces the topic touches, the existing patterns to follow
+(and the one file that is the best example of each), the test setup and gate command
+(`.claude/autopilot.json`), the risks (migrations, auth, CI constraints, flaky areas), and
+**prefactoring** that would make the change easy ("make the change easy, then make the easy
+change"). Verify every anchor, signature and type you will write down by opening it; a
+`path:line` in the plan is a promise.
 
 ## 3. Seams first, then ask once
 
@@ -51,54 +58,66 @@ code answers.
 ## 4. Slice, then quiz
 
 Break the work into **tracer bullets**: each package a narrow but complete path through every
-layer it needs (schema, API, UI, tests), demoable or verifiable on its own, sized for one
-fresh context with the gate green. Prefactoring first. Give each package its **blocking
-edges**. A **wide refactor** (one mechanical change with a blast radius across the codebase)
-is not a tracer bullet: sequence it expand → migrate in batches → contract, each batch a
-package blocked by the expand.
+layer it needs (schema, API, UI, tests), demoable or verifiable on its own. Prefactoring
+first. Give each package its **blocking edges**. A **wide refactor** (one mechanical change
+with a blast radius across the codebase) is not a tracer bullet: sequence it expand → migrate
+in batches → contract, each batch a package blocked by the expand.
+
+Size: a package touches at most ~6 files and ~300 diff lines and has at most ~8
+implementation steps. Larger → split.
 
 Show the packages as a numbered list (title, blocked by, what it delivers) and ask the user
 once: granularity right, edges right, merge or split anything? Iterate until approved.
 
 ## 5. Write `PLAN.md`
 
-Template: `references/plan-template.md`.
+Template and the rules for Implementation steps: `references/plan-template.md`.
 
-Rules: exact commands, paths and names (they are read within days, not months), no narrative,
-no ticket history. The plan is the whole spec the run sees: nothing lives only in the ticket.
+Per package, in this order: Delivers, Blocked by, Files, Seams, **Implementation** (numbered
+steps, each with `path:line`, the quoted anchor line, the signature, the flow as pseudo-code,
+the helper it reuses), **Tests** (file, runner command, one line per test with input →
+expected), Verify (exact commands and expected lines; the browser check with route, viewport
+and what must be visible), Edge cases. Exact commands, paths and names; no narrative, no
+ticket history. The plan is the whole spec the run sees: nothing lives only in the ticket.
 
-## 6. Optional review
+Goal artifact: name the browser checks the run performs with `agent-browser` (headless,
+`skills/autopilot/references/browser.md`) and say whether they need a login state file
+(`browserState` in `.claude/autopilot.json`; if the project has none and the check needs a
+login, list it under "Manual steps" with the recipe from
+`skills/autopilot/references/init.md`, step 6b).
 
-On "review the plan" or for a topic with five or more packages: dispatch
-`evelan:autopilot-plan-reviewer` (read-only, small tool set) with the plan path and the
-sources; fold real findings in, dismiss with a reason under "Decisions".
+## 6. Review
+
+Three or more packages, or "review the plan": dispatch `evelan:autopilot-plan-reviewer`
+(read-only, small tool set) with the plan path and the sources. Fold real findings in,
+dismiss the rest with a reason under "Decisions", write `Reviewed: yes (<n> findings folded
+in)` into the header. Fewer packages: `Reviewed: no (two packages)` unless asked.
 
 ## 7. Commit and hand over
 
 Commit `PLAN.md` on the branch the plan header names, so the run finds it: session mode →
-create `<prefix>/<KEY>-<slug>` from the base (prefix per the project's branch convention in `CLAUDE.md`, else `feat`) and commit there; feature-branch mode → check out
-the feature branch (create it from the base if missing) and commit there. Commit message
+create `<prefix>/<KEY>-<slug>` from the base (prefix per the project's branch convention in
+`CLAUDE.md`, else `feat`) and commit there; feature-branch mode → check out the feature
+branch (create it from the base if missing) and commit there. Commit message
 `docs(autopilot): plan for <key or slug>`. Write the chosen effort into the plan header
-(`Effort: medium`) so the queue and the launch line agree. Tell the user the path, the one
-command that runs it (`/autopilot <session directory>`) and the launch line:
+(`Effort: medium`) so the runner reads it.
 
-```
-claude --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto
-```
+Then tell the user the path and the two ways to run it (every run is started and chained
+by the runner, `mission-control`):
 
-Effort per the plan header (default medium). `--advisor` is accepted although `claude --help`
-does not list it. The dollar cap (`--max-budget-usd 60`) exists only in headless mode
-(`claude -p`, used by mission-control), not in an interactive launch.
+1. **On this machine** (`~/.claude/mission-control` exists here): `/autopilot <session
+   directory>` enqueues the item and starts the runner in the
+   background; progress via `/mission-control status`, macOS notifications and Slack.
+2. **Hand to the queue on the office Mini**: push the branch, open a draft PR against the base (`gh pr create --draft --label
+   autopilot-ready`, title `<KEY>: <destination in a few words>`, body: the Destination and
+   Goal artifact paragraphs plus the path of `PLAN.md`; create the label when missing:
+   `mission-control labels`). The queue picks it up on its next run, the result comes back on
+   this PR (label `autopilot-done` or `autopilot-blocked`, report as a comment) and in Slack.
+   Developer note: the repo must be listed in the queue's `repos.txt` on the Mini; Andreas
+   adds a repo once (`mission-control doctor` prints the list), so a repo not yet on it goes
+   to him with the PR link. Feature-branch mode has no PR: hand-over means pushing the
+   feature branch and adding the item to the queue (`mission-control add <repo> <session
+   dir>`, which records the branch; over SSH from the `/mission-control` skill).
 
-Then ask once: **run it yourself, or hand it to the queue?** Hand to the queue → push the
-branch, open a draft PR against the base (`gh pr create --draft --label autopilot-ready`,
-title `<KEY>: <destination in a few words>`, body: the Destination and Goal artifact
-paragraphs plus the path of `PLAN.md`; create the label when missing:
-`mission-control labels`) and say: the queue on the office Mini picks it up on its next run,
-the result comes back on this PR (label `autopilot-done` or `autopilot-blocked`, report as a
-comment) and in Slack. Developer note: the repo must be listed in the queue's `repos.txt` on
-the Mini; Andreas adds a repo once (`mission-control doctor` prints the list), so a repo not
-yet on it goes to him with the PR link. Feature-branch mode has no PR: hand-over means pushing
-the feature branch and adding the item to the queue file (`mission-control add <repo>
-<session dir>`, which records the branch). Say what is still open, if anything. Do not
-implement anything here.
+Ask once which of the two, do it, say what is still open, if anything. Do not implement
+anything here.

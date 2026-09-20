@@ -31,6 +31,19 @@ touch -t 203001010000 "$R/docs/autopilot/sessions/2026-09-19-x/PLAN.md"
 out="$(sh "$BIN" "$R" feat/x "$S")"
 case "$out" in PROGRESS*) ok "PLAN.md mtime change counts as progress";; *) fail "plan tick: $out";; esac
 
+sh "$BIN" "$R" feat/x "$S" >/dev/null   # consume plan progress
+out="$(sh "$BIN" "$R" feat/x "$S")"
+case "$out" in STALL*status_age=-1*) ok "no status file: status_age=-1, stall";; *) fail "no status file: $out";; esac
+mkdir -p "$R/.claude"; echo "2026-09-21T10:00:00Z ctx=1000 tool=Bash" >"$R/.claude/.autopilot-status"
+touch -t 203001010001 "$R/.claude/.autopilot-status"
+out="$(sh "$BIN" "$R" feat/x "$S")"
+case "$out" in PROGRESS*) ok "status file change (default path) counts as progress";; *) fail "status tick: $out";; esac
+out="$(sh "$BIN" "$R" feat/x "$S")"
+case "$out" in STALL*stalls=1*) ok "unchanged status file stalls again";; *) fail "status stall: $out";; esac
+touch -t 203001010002 "$R/other-status"
+out="$(sh "$BIN" "$R" feat/x "$S" "$R/other-status")"
+case "$out" in PROGRESS*) ok "explicit status-file argument is honoured";; *) fail "explicit status: $out";; esac
+
 out="$(sh "$BIN" "$R" nobranch "$S.2" 2>/dev/null)"
 case "$out" in *commit=none*age=-1*) ok "missing branch reports commit=none";; *) fail "missing branch: $out";; esac
 

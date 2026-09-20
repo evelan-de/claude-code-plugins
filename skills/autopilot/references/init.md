@@ -13,9 +13,11 @@ Never overwrite existing config.
    Active in every session once `.claude/autopilot.json` exists; `# raw` in a command bypasses it.
    Needs `jq`.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
-   measures the context the next turn will carry and, above the budget (default 250k tokens,
+   measures the context the next turn will carry and, above the budget (default 500k tokens,
    `contextBudget` in `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`), injects the
-   instruction to write `HANDOFF.md`, commit and end the turn.
+   instruction to write `HANDOFF.md`, commit and end the turn; rewrites
+   `.claude/.autopilot-status` after every tool call (read by `mission-control status` and
+   the watchdog).
    Active while `.claude/.autopilot-active` exists or inside a subagent; silent otherwise.
    Needs `jq` and the transcript of the agent it runs in (an instant hit in a fresh session
    means the wrong transcript was measured; do not raise the budget).
@@ -80,7 +82,37 @@ differs, show the diff and replace it only when the project copy is an older plu
 
 ### 6. Add the runtime files to `.gitignore`
 Ensure `.claude/.autopilot-active` (transient sentinel), `.claude/.autopilot-gate-blocks`
-(block counter) and `.claude/autopilot-gate.log` (machine-local evidence log) are gitignored.
+(block counter), `.claude/.autopilot-status` (the run's status line) and
+`.claude/autopilot-gate.log` (machine-local evidence log) are gitignored.
+
+### 6b. Browser: `agent-browser`
+Run `agent-browser --version`. Missing → print the two install lines and continue:
+`npm install -g agent-browser` then `agent-browser install` (downloads Chrome for Testing).
+Every headless run needs it for the goal-artifact check (`references/browser.md`); the
+queue machine (office Mini) needs it too.
+
+When the goal artifact of this project needs a logged-in session (a dashboard, an admin
+area), the project gets a state file, saved once by hand and kept outside the repo:
+
+```
+mkdir -p ~/.claude/autopilot/<repo basename>
+agent-browser --headed open <login url>       # log in by hand in the window that opens
+agent-browser state save ~/.claude/autopilot/<repo basename>/state.json
+agent-browser close
+```
+
+Then write `"browserState": "~/.claude/autopilot/<repo basename>/state.json"` into
+`.claude/autopilot.json` (the run expands `~`). Print this recipe when the project has a
+login route (`grep -rl "signIn\|/login\|/sign-in" app src 2>/dev/null | head -n 3` finds one)
+and no `browserState` yet; do not create the file yourself. The state file must exist on
+every machine that runs the queue for this project.
+
+### 6c. Ticket updates: `jira`
+A run sets the ticket In Progress and comments the result through the `jira` script (plugin
+`bin/`), which reads `~/.claude/jira/env` (mode 600: `JIRA_SITE`, `JIRA_EMAIL`,
+`JIRA_TOKEN`). Run `jira doctor`; when it fails, print its output (it names the file and the
+three variables) and continue: a run without the file skips the ticket update and says so
+in `REPORT.md`.
 
 ### 7. Verify and report
 Hooks merged into `settings.json` take effect at the next session start, so test the scripts
@@ -107,5 +139,6 @@ script), so a developer's hand-over from `/autopilot-plan` and the nightly queue
 
 Then print: detected package manager, the resolved gate command and `gateFull` when wired,
 the files created/modified, whether each merge was a no-op (already initialized), whether `jq`
-is available, whether a review workflow and its label were found, and that the hooks become
-active in the next session.
+is available, whether `agent-browser` is installed and whether a `browserState` is set or
+recommended, whether `jira doctor` passed, whether a review workflow and its label were
+found, and that the hooks become active in the next session.

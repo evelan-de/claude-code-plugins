@@ -23,6 +23,13 @@ They are maintained here as Evelan skills from now on and may diverge from upstr
 | setup-matt-pocock-skills | setup-workflow-skills |
 | handoff | handoff |
 
+Deliberate divergence (2026-09-21): upstream `to-tickets` ends with "No file paths or code
+snippets in tickets; they go stale fast". The Evelan `autopilot-plan` skill (not a vendored
+skill, but it borrows the seams, tracer-bullet and quiz steps from `to-tickets`) does the
+opposite on purpose: its plans carry `path:line` anchors, signatures, pseudo-code and test
+assertions, because they are consumed within hours by a cheaper model that must not design.
+`to-tasks` itself keeps the upstream rule.
+
 Not vendored: the `in-progress`, `misc` and `deprecated` folders. Vendored at first and
 removed on 2026-09-20 (plugin 2.0.0): prototype, research, resolving-merge-conflicts, triage,
 teach, to-questionnaire, wizard, writing-for-agents, wayfinder, ask-matt (which-skill), wait-what.

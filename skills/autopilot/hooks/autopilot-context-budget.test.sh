@@ -70,12 +70,12 @@ out="$(hook_input "$MAIN" sess1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 
 # 4. subagent above budget (main below) -> hand-off instruction naming the measured file
 mk_transcript "$MAIN" 100000
-mk_transcript "$SUB/agent-lead1.jsonl" 300000
+mk_transcript "$SUB/agent-lead1.jsonl" 600000
 out="$(hook_input "$MAIN" sess1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 ac="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // empty')"
 case "$ac" in *"CONTEXT BUDGET REACHED"*"HANDOFF.md"*"Resume with /autopilot"*) ok "subagent above budget -> hand-off instruction";; *) fail "above budget output: $out";; esac
 printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName=="PostToolUse"' >/dev/null && ok "hookEventName is PostToolUse" || fail "hookEventName"
-case "$ac" in *"302003 tokens"*) ok "reports the measured context (302003)";; *) fail "context figure missing: $ac";; esac
+case "$ac" in *"602003 tokens"*) ok "reports the measured context (602003)";; *) fail "context figure missing: $ac";; esac
 case "$ac" in *"measured from agent-lead1.jsonl"*) ok "names the measured transcript";; *) fail "measured-from missing: $ac";; esac
 
 # 5. reminder rate limit: second call for the same agent is silent, 11th fires again
@@ -86,7 +86,7 @@ out="$(hook_input "$MAIN" sess1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 fires "$out" && ok "reminder repeats after 10 calls" || fail "reminder repeat (got $out)"
 
 # 6. a second agent in the same session has its own transcript and its own counter
-mk_transcript "$SUB/agent-lead2.jsonl" 300000
+mk_transcript "$SUB/agent-lead2.jsonl" 600000
 out="$(hook_input "$MAIN" sess1 lead2 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 fires "$out" && ok "separate transcript and counter per agent" || fail "per-agent counter (got $out)"
 
@@ -96,7 +96,7 @@ out="$(hook_input "$MAIN" sess1 ghost | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 [ "$out" = "{}" ] && ok "unknown agent transcript -> {} (no fallback to main)" || fail "ghost agent (got $out)"
 
 # 8. workflow agents live one level deeper and are still found
-mk_transcript "$SUB/workflows/wf1/agent-wfa.jsonl" 300000
+mk_transcript "$SUB/workflows/wf1/agent-wfa.jsonl" 600000
 out="$(hook_input "$MAIN" sess1 wfa | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 fires "$out" && ok "nested workflow transcript is found" || fail "nested transcript (got $out)"
 
@@ -111,7 +111,7 @@ out="$(hook_input "$MAIN" sess1 '../../sess1' | CLAUDE_PROJECT_DIR="$P" bash "$H
 [ "$out" = "{}" ] && ok "agent_id with path characters -> {}" || fail "path traversal (got $out)"
 
 # 11. interactive session (no agent_id, no sentinel) -> silent even above budget
-MAIN2="$P/tr/sess2.jsonl"; mk_transcript "$MAIN2" 300000
+MAIN2="$P/tr/sess2.jsonl"; mk_transcript "$MAIN2" 600000
 out="$(hook_input "$MAIN2" sess2 - | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 [ "$out" = "{}" ] && ok "interactive session (no agent_id, no sentinel) -> {}" || fail "interactive guard (got $out)"
 
@@ -122,6 +122,19 @@ ac="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // empty
 case "$ac" in *"measured from sess2.jsonl"*) ok "standalone run with sentinel -> fires on the main transcript";; *) fail "sentinel run (got $out)";; esac
 rm -f "$P/.claude/.autopilot-active"
 
+
+# 17. status line: written after every measured call, below and above the budget
+touch "$P/.claude/.autopilot-active"
+mk_transcript "$MAIN" 100000
+rm -f "$P/.claude/.autopilot-status"
+out="$(hook_input "$MAIN" sess10 - | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
+[ "$out" = "{}" ] && ok "below budget in a run -> {}" || fail "status run (got $out)"
+sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
+case "$sl" in [0-9][0-9][0-9][0-9]-*Z" ctx=102003 tool=Bash") ok "status line written: $sl";; *) fail "status line (got '$sl')";; esac
+out="$(hook_input "$MAIN" sess10 lead1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
+sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
+case "$sl" in *" agent=lead1") ok "subagent call adds agent= to the status line";; *) fail "status agent (got '$sl')";; esac
+rm -f "$P/.claude/.autopilot-active"
 # 13. budget from autopilot.json
 echo '{ "gate": "true", "contextBudget": 400000 }' >"$P/.claude/autopilot.json"
 mk_transcript "$SUB/agent-lead4.jsonl" 300000
@@ -143,6 +156,19 @@ out="$(hook_input "$P/tr/none.jsonl" sess9 - | CLAUDE_PROJECT_DIR="$P" bash "$HO
 [ "$out" = "{}" ] && ok "missing transcript -> {}" || fail "missing transcript (got $out)"
 rm -f "$P/.claude/.autopilot-active"
 
+
+# 17. status line: written after every measured call, below and above the budget
+touch "$P/.claude/.autopilot-active"
+mk_transcript "$MAIN" 100000
+rm -f "$P/.claude/.autopilot-status"
+out="$(hook_input "$MAIN" sess10 - | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
+[ "$out" = "{}" ] && ok "below budget in a run -> {}" || fail "status run (got $out)"
+sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
+case "$sl" in [0-9][0-9][0-9][0-9]-*Z" ctx=102003 tool=Bash") ok "status line written: $sl";; *) fail "status line (got '$sl')";; esac
+out="$(hook_input "$MAIN" sess10 lead1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
+sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
+case "$sl" in *" agent=lead1") ok "subagent call adds agent= to the status line";; *) fail "status agent (got '$sl')";; esac
+rm -f "$P/.claude/.autopilot-active"
 rm -rf "$P"
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

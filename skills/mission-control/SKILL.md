@@ -1,7 +1,7 @@
 ---
 name: mission-control
 description: "Queue: status, add, retry, stop, log, start, pause. Triggers on \"/mission-control\", \"mission control\", \"was läuft gerade\", \"Warteschlange\", \"queue status\", \"nimm X dazu\", \"stopp die Warteschlange\"."
-argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop | log [item] | start | pause [until <date> | <N>d] | resume | doctor | schedule HH:MM]"
+argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop | log [item] | start | pause [until <date> | <N>d] | resume | doctor | schedule [HH:MM]]"
 ---
 
 # Mission control
@@ -12,17 +12,20 @@ one command, relay its lines, done.
 
 ## Where the queue runs
 
-Step 0, before any command: when the directory `~/.claude/mission-control` does not exist
-(no `host` file, no queue), this machine has no queue and no way to reach one.
-Say so in two lines and stop: Mission Control runs on Andreas' office Mini; hand work over with
-`/autopilot-plan` and the draft PR labelled `autopilot-ready`, results arrive on the PR and in
-Slack `#mission-control`. Run nothing. (The script refuses the queue commands with exit 3 in
-that state as well.)
+Step 0, before any command: when the directory `~/.claude/mission-control` does not exist,
+this machine has no queue and no way to reach one. Say so in two lines and stop: Mission
+Control runs on Andreas' office Mini; hand work over with `/autopilot-plan` and the draft PR
+labelled `autopilot-ready`, results arrive on the PR and in Slack `#mission-control`. Run
+nothing. (The script refuses the queue commands with exit 3 in that state as well.)
 
-`~/.claude/mission-control/host` exists only on a machine that does NOT run the queue. It
-holds the SSH alias of the machine that does (e.g. `office-mini`). When the file exists, run
-every command over SSH; otherwise run it locally. No hostname comparison.
+`~/.claude/mission-control/host` holds the SSH alias of the office Mini (`office-mini`). A
+machine with a `host` file may also run its own local queue (Andreas' MacBook does).
 
+- No `host` file: run every command locally.
+- `host` file, `status`: run it locally AND remotely, print the local block under `local:`
+  and the remote block under `<alias>:`.
+- `host` file, any other command: remote, unless the request says "hier", "lokal", "auf
+  diesem Mac", "here", "on this Mac", "local" → local.
 - Local: `mission-control <args>`
 - Remote: `ssh <alias> 'zsh -lc "~/.claude/plugins/marketplaces/evelan-plugins/bin/mission-control <args>"'`
   (the plugin `bin/` is not on the remote login PATH). An item with spaces goes as
@@ -39,12 +42,12 @@ every command over SSH; otherwise run it locally. No hostname comparison.
 | retry, "nochmal" | `retry <repo> <#pr \| item>` (a PR gets its label back; any other item is re-added as given) |
 | stop, "stopp die Warteschlange" | `stop` (the item stays in the queue or keeps its label; `log <item>` still finds its log) |
 | log, "zeig das Log" | `log [<item>]` (`#12`, a ticket key or a session dir) |
-| "starte jetzt", start | remote: `kickstart`; it refuses while a run is active or when no schedule is installed, relay that message. It works during a pause (that one run goes ahead, the pause stays). Local: `run` with Bash `run_in_background`, then say that progress arrives as macOS/Slack notifications and via `status`, not from the background call |
+| "starte jetzt", start | `start` (local or remote per step 0). It installs the LaunchAgent on demand when none exists, runs in the GUI session, refuses while a run is active (relay that message), works during a pause (that one run goes ahead, the pause stays). Then say: progress via `status`, macOS notification with sound and Slack when an item finishes |
 | "heute nicht automatisch", "keine automatische Ausführung heute", pause | `pause` (today only; the nightly run skips, manual starts still work) |
 | "Pause bis <Datum>", "pause until <date>" | `pause until <YYYY-MM-DD>` (through that day inclusive). A weekday name ("bis Freitag") needs no tool: from today's date (known in the session) take the next occurrence of that weekday, inclusive (today is a Friday: today), pass that date and reply with it, e.g. `pausiert bis einschließlich Freitag, 2026-09-25`. A date before today is refused with exit 2 (`date is in the past`), relay that. "<N> Tage" is `pause <N>d` |
 | "wieder automatisch", "Pause aufheben", resume | `resume` |
 | doctor | `doctor` |
-| schedule HH:MM | `install-schedule HH:MM` |
+| schedule HH:MM | `install-schedule HH:MM` (nightly); `install-schedule` without a time = on demand only |
 
 `pause`, `resume` and `status` print a warning line when the installed schedule predates the
 pause feature (`schedule installed without --scheduled: run "mission-control install-schedule

@@ -1,14 +1,16 @@
 ---
 name: autopilot
-description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um".
+description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Started by the runner (mission-control); in an interactive session it enqueues and starts the runner. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um".
 argument-hint: "[init | <session dir> | <ticket>] [defer PR] [no Codex]"
 ---
 
 # Autopilot
 
-You run **unattended**. Input is a plan (`docs/autopilot/sessions/<slug>/PLAN.md`, written
-with `/autopilot-plan`); output is one verified, reviewed, committed branch with a PR that
-finishes the topic. No questions: every open point is decided conservatively and recorded.
+You run **unattended**, started by the runner (`mission-control run`, headless `claude -p`).
+Input is a plan (`docs/autopilot/sessions/<slug>/PLAN.md`, written with `/autopilot-plan`
+at code level: anchors, signatures, pseudo-code, assertions); output is one verified,
+reviewed, committed branch with a PR that finishes the topic. No questions: every open point
+is decided conservatively and recorded.
 
 **Definition of done:** the goal artifact in the plan stands ready and you verified it
 yourself. Gate green is not done. "Wired but dormant", "off by default", "left as a manual
@@ -20,25 +22,35 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 ## Routing
 
 - `init` → follow `references/init.md`, then stop.
+- **Interactive session** (no `.claude/.autopilot-active`, and you were not started by the
+  runner): do not implement here. `~/.claude/mission-control` exists on this machine →
+  `mission-control add <repo path> <session dir>` (one Bash call), then `mission-control
+  start` (one Bash call), print the `added:` line, the `start` line and "progress:
+  `/mission-control status`, macOS notification and Slack when it finishes", stop. No
+  directory → say that runs are started by the runner only, and point to the two hand-over
+  ways in `/autopilot-plan` step 7 (hand to the queue on the Mini via draft PR, or
+  `mission-control add` over SSH). Stop. The rest of this skill is for the run.
 - A session directory, or a ticket key whose plan exists under `docs/autopilot/sessions/` →
   run it. `HANDOFF.md` present → continuation: read it first, trust its "Verified", start at
   its "Next step", never redo.
 - No plan → write one yourself from the ticket, spec or prompt in the `/autopilot-plan`
   format, all shape questions answered conservatively under "Decisions" (nobody will answer
-  them), then run it.
+  them), then run it. Say in `REPORT.md` that the plan was written by the run.
 
 ## Context hygiene
 
 - **Bounded reads.** `grep -n` to locate, `sed -n a,bp` to read; never a whole file, never
-  `git diff` without a path, never `git show` a whole commit.
-- **Bound long outputs** with the tool's own flags (`git log -n 20`, `grep -m 20`, `--reporter=dot`), never a pipe; gate commands are already filtered by the hook.
-- **Never re-read** what is in your context. Read `PLAN.md` once.
+  `git diff` without a path, never `git show` a whole commit. The plan already carries the
+  anchors: read the anchored region, not the file.
+- **Bound long outputs** with the tool's own flags (`git log -n 20`, `grep -m 20`,
+  `--reporter=dot`), never a pipe; gate commands are already filtered by the hook.
+- **Never re-read** what is in your context. Read `PLAN.md` once, whole (it is the spec).
 - **Gate discipline.** Red-green: only the affected test file. Full cheap gate once per
   package, before its commit. Never "to see where we are".
-- **One command per Bash call.** Browser checks with `read_page`/`get_page_text`, one
-  screenshot per screen at most.
+- **One command per Bash call.** Browser checks with `agent-browser` (`references/browser.md`),
+  one screenshot per screen at most.
 - **Hand off, never compact.** When the context-budget hook reports the budget: hand off
-  (below). Do not push on, do not wait for compaction.
+  (below). Do not push on, do not wait for compaction. The runner starts the next session.
 
 ## Write less
 
@@ -60,34 +72,47 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 
 ## Run
 
-Launch: model, effort and advisor are launch parameters chosen by the plan's hand-over line
-(see `/autopilot-plan`); consult the advisor before committing to an approach, on a
-recurring error and before declaring done. At the end print the table of
+Model, effort and advisor are launch parameters the runner passes (`--model sonnet
+--effort <plan header> --advisor fable`); consult the advisor before committing to an
+approach, on a recurring error and before declaring done. At the end print the table of
 `autopilot-usage <this session's transcript>` (newest `.jsonl` under
 `~/.claude/projects/<cwd with "/" replaced by "-">/`).
 
-### 1. Gate and branch
+### 1. Gate, branch, ticket
 Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package manager
 (lockfile) and the existing scripts (`references/init.md`) and persist it. No test runner →
 set one up minimally, project-consistent, before implementing. Create
 `.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it (and
-`.claude/.autopilot-gate-blocks`) at the end and on every abort; never commit either. Branch per the plan header: **session mode** checks out
-`<prefix>/<KEY>-<slug>` (prefix per the project's branch convention in `CLAUDE.md`, else
-`feat`), which `/autopilot-plan` created with the plan on it (create it from
-the base only when you wrote the plan yourself, and commit the plan there first);
-**feature-branch mode** checks out the named feature branch (create it from the base if
-missing) and commits straight onto it; several sessions add up to one branch with one review
-at the end. `PLAN.md` must be on the checked-out branch before the first package. A
-continuation checks out the existing branch. Work in the current checkout; a worktree only
-when the tree is dirty with foreign changes.
+`.claude/.autopilot-gate-blocks`) at the end and on every abort; never commit either.
+Branch per the plan header: **session mode** checks out `<prefix>/<KEY>-<slug>` (prefix per
+the project's branch convention in `CLAUDE.md`, else `feat`), which `/autopilot-plan`
+created with the plan on it (create it from the base only when you wrote the plan yourself,
+and commit the plan there first); **feature-branch mode** checks out the named feature
+branch (create it from the base if missing) and commits straight onto it; several sessions
+add up to one branch with one review at the end. `PLAN.md` must be on the checked-out branch
+before the first package. A continuation checks out the existing branch. Work in the current
+checkout (the runner's worktree).
+
+**Ticket.** A ticket key in the plan header and `~/.claude/jira/env` present → `jira start
+<KEY>` once before the first commit (In Progress, assigned to the token owner); a
+continuation skips it. Env file missing → one line in `REPORT.md` ("ticket not updated: no
+~/.claude/jira/env on this machine"), no other tracker call. Never transition a ticket to a
+done or merged status.
 
 ### 2. Packages, in order
 For each package with `[ ]`: set `[~]`, then
 
-- **Tests at the seams the plan names** (public interfaces only). Red before green: one
-  failing test, run that file, confirm it fails on the assertion; minimal code to pass;
-  refactor only what you wrote. Vertical slices, one test at a time. Mock only process
-  boundaries. Reject: implementation-coupled, tautological, skipped, `.only`, cannot-fail.
+- **Follow the Implementation steps** of the package in order. Before each step open the
+  anchored region (`sed -n` around `path:line`) and confirm the quoted anchor; moved by a few
+  lines → use the real line; missing, or the signature does not fit the code as it is now →
+  do the smallest change that keeps the step's intent, and record it in `DECISIONS.md` as
+  `P<n> step <k>: <what differed> - <what you did instead>`. Never skip a step silently, never
+  redesign a package because one step was off.
+- **Tests at the seams the plan names** (public interfaces only), the test lines of the
+  package as written: name, input, expected. Red before green: one failing test, run that
+  file, confirm it fails on the assertion; minimal code to pass; refactor only what you wrote.
+  Vertical slices, one test at a time. Mock only process boundaries. Reject:
+  implementation-coupled, tautological, skipped, `.only`, cannot-fail.
 - **Failures:** one hypothesis, one change, re-run. After the second failed fix on the same
   failure: write observed vs expected, bisect, then fix. Never weaken an assertion.
 - **Docs** directly affected by the package (inline, the touched area's doc file).
@@ -110,11 +135,15 @@ rest with evidence in `REPORT.md` under "Codex review". Codex rate-limited or un
 skip with the reason in `REPORT.md`; do not run the skill's Claude fallback.
 
 ### 4. Goal artifact
-Exercise the goal artifact in the real thing: start the dev server, drive the acceptance
-criteria, valid and invalid input, error states, console and network; or open the generated
-report or document. Fix test-first, re-verify, stop the server. A missing precondition is a
-blocker to resolve, not a skip. Only steps this environment cannot perform go to
-`MANUAL_TESTING.md`.
+Exercise the goal artifact in the real thing: start the dev server (`.claude/launch.json` or
+the project's script, in the background, output to a file), drive the acceptance criteria
+with `agent-browser` per `references/browser.md` (routes, expected text, invalid input, error
+states, `console`, `errors`, `network requests`, phone viewport, one screenshot per screen
+into the session folder), or open the generated report or document. Fix test-first,
+re-verify, close the browser session, stop the server. A missing precondition (a database,
+a seeded user, a service) is a blocker to resolve, not a skip. A check that needs a login
+without a `browserState` file goes to `MANUAL_TESTING.md` with the exact steps; only steps
+this environment cannot perform go there.
 
 ### 5. Finish
 **Docs are part of done.** Walk the diff once and update every document the change made
@@ -123,13 +152,13 @@ describe the touched area; `CLAUDE.md` and `.claude/rules/` when a convention, c
 gate changed; inline doc comments on changed public interfaces. A stale doc is a gap, the
 reviewer flags it. `build` once.
 Write `REPORT.md`: first line `Status: done` (or, on an abort, `Status: blocked - <reason>`;
-mission-control (the queue script) reads this line and treats anything else as blocked), then what shipped,
-verification with commands and results, review findings, open items. Prepend one line to
-`docs/autopilot/INDEX.md` (below the marker, never rewrite),
+the runner reads this line and treats anything else as blocked), then what shipped,
+verification with commands and results (browser checks included), review findings, open
+items. Prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
 delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX
 marker: `references/artifacts.md`.
 
-### 6. PR and CI
+### 6. PR, CI, ticket comment
 "defer PR" in the prompt → report branch and state, stop. Before any push: when
 `.claude/autopilot.json` has `gateFull` (the project's full gate, e.g. with integration
 tests), run it once; red → fix, re-run; a precondition it needs (a test database, a service)
@@ -142,6 +171,10 @@ workflows skip drafts, so this is what triggers the review); none → `gh pr cre
 key in the title). Never merge. `gh pr checks <n> --watch`; a red CI check → fix,
 re-push, until green. The review check is not CI: red there means the review pipeline is
 broken, never a finding; note it in `REPORT.md` and move on.
+
+**Ticket comment.** With `~/.claude/jira/env`: `jira comment <KEY> -` with the first lines of
+`REPORT.md` (status, what shipped, PR link, open items) as plain text, no Markdown headings.
+Feature-branch mode: the branch name and the session directory instead of a PR link.
 
 **Review bot.** Projects with a Claude review workflow (`.github/workflows/claude-code-review.yml`)
 review each PR once, asynchronously; the project's `CLAUDE.md` or its review doc names the
@@ -169,13 +202,15 @@ for; say so in `REPORT.md`.
 
 (1) commit every finished change; (2) write `docs/autopilot/sessions/<slug>/HANDOFF.md`;
 (3) set the package `[~]` in `PLAN.md` with a one-line progress note; (4) commit both;
-(5) remove `.claude/.autopilot-active` and `.claude/.autopilot-gate-blocks` so the Stop
-hook lets the turn end (the fresh session recreates the sentinel); (6) end the turn with
-one line: `Resume with /autopilot <session directory>`. Mission control (the queue script) or the user starts
-the fresh session. HANDOFF.md format: `references/handoff.md`. Mission control (`mission-control`,
-docs in `references/mission-control.md`) restarts a handed-off item by itself, up to three times.
+(5) close the `agent-browser` session and stop a dev server you started; (6) remove
+`.claude/.autopilot-active` and `.claude/.autopilot-gate-blocks` so the Stop hook lets the
+turn end (the fresh session recreates the sentinel); (7) end the turn with one line:
+`Resume with /autopilot <session directory>`. The runner starts the fresh session by itself,
+up to five times per item (`references/mission-control.md`). HANDOFF.md format:
+`references/handoff.md`.
 
-## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, artifacts committed, sentinel removed)
+## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, artifacts committed, sentinel removed, browser session closed)
 - The gate cannot go green without a destructive action or human input.
 - The task needs anything on the never-list: force-push, `migrations/`, secrets, env files,
   production config, CI credentials, other people's branches.
+- `agent-browser` is not installed and the goal artifact needs a browser.

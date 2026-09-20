@@ -3,8 +3,8 @@
 #
 # usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
 #        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
-#        mission-control pause [until <YYYY-MM-DD> | <N>d] | resume
-#        mission-control install-schedule HH:MM | uninstall-schedule | kickstart
+#        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
+#        mission-control install-schedule [HH:MM] | uninstall-schedule
 #
 # One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-control):
 #   queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
@@ -19,7 +19,7 @@
 #   run.lock/   pid of the active run and current (the item it is on), removed after the run
 #   paused      one date (YYYY-MM-DD, local): the schedule is paused through that day; the
 #               LaunchAgent's "run --scheduled" skips while it is valid, a manual run ignores it
-#   force-once  written by kickstart; the next scheduled run consumes it and ignores the pause
+#   force-once  written by start; the next scheduled run consumes it and ignores the pause
 #
 # The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
 # the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
@@ -69,7 +69,7 @@ SLEEP_PID=""
 SOURCE_FAILED=0
 
 usage() {
-  sed -n '3,7p' "$0" | sed 's/^# //; s/^#//'
+  sed -n '4,7p' "$0" | sed 's/^# //; s/^#//'
   exit 2
 }
 
@@ -112,6 +112,13 @@ plist_time() {
   printf '%02d:%02d\n' "${pt_h:-0}" "${pt_m:-0}"
 }
 
+# plist_on_demand: 0 when the installed LaunchAgent has no StartCalendarInterval (installed
+# by "start" or "install-schedule" without a time): it runs only on "start".
+plist_on_demand() {
+  [ -f "$PLIST" ] || return 1
+  ! grep -q '<key>StartCalendarInterval</key>' "$PLIST"
+}
+
 # plist_legacy: 0 when a LaunchAgent is installed whose ProgramArguments lack --scheduled
 # (written before the pause feature): that job ignores the pause file.
 plist_legacy() {
@@ -131,13 +138,25 @@ lock_pid() {
   [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && printf '%s\n' "$lp"
 }
 
-# note_current <attempt>: records what the active run is on (read by status), five lines:
-# repo basename, item, attempt, start epoch, item log. Written via a temp file and mv, so
-# status never reads a half-written file.
+# note_current <attempt>: records what the active run is on (read by status), six lines:
+# repo basename, item, attempt, start epoch, item log, worktree (empty until it exists).
+# Written via a temp file and mv, so status never reads a half-written file.
 note_current() {
   [ -d "$LOCK" ] || return 0
-  printf '%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" >"$LOCK/current.tmp" \
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" "${pi_wt:-}" >"$LOCK/current.tmp" \
     && mv -f "$LOCK/current.tmp" "$LOCK/current"
+}
+
+# run_status_file <worktree>: the line the run's context-budget hook writes after every
+# tool call (<ISO time> ctx=<tokens> tool=<name>), or nothing.
+run_status_file() { printf '%s\n' "$1/.claude/.autopilot-status"; }
+
+# current_package <worktree> <item>: the "[~]" package line of the item's PLAN.md, without
+# its "### " prefix, or nothing.
+current_package() {
+  cp_plan="$1/$2/PLAN.md"
+  [ -f "$cp_plan" ] || return 0
+  grep -m 1 '^### P[^ ]* \[~\]' "$cp_plan" 2>/dev/null | sed 's/^### //'
 }
 
 # nap <seconds>: a sleep that a trapped signal interrupts (POSIX: a trap interrupts wait).
@@ -180,7 +199,7 @@ load_env() {
   ADVISOR="${MISSION_CONTROL_ADVISOR:-fable}"
   FALLBACK_MODEL="${MISSION_CONTROL_FALLBACK_MODEL:-opus}"
   BUDGET="${MISSION_CONTROL_BUDGET_USD:-60}"
-  MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-3}"
+  MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-5}"
   TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-240}"
   WATCH_MIN="${MISSION_CONTROL_WATCH_MIN:-20}"
   TIMEOUT_S="$(awk -v m="$TIMEOUT_MIN" 'BEGIN { printf "%d", m * 60 }')"
@@ -423,12 +442,14 @@ ensure_labels() {
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
+# notify <text> [sound]: macOS notification (with the named sound: Glass for done, Sosumi
+# for anything that needs a look) and the Slack message.
 notify() {
   [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
-  n_text="$1"
+  n_text="$1"; n_sound="${2:-}"
   n_esc="$(json_escape "$n_text")"
   if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$n_esc\" with title \"mission-control\"" >/dev/null 2>&1 \
+    osascript -e "display notification \"$n_esc\" with title \"mission-control\"${n_sound:+ sound name \"$n_sound\"}" >/dev/null 2>&1 \
       || log "notification: osascript failed"
   fi
   if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
@@ -749,7 +770,11 @@ finish_item() {
   else
     say "$pi_rb $pi_item: $pi_shown: $pi_reason (log $ITEM_LOG)"
   fi
-  notify "$pi_rb $pi_item: $pi_shown $pi_pr_url"
+  if [ "$pi_status" = "done" ]; then
+    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass
+  else
+    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi
+  fi
 
   if [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
     if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
@@ -958,9 +983,18 @@ cmd_status() {
   if [ -n "$s_pid" ] && [ -f "$LOCK/current" ]; then
     s_rb="$(sed -n 1p "$LOCK/current")"; s_item="$(sed -n 2p "$LOCK/current")"
     s_att="$(sed -n 3p "$LOCK/current")"; s_began="$(sed -n 4p "$LOCK/current")"
-    s_log="$(sed -n 5p "$LOCK/current")"
+    s_log="$(sed -n 5p "$LOCK/current")"; s_wt="$(sed -n 6p "$LOCK/current")"
     s_elapsed=$((($(date +%s) - s_began) / 60))
     echo "running: $s_rb $s_item (attempt $s_att, since $(hhmm_of_epoch "$s_began"), $s_elapsed min, phase: $(last_phase "$s_log" "$s_rb" "$s_item"))"
+    if [ -n "$s_wt" ] && [ -d "$s_wt" ]; then
+      case "$s_item" in "$SESSIONS"/*) s_pkg="$(current_package "$s_wt" "$s_item")" ;; *) s_pkg="" ;; esac
+      echo "  package: ${s_pkg:-none marked [~]}"
+      s_sf="$(run_status_file "$s_wt")"
+      if [ -f "$s_sf" ]; then echo "  run: $(tail -n 1 "$s_sf")"; else echo "  run: no status line yet"; fi
+      s_base="$(base_sha "$s_wt" 2>/dev/null || true)"
+      s_diff="$(git -C "$s_wt" diff --shortstat "${s_base:-HEAD}" 2>/dev/null | sed 's/^ *//')"
+      echo "  diff since base: ${s_diff:-none}"
+    fi
   elif [ -n "$s_pid" ]; then
     echo "running: pid $s_pid, no item yet"
   else
@@ -996,6 +1030,8 @@ cmd_status() {
   if plist_legacy; then
     echo "schedule: installed at $(plist_time) (legacy, ignores pause)"
     warn_legacy_plist
+  elif plist_on_demand; then
+    echo "schedule: on demand only (\"mission-control start\"), no nightly run"
   elif [ -f "$PLIST" ]; then
     s_until="$(pause_date || true)"
     if [ -n "$s_until" ]; then
@@ -1081,29 +1117,39 @@ cmd_log() {
   tail -n 40 "$lg_file"
 }
 
-# cmd_kickstart: start the installed LaunchAgent now (inside the GUI session, so the
-# Keychain login is readable). Refuses while a run is active and without a schedule.
-cmd_kickstart() {
-  [ "$(uname)" = Darwin ] || die "kickstart needs macOS (launchd)"
+# cmd_start: start a run now on this machine, inside the GUI session (the Keychain login is
+# readable there). Installs the LaunchAgent without a schedule when none is installed, then
+# kickstarts it. Refuses while a run is active. "kickstart" is the old name.
+cmd_start() {
+  [ "$(uname)" = Darwin ] || die "start needs macOS (launchd)"
   ks_pid="$(lock_pid)"
   if [ -n "$ks_pid" ]; then
     ks_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
     die "a run is active (pid $ks_pid, ${ks_item:-no item yet}), stop it first"
   fi
-  [ -f "$PLIST" ] || die 'no schedule installed; run "mission-control install-schedule HH:MM" once, or start "mission-control run" in a Terminal on this Mac'
+  [ -f "$PLIST" ] || cmd_install_schedule
   # The agent runs "run --scheduled"; force-once makes that run ignore a pause, once.
   : >"$FORCE" || die "cannot write $FORCE"
   launchctl kickstart "gui/$(id -u)/de.evelan.mission-control" || { rm -f "$FORCE"; die "launchctl kickstart failed"; }
   ks_until="$(pause_date || true)"
-  echo "kickstarted: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log)${ks_until:+; the pause until $ks_until is overridden for this run only}"
+  echo "started: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log, then \"mission-control status\")${ks_until:+; the pause until $ks_until is overridden for this run only}"
 }
 
+# cmd_install_schedule [HH:MM]: the LaunchAgent. With a time it runs daily at that time;
+# without one it only runs when "start" kickstarts it.
 cmd_install_schedule() {
   [ "$(uname)" = Darwin ] || die "install-schedule needs macOS (launchd)"
   is_time="${1:-}"
-  case "$is_time" in [0-2][0-9]:[0-5][0-9]) ;; *) die "usage: mission-control install-schedule HH:MM" ;; esac
-  is_h="${is_time%%:*}"; is_m="${is_time#*:}"
-  is_h="${is_h#0}"; is_m="${is_m#0}"; [ -n "$is_h" ] || is_h=0; [ -n "$is_m" ] || is_m=0
+  is_cal=""
+  case "$is_time" in
+    "") ;;
+    [0-2][0-9]:[0-5][0-9])
+      is_h="${is_time%%:*}"; is_m="${is_time#*:}"
+      is_h="${is_h#0}"; is_m="${is_m#0}"; [ -n "$is_h" ] || is_h=0; [ -n "$is_m" ] || is_m=0
+      is_cal="  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>$is_h</integer><key>Minute</key><integer>$is_m</integer></dict>" ;;
+    *) die "usage: mission-control install-schedule [HH:MM]" ;;
+  esac
   if [ -x "$MARKETPLACE_BIN/mission-control" ]; then
     is_bin="$MARKETPLACE_BIN"
   else
@@ -1120,9 +1166,8 @@ cmd_install_schedule() {
   <key>Label</key><string>de.evelan.mission-control</string>
   <key>ProgramArguments</key>
   <array><string>$is_bin/mission-control</string><string>run</string><string>--scheduled</string></array>
-  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>$is_h</integer><key>Minute</key><integer>$is_m</integer></dict>
-  <key>WorkingDirectory</key><string>$HOME</string>
+${is_cal:+$is_cal
+}  <key>WorkingDirectory</key><string>$HOME</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$is_bin:/usr/bin:/bin</string>
@@ -1136,7 +1181,11 @@ cmd_install_schedule() {
 EOF
   launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "launchctl bootstrap failed for $PLIST"
-  echo "installed: $PLIST (daily at $is_time, runs $is_bin/mission-control in the GUI session so the Keychain login is readable)"
+  if [ -n "$is_time" ]; then
+    echo "installed: $PLIST (daily at $is_time, runs $is_bin/mission-control in the GUI session so the Keychain login is readable)"
+  else
+    echo "installed: $PLIST (no schedule, runs on \"mission-control start\" in the GUI session so the Keychain login is readable)"
+  fi
 }
 
 # cmd_pause [until <YYYY-MM-DD> | <N>d]: no argument pauses today only. The file holds the
@@ -1196,7 +1245,7 @@ queue_set_up() { [ -d "$QHOME" ]; }
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
-  run|list|add|status|stop|retry|log|kickstart|pause|resume) queue_set_up || not_set_up ;;
+  run|list|add|status|stop|retry|log|start|kickstart|pause|resume) queue_set_up || not_set_up ;;
 esac
 case "$cmd" in
   run) cmd_run "$@" ;;
@@ -1208,11 +1257,11 @@ case "$cmd" in
   stop) cmd_stop ;;
   retry) cmd_retry "$@" ;;
   log) cmd_log "$@" ;;
-  kickstart) cmd_kickstart ;;
+  start|kickstart) cmd_start ;;
   pause) cmd_pause "$@" ;;
   resume) cmd_resume ;;
   install-schedule) cmd_install_schedule "$@" ;;
   uninstall-schedule) cmd_uninstall_schedule ;;
   -h|--help|help|'') usage ;;
-  *) die "unknown command: $cmd (run | list | add | labels | doctor | status | stop | retry | log | pause | resume | install-schedule | uninstall-schedule | kickstart)" ;;
+  *) die "unknown command: $cmd (run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | install-schedule | uninstall-schedule)" ;;
 esac

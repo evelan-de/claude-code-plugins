@@ -7,7 +7,9 @@
 # (input + cache_creation + cache_read tokens = the context the next turn will carry) and,
 # once that exceeds the budget, injects a system reminder via additionalContext: write
 # HANDOFF.md into the autopilot session folder, commit, and end the turn so a fresh session
-# (started by the user or mission-control) continues from the file.
+# (started by mission-control, the runner) continues from the file. It also rewrites
+# .claude/.autopilot-status after every tool call (ISO time, context tokens, tool name),
+# which "mission-control status" shows and autopilot-watchdog reads as a liveness signal.
 #
 # Which transcript is measured (verified against Claude Code 2.1.241):
 #   - `transcript_path` in the hook input is ALWAYS the main session's transcript, also when
@@ -32,7 +34,7 @@
 #   - the transcript to measure is missing or has no usage yet, or
 #   - the budget has not been reached.
 # Budget: AUTOPILOT_CONTEXT_BUDGET env, else "contextBudget" in .claude/autopilot.json,
-# else 250000 tokens. Reminders repeat at most every AUTOPILOT_BUDGET_REMIND_EVERY (default
+# else 500000 tokens. Reminders repeat at most every AUTOPILOT_BUDGET_REMIND_EVERY (default
 # 10) tool calls after the first hit, tracked in a marker file per agent (per session in a
 # standalone run).
 set -uo pipefail
@@ -68,7 +70,7 @@ budget="${AUTOPILOT_CONTEXT_BUDGET:-}"
 if [ -z "$budget" ]; then
   budget="$(jq -r '.contextBudget // empty' "$CONFIG" 2>/dev/null)"
 fi
-budget="${budget:-250000}"
+budget="${budget:-500000}"
 remind_every="${AUTOPILOT_BUDGET_REMIND_EVERY:-10}"
 
 # Context per API response = input + cache_creation + cache_read. One response is written as
@@ -87,6 +89,14 @@ ctx="$(tail -n 400 "$transcript" 2>/dev/null \
 case "$ctx" in
   ''|*[!0-9]*) echo '{}'; exit 0;;
 esac
+
+# Status line for the runner (mission-control status, autopilot-watchdog): one line,
+# rewritten after every tool call of the main run; a subagent's calls add its id.
+# Runtime file, gitignored by init; never committed.
+tool="$(printf '%s' "$input" | jq -r '.tool_name // "?"' 2>/dev/null)"
+status_file="$PROJECT_DIR/.claude/.autopilot-status"
+printf '%s ctx=%s tool=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ctx" "$tool" "${agent:+ agent=$agent}" >"$status_file.tmp" 2>/dev/null \
+  && mv -f "$status_file.tmp" "$status_file" 2>/dev/null
 
 [ "$ctx" -ge "$budget" ] || { echo '{}'; exit 0; }
 

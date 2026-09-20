@@ -18,5 +18,5 @@ docs/autopilot/
 - **YYYY-MM-DD HH:MM** - <title> - <one line> - [PR](<url>) [→](./sessions/<slug>/REPORT.md)
 ```
 
-Runtime files that are never committed: `.claude/.autopilot-active` (sentinel),
+Runtime files that are never committed: `.claude/.autopilot-active` (sentinel), `.claude/.autopilot-status`,
 `.claude/autopilot-gate.log`, `.claude/.autopilot-gate-blocks`.

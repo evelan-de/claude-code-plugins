@@ -19,20 +19,20 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
 | `paused` | One date, `YYYY-MM-DD` (local time): the schedule is paused through that day. Written by `pause`, removed by `resume` or by the first scheduled run after the date. See "Pause the schedule". |
-| `force-once` | Written by `kickstart`; the next scheduled run consumes it and goes ahead although a pause is set. |
-| `host` | Not read by the script. Exists only on a machine that does NOT run the queue and holds the SSH alias of the one that does (`office-mini`); the `/mission-control` skill then runs every command over SSH, without it locally. |
+| `force-once` | Written by `start`; the next scheduled run consumes it and goes ahead although a pause is set. |
+| `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well: Andreas' MacBook does, with an empty `repos.txt` so labelled PRs are processed by the Mini only. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
 `SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet), `MISSION_CONTROL_EFFORT`
 (medium; a plan's `Effort:` header wins over this default, an `MISSION_CONTROL_EFFORT` set in
 the environment wins over the plan), `MISSION_CONTROL_ADVISOR` (fable),
 `MISSION_CONTROL_FALLBACK_MODEL` (opus), `MISSION_CONTROL_BUDGET_USD` (60 per run),
-`MISSION_CONTROL_MAX_RESTARTS` (3), `MISSION_CONTROL_TIMEOUT_MIN` (240 per item, restarts
+`MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per item, restarts
 included), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
 ## Not on this machine?
 
-The queue commands (`run`, `list`, `add`, `status`, `stop`, `retry`, `log`, `kickstart`,
+The queue commands (`run`, `list`, `add`, `status`, `stop`, `retry`, `log`, `start`,
 `pause`, `resume`) refuse
 with exit 3 when `~/.claude/mission-control` does not exist: the machine has no queue. The
 message points to the office Mini and to the developer's way in (`/autopilot-plan`, draft PR
@@ -55,20 +55,26 @@ mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autop
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
 mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run today / through that day / for N days
 mission-control resume                    # lift the pause
-mission-control install-schedule 22:00    # LaunchAgent, daily at that time (macOS), runs "run --scheduled"
+mission-control start                     # run now, inside the GUI session; installs the LaunchAgent on demand; refuses while a run is active
+mission-control install-schedule [22:00]  # LaunchAgent (macOS), daily at that time, or on demand only without a time; runs "run --scheduled"
 mission-control uninstall-schedule
-mission-control kickstart                 # run the installed LaunchAgent now, inside the GUI session; refuses while a run is active
 ```
 
 `status` exits 0 and prints, in this order: `running: <repo basename> <item> (attempt N,
-since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `running: none`;
+since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `running: none`,
+and for a running item three indented lines: `package: <the [~] line of the item's PLAN.md>`
+(or `none marked [~]`), `run: <ISO time> ctx=<tokens> tool=<name>` (the line the run's
+context-budget hook rewrites after every tool call, `.claude/.autopilot-status` in the
+worktree; `no status line yet` before the first) and `diff since base: <git diff --shortstat
+against the merge-base>`;
 `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
 (a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
 token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
 session)` replace the counts, see "Over SSH"); `last done:` with the
 last five `done.txt` lines; `schedule: installed at HH:MM, active`, `schedule: installed at
-HH:MM, paused until <date>` (time read from the plist, date from `paused`), `schedule:
-installed at HH:MM (legacy, ignores pause)` plus the warning line described under "Pause the
+HH:MM, paused until <date>` (time read from the plist, date from `paused`), `schedule: on
+demand only ("mission-control start"), no nightly run` (a LaunchAgent without a time),
+`schedule: installed at HH:MM (legacy, ignores pause)` plus the warning line described under "Pause the
 schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `lock: held by
 pid N`, `free`, or `stale` when the recorded pid is dead. No secrets: the env file is never
 printed.
@@ -94,15 +100,15 @@ normalisation the file names use (`#12` becomes `_12`, a session directory its b
 `log 12` never matches a date. Item logs only; `queue.log` and `launchd.log` are read
 directly.
 
-`kickstart` runs `launchctl kickstart gui/<uid>/de.evelan.mission-control`: the installed
-LaunchAgent starts a `run` now, inside the GUI session, so the Keychain login is readable
-even when the command arrives over SSH. It refuses with exit 1 while a run is active
-(`a run is active (pid N, <item>), stop it first`) and when no schedule is installed
-(`no schedule installed; run "mission-control install-schedule HH:MM" once, or start
-"mission-control run" in a Terminal on this Mac`). Output goes to `logs/launchd.log`; follow
-it with `log` once an item log exists. It works during a pause: it writes `force-once`
-before the `launchctl kickstart`, so that one scheduled run goes ahead and the pause stays
-for the following nights. A refused kickstart writes nothing.
+`start` runs `launchctl kickstart gui/<uid>/de.evelan.mission-control`: the LaunchAgent
+starts a `run` now, inside the GUI session, so the Keychain login is readable even when the
+command arrives over SSH. No LaunchAgent installed → it installs one without a schedule
+first (`install-schedule` with no time: the plist has no `StartCalendarInterval`, so it only
+runs on `start`). It refuses with exit 1 while a run is active (`a run is active (pid N,
+<item>), stop it first`). Output goes to `logs/launchd.log`; follow it with `log` once an
+item log exists. It works during a pause: it writes `force-once` before the `launchctl
+kickstart`, so that one scheduled run goes ahead and the pause stays for the following
+nights. A refused start writes nothing. `kickstart` is the old name and does the same.
 
 `labels` is the one source of truth for the three labels (`autopilot-ready` 0E8A16,
 `autopilot-done` 1D76DB, `autopilot-blocked` B60205, each with a description). It prints
@@ -118,8 +124,11 @@ the branch at whose tip it was last touched (`git log --all`, after a fetch), el
 branch. Pass the branch explicitly when you know better. A ticket key or topic gets no branch
 column and runs from the default branch.
 
-## Two ways in
+## Three ways in
 
+0. **From a Claude session on a machine with a queue.** `/autopilot <session dir>` runs
+   `mission-control add <repo> <session dir>` and `mission-control start`; the run happens
+   in the background, chained by the runner, never in that session.
 1. **The list.** `/autopilot-plan` for the topic, then
    `mission-control add ~/dev/projects/paul docs/autopilot/sessions/2026-09-20-PAUL-2801-export`.
    A plan on a feature branch works: `add` records the branch and the run checks it out.
@@ -147,8 +156,10 @@ column and runs from the default branch.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    --fallback-model <fallback> --permission-mode auto --max-budget-usd <budget> --output-format json`.
-   Every `WATCH_MIN` minutes `autopilot-watchdog` checks for a new commit or plan change;
-   four stalls in a row kill the run (`stalled` in the log). The wall-clock timeout kills it
+   Every `WATCH_MIN` minutes `autopilot-watchdog` checks for a new commit, a plan change or a
+   change of the run's status file (`.claude/.autopilot-status`, rewritten by the
+   context-budget hook after every tool call); four stalls in a row (no tool call, no commit, no plan change
+   for 4 × `WATCH_MIN`) kill the run (`stalled` in the log). The wall-clock timeout kills it
    too (`timeout`). A kill is SIGTERM to the claude process, SIGKILL after 10 s; a child of a
    tool call (dev server, test runner) may survive it.
 5. After the exit it looks for the item's session directory: the item itself when it is one,
@@ -167,8 +178,9 @@ column and runs from the default branch.
    the cause. A failing `gh pr ready`, `pr edit` or `pr comment` is said on stdout and
    recorded as `labels-failed` in `done.txt` and the notification (the run itself still
    counts as `done` or `blocked`).
-7. Appends to `done.txt`, removes the line from `queue.txt`, notifies (macOS notification;
-   Slack when `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
+7. Appends to `done.txt`, removes the line from `queue.txt`, notifies (macOS notification
+   with a sound: Glass for `done`, Sosumi with the reason for everything else; Slack when
+   `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
@@ -252,7 +264,7 @@ nightly job ignores the pause` with the time read from the plist; `status` shows
 pause file is still written; reinstalling the schedule makes it count.
 
 What a pause does not do: a manual `mission-control run` (no flag) ignores it entirely, and
-`kickstart` overrides it once: it writes `force-once`, which the scheduled run it starts
+`start` overrides it once: it writes `force-once`, which the scheduled run it starts
 consumes at its start (and which a scheduled run removes at its end in any case), so a
 "start now" during a pause works and the pause still holds for the following nights.
 

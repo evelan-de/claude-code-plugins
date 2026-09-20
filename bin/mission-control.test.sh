@@ -220,7 +220,7 @@ out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(b) run exits 0" [ "$got" -eq 0 ]
 check "(b) claude called twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
 check "(b) done with restarts=1" grep -q " PAUL-2 done .* restarts=1" "$QH/done.txt"
-check "(b) restart announced" has "hand-off found, restart 1/3" "$out"
+check "(b) restart announced" has "hand-off found, restart 1/5" "$out"
 
 # ---------- (c) HANDOFF.md every time -> handoff-limit ----------
 fresh_home c
@@ -467,6 +467,10 @@ out="$(PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"; got=$?
 check "(i) run exits 0 with notifications on" [ "$got" -eq 0 ]
 check "(i) Slack webhook was called" has "SECRETXYZ" "$(cat "$REC/curl.args" 2>/dev/null)"
 check "(i) macOS notification was sent" has "PAUL-7: done" "$(cat "$REC/osascript.args" 2>/dev/null)"
+check "(i) done notification plays Glass" has 'sound name "Glass"' "$(cat "$REC/osascript.args" 2>/dev/null)"
+printf '%s PAUL-7b\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-blocked PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+check "(i) blocked notification carries the reason and plays Sosumi" has "PAUL-7b: blocked: cannot reach the API" "$(grep Sosumi "$REC/osascript.args" 2>/dev/null)"
 check "(i) stdout never contains the webhook URL" lacks "SECRETXYZ" "$out"
 check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/logs/*.log)"
 printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
@@ -597,6 +601,19 @@ out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
 check "(q) status exits 0" [ "$got" -eq 0 ]
 check "(q) status shows the running item with attempt and phase" has "running: proj PAUL-50 (attempt 1, since " "$out"
 check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort medium)" "$out"
+check "(q) status: no package line for a ticket item" has "  package: none marked [~]" "$out"
+check "(q) status: run line before the hook wrote one" has "  run: no status line yet" "$out"
+check "(q) status: diff line" has "  diff since base: " "$out"
+qwt="$QH/worktrees/proj-PAUL-50"
+mkdir -p "$qwt/.claude" "$qwt/docs/autopilot/sessions/2026-09-20-PAUL-50-x"
+echo "2026-09-20T22:00:00Z ctx=123456 tool=Edit" >"$qwt/.claude/.autopilot-status"
+printf '# PLAN\n### P1 [x] done thing\n### P2 [~] the current package\n### P3 [ ] later\n' >"$qwt/docs/autopilot/sessions/2026-09-20-PAUL-50-x/PLAN.md"
+echo new >"$qwt/new-file.txt"
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' proj docs/autopilot/sessions/2026-09-20-PAUL-50-x 1 "$(date +%s)" "$QH/logs/x.log" "$qwt" >"$QH/run.lock/current"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(q) status: current package from PLAN.md" has "  package: P2 [~] the current package" "$out"
+check "(q) status: run line from the hook's status file" has "  run: 2026-09-20T22:00:00Z ctx=123456 tool=Edit" "$out"
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' proj PAUL-50 1 "$(date +%s)" "$QH/logs/x.log" "$qwt" >"$QH/run.lock/current"
 check "(q) status counts the queue" has "queue: 4 items" "$out"
 check "(q) status lists the next three lines only" [ "$(printf '%s\n' "$out" | grep -c "^  $proj PAUL-5")" = 3 ]
 check "(q) status counts the labelled PRs per repo" has "labelled PRs: 1 (proj 1)" "$out"
@@ -662,11 +679,6 @@ out="$(sh "$TOOL" log PAUL-54 2>&1)"; got=$?
 check "(q2) log still finds the stopped item's log" [ "$got" -eq 0 ]
 kill -9 "$cpid" 2>/dev/null
 export MISSION_CONTROL_WATCH_MIN=0
-if [ "$(uname)" = Darwin ]; then
-  out="$(HOME="$fakehome" sh "$TOOL" kickstart 2>&1)"; got=$?
-  check "(q2) kickstart without a schedule exits 1" [ "$got" -eq 1 ]
-  check "(q2) kickstart without a schedule explains both ways" has 'no schedule installed; run "mission-control install-schedule HH:MM" once, or start "mission-control run" in a Terminal on this Mac' "$out"
-fi
 
 # ---------- (r) retry: a PR gets its label back, an item is queued again ----------
 fresh_home r
@@ -748,7 +760,7 @@ check "(s2) log PAUL-70 finds the older log" has "20261212-121212-PAUL-70.log" "
 out="$(sh "$TOOL" bogus 2>&1)"
 check "(s) unknown command lists the new commands" has "status | stop | retry | log" "$out"
 out="$(sh "$TOOL" help 2>&1)"
-check "(s) usage mentions kickstart" has "kickstart" "$out"
+check "(s) usage mentions start" has "mission-control start" "$out"
 
 # ---------- (t) pause: scheduled runs skip, manual runs go on ----------
 today="$(date +%Y-%m-%d)"
@@ -894,14 +906,24 @@ EOF
   out="$(sh "$TOOL" run --scheduled 2>&1)"
   check "(t2) the kickstarted scheduled run processed the item" grep -q " PAUL-84 done " "$QH/done.txt"
   check "(t2) force-once consumed by that run" [ ! -e "$QH/force-once" ]
-  rm -f "$plist"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
-  check "(t2) kickstart without a schedule still exits 1" [ "$got" -eq 1 ]
-  check "(t2) refused kickstart wrote no force-once" [ ! -e "$QH/force-once" ]
+  rm -f "$plist"; : >"$REC/launchctl.args"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" start 2>&1)"; got=$?
+  check "(t2) start without a schedule exits 0" [ "$got" -eq 0 ]
+  check "(t2) start installed the LaunchAgent on demand" [ -f "$plist" ]
+  check "(t2) on-demand plist has no StartCalendarInterval" bash -c '! grep -q StartCalendarInterval "$1"' _ "$plist"
+  check "(t2) on-demand plist still runs run --scheduled" grep -q '<string>run</string><string>--scheduled</string>' "$plist"
+  check "(t2) start booted out, bootstrapped, then kickstarted" [ "$(sed -n '1p;2p;3p' "$REC/launchctl.args" | cut -d' ' -f1 | tr '\n' ' ')" = "bootout bootstrap kickstart " ]
+  check "(t2) start wrote force-once" [ -e "$QH/force-once" ]
+  check "(t2) start says where the output goes" has 'started: de.evelan.mission-control runs now in the GUI session' "$out"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" status 2>&1)"
+  check "(t2) status shows the on-demand schedule" has 'schedule: on demand only ("mission-control start"), no nightly run' "$out"
+  rm -f "$QH/force-once"
   mkdir -p "$QH/run.lock"; echo "$$" >"$QH/run.lock/pid"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" start 2>&1)"; got=$?
+  check "(t2) start during a run exits 1" [ "$got" -eq 1 ]
+  check "(t2) refused start (active run) wrote no force-once" [ ! -e "$QH/force-once" ]
   out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
-  check "(t2) kickstart during a run exits 1" [ "$got" -eq 1 ]
-  check "(t2) refused kickstart (active run) wrote no force-once" [ ! -e "$QH/force-once" ]
+  check "(t2) kickstart is an alias of start (refused the same way)" [ "$got" -eq 1 ]
   rm -rf "$QH/run.lock"
 fi
 

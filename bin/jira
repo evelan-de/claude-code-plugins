@@ -1,0 +1,217 @@
+#!/bin/sh
+# jira - the four ticket operations an autopilot run needs, without an MCP server.
+#
+# usage: jira doctor
+#        jira view <KEY>
+#        jira start <KEY>                 # transition to the start status, assign to the token owner
+#        jira comment <KEY> <text | ->    # plain text; "-" reads the body from stdin
+#        jira transition <KEY> <status>   # by the target status name, case-insensitive
+#        jira assign <KEY> [me | <accountId>]
+#
+# Config: $JIRA_HOME/env (default ~/.claude/jira/env), mode 600, shell assignments:
+#   JIRA_SITE=https://evelan.atlassian.net
+#   JIRA_EMAIL=you@example.com
+#   JIRA_TOKEN=<Atlassian API token>
+#   JIRA_START_STATUS="In Progress|In Arbeit"   # optional, the targets "start" accepts, "|"-separated
+# Environment variables of the same names override the file.
+#
+# Jira Cloud REST v2. Every write reads the issue back and prints the resulting state.
+# The token never appears on a command line or in output: curl reads it from a temporary
+# mode-600 config file. Exit 1 on any failure, 2 on usage errors.
+# POSIX sh. Dependencies: curl, jq. Test hook: CURL_BIN (a fake curl).
+set -u
+
+JHOME="${JIRA_HOME:-$HOME/.claude/jira}"
+ENVFILE="$JHOME/env"
+CURL_BIN="${CURL_BIN:-curl}"
+
+usage() { sed -n '4,10p' "$0" | sed 's/^# //; s/^#//'; exit 2; }
+die() { echo "jira: $*" >&2; exit 1; }
+
+load_env() {
+  for v in JIRA_SITE JIRA_EMAIL JIRA_TOKEN JIRA_START_STATUS; do
+    eval "keep=\${$v:-}"
+    [ -n "$keep" ] && eval "keep_$v=\$keep"
+  done
+  if [ -f "$ENVFILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ENVFILE"
+  fi
+  for v in JIRA_SITE JIRA_EMAIL JIRA_TOKEN JIRA_START_STATUS; do
+    eval "keep=\${keep_$v:-}"
+    [ -n "$keep" ] && eval "$v=\$keep"
+  done
+  JIRA_SITE="${JIRA_SITE:-}"; JIRA_EMAIL="${JIRA_EMAIL:-}"; JIRA_TOKEN="${JIRA_TOKEN:-}"
+  JIRA_START_STATUS="${JIRA_START_STATUS:-In Progress|In Arbeit}"
+  JIRA_SITE="${JIRA_SITE%/}"
+}
+
+need_env() {
+  load_env
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  [ -n "$JIRA_SITE" ] && [ -n "$JIRA_EMAIL" ] && [ -n "$JIRA_TOKEN" ] \
+    || die "no Jira credentials: write JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into $ENVFILE (chmod 600)"
+}
+
+# req <method> <path> [json body]: prints the response body; returns 1 on a non-2xx status
+# or a transport failure (the status and the first line of the body go to stderr).
+req() {
+  r_method="$1"; r_path="$2"; r_body="${3:-}"
+  r_cfg="$(mktemp "${TMPDIR:-/tmp}/jira.XXXXXX")" || die "mktemp failed"
+  chmod 600 "$r_cfg"
+  {
+    printf 'user = "%s:%s"\n' "$JIRA_EMAIL" "$JIRA_TOKEN"
+    printf 'silent\nshow-error\nmax-time = 30\n'
+    printf 'header = "Accept: application/json"\n'
+    printf 'header = "Content-Type: application/json"\n'
+    printf 'request = "%s"\n' "$r_method"
+    printf 'write-out = "\\n%%{http_code}"\n'
+    printf 'url = "%s%s"\n' "$JIRA_SITE" "$r_path"
+  } >"$r_cfg"
+  r_data=""
+  if [ -n "$r_body" ]; then
+    r_data="$(mktemp "${TMPDIR:-/tmp}/jira.XXXXXX")" || die "mktemp failed"
+    printf '%s' "$r_body" >"$r_data"
+  fi
+  # the body comes with the status code as its last line; split them
+  if [ -n "$r_data" ]; then
+    r_out="$("$CURL_BIN" -K "$r_cfg" --data-binary "@$r_data" 2>&1)"
+  else
+    r_out="$("$CURL_BIN" -K "$r_cfg" 2>&1)"
+  fi
+  r_rc=$?
+  rm -f "$r_cfg" "$r_data"
+  [ "$r_rc" -eq 0 ] || { echo "jira: curl failed ($r_method $r_path): $(printf '%s' "$r_out" | head -n 1)" >&2; return 1; }
+  r_code="$(printf '%s' "$r_out" | tail -n 1)"
+  r_resp="$(printf '%s' "$r_out" | sed '$d')"
+  case "$r_code" in
+    2[0-9][0-9]) printf '%s\n' "$r_resp"; return 0 ;;
+    *) echo "jira: HTTP $r_code on $r_method $r_path: $(printf '%s' "$r_resp" | jq -r '.errorMessages[0] // .errors // .' 2>/dev/null | head -n 1)" >&2; return 1 ;;
+  esac
+}
+
+key_arg() {
+  case "${1:-}" in
+    [A-Z]*-[0-9]*) printf '%s\n' "$1" ;;
+    *) die "not a ticket key: '${1:-}' (expected e.g. WEB-1102)" ;;
+  esac
+}
+
+# issue_line <KEY>: "<KEY>  <status>  <assignee or unassigned>  <summary>"
+issue_line() {
+  il="$(req GET "/rest/api/2/issue/$1?fields=summary,status,assignee")" || return 1
+  printf '%s' "$il" | jq -r --arg k "$1" '"\($k)  \(.fields.status.name)  \(.fields.assignee.displayName // "unassigned")  \(.fields.summary)"'
+}
+
+cmd_doctor() {
+  load_env
+  d_fail=0
+  ok() { echo "ok   - $*"; }
+  bad() { echo "FAIL - $*"; d_fail=1; }
+  if command -v jq >/dev/null 2>&1; then ok "jq"; else bad "jq not found"; fi
+  if command -v "$CURL_BIN" >/dev/null 2>&1; then ok "curl"; else bad "curl not found"; fi
+  if [ -f "$ENVFILE" ]; then
+    d_mode="$(stat -f %Lp "$ENVFILE" 2>/dev/null || stat -c %a "$ENVFILE" 2>/dev/null)"
+    if [ "$d_mode" = 600 ]; then ok "$ENVFILE (mode 600)"; else bad "$ENVFILE has mode ${d_mode:-?}, expected 600 (chmod 600 $ENVFILE)"; fi
+  else
+    bad "$ENVFILE missing (JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN; chmod 600)"
+  fi
+  for v in JIRA_SITE JIRA_EMAIL JIRA_TOKEN; do
+    eval "val=\${$v:-}"
+    if [ -n "$val" ]; then ok "$v set"; else bad "$v not set"; fi
+  done
+  if [ "$d_fail" -eq 0 ]; then
+    d_me="$(req GET /rest/api/2/myself)" && ok "login: $(printf '%s' "$d_me" | jq -r '.displayName') ($(printf '%s' "$d_me" | jq -r '.accountId'))" || bad "login failed (see above)"
+  fi
+  [ "$d_fail" -eq 0 ]
+}
+
+cmd_view() {
+  need_env
+  v_key="$(key_arg "${1:-}")" || exit 1
+  v_json="$(req GET "/rest/api/2/issue/$v_key?fields=summary,status,assignee,description")" || exit 1
+  printf '%s' "$v_json" | jq -r --arg k "$v_key" '"\($k)  \(.fields.status.name)  \(.fields.assignee.displayName // "unassigned")  \(.fields.summary)\n\n\(.fields.description // "(no description)")"'
+}
+
+# transition_to <KEY> <target status names, "|"-separated>: performs the first transition
+# whose target status matches one of the names (case-insensitive). Prints nothing; the
+# caller reads the issue back. Exit 1 with the available targets when none matches.
+transition_to() {
+  tt_key="$1"; tt_names="$2"
+  tt_list="$(req GET "/rest/api/2/issue/$tt_key/transitions")" || return 1
+  tt_id="$(printf '%s' "$tt_list" | jq -r --arg names "$tt_names" '
+    ($names | ascii_downcase | split("|")) as $want
+    | [ .transitions[] | select((.to.name | ascii_downcase) as $t | $want | index($t)) ] | .[0].id // empty')"
+  if [ -z "$tt_id" ]; then
+    echo "jira: $tt_key has no transition to '$tt_names'; available targets: $(printf '%s' "$tt_list" | jq -r '[.transitions[].to.name] | join(", ")')" >&2
+    return 1
+  fi
+  req POST "/rest/api/2/issue/$tt_key/transitions" "$(jq -cn --arg id "$tt_id" '{transition: {id: $id}}')" >/dev/null || return 1
+}
+
+cmd_transition() {
+  need_env
+  t_key="$(key_arg "${1:-}")" || exit 1
+  [ -n "${2:-}" ] || die "usage: jira transition <KEY> <status>"
+  transition_to "$t_key" "$2" || exit 1
+  t_line="$(issue_line "$t_key")" || exit 1
+  echo "transitioned: $t_line"
+}
+
+assign_to() {
+  at_key="$1"; at_id="$2"
+  req PUT "/rest/api/2/issue/$at_key/assignee" "$(jq -cn --arg id "$at_id" '{accountId: $id}')" >/dev/null
+}
+
+my_account() {
+  ma="$(req GET /rest/api/2/myself)" || return 1
+  printf '%s' "$ma" | jq -r '.accountId'
+}
+
+cmd_assign() {
+  need_env
+  a_key="$(key_arg "${1:-}")" || exit 1
+  a_who="${2:-me}"
+  if [ "$a_who" = me ]; then a_who="$(my_account)" || exit 1; fi
+  assign_to "$a_key" "$a_who" || exit 1
+  a_line="$(issue_line "$a_key")" || exit 1
+  echo "assigned: $a_line"
+}
+
+cmd_start() {
+  need_env
+  s_key="$(key_arg "${1:-}")" || exit 1
+  s_before="$(req GET "/rest/api/2/issue/$s_key?fields=status")" || exit 1
+  s_status="$(printf '%s' "$s_before" | jq -r '.fields.status.name | ascii_downcase')"
+  s_already=""
+  case "|$(printf '%s' "$JIRA_START_STATUS" | tr 'A-Z' 'a-z')|" in *"|$s_status|"*) s_already=1 ;; esac
+  if [ -z "$s_already" ]; then transition_to "$s_key" "$JIRA_START_STATUS" || exit 1; fi
+  s_me="$(my_account)" || exit 1
+  assign_to "$s_key" "$s_me" || exit 1
+  s_line="$(issue_line "$s_key")" || exit 1
+  echo "started: $s_line${s_already:+ (was already in that status)}"
+}
+
+cmd_comment() {
+  need_env
+  c_key="$(key_arg "${1:-}")" || exit 1
+  [ -n "${2:-}" ] || die "usage: jira comment <KEY> <text | ->"
+  if [ "$2" = - ]; then c_text="$(cat)"; else c_text="$2"; fi
+  [ -n "$c_text" ] || die "empty comment"
+  c_resp="$(req POST "/rest/api/2/issue/$c_key/comment" "$(jq -cn --arg b "$c_text" '{body: $b}')")" || exit 1
+  c_id="$(printf '%s' "$c_resp" | jq -r '.id // empty')"
+  [ -n "$c_id" ] || die "comment on $c_key: no id in the response"
+  echo "commented: $c_key comment $c_id ($(printf '%s' "$c_text" | wc -c | tr -d ' ') bytes)"
+}
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  doctor) cmd_doctor ;;
+  view) cmd_view "$@" ;;
+  start) cmd_start "$@" ;;
+  comment) cmd_comment "$@" ;;
+  transition) cmd_transition "$@" ;;
+  assign) cmd_assign "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "jira: unknown command: $cmd" >&2; usage ;;
+esac
