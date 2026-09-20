@@ -101,3 +101,63 @@ context limiter is now an explicit hand-off:
   `question-with-docs` before `mission-control` is the recorded rule, `handoff` is the
   interactive hand-off, `code-review` supplies the standards axis the reviewer runs on
   request.
+
+## Follow-up (plugin 1.9.0, same evening): where the tokens of a real session go
+
+Measured with the new `bin/autopilot-usage` on the local-recording session (MacBook, plugin
+1.8.2 hook, one package plus its hand-off continuation, still running when measured):
+
+| agent | turns | first ctx | last ctx | cache reads | output |
+| --- | --- | --- | --- | --- | --- |
+| coordinator | 135 | 106k | 262k | 22.7M | 246k |
+| Explore | 57 | 36k | 153k | 5.2M | 18k |
+| plan reviewer (general-purpose) | 57 | 82k | 184k | 6.6M | 20k |
+| lead P1 | 166 | 63k | 258k | 29.5M | 88k |
+| reviewer | 48 | 42k | 98k | 3.5M | 10k |
+| lead P1 continuation | 13 | 63k | 88k | 0.9M | 3k |
+
+The evelan-slides session (office Mini, three packages in, 942 turns, 147M cache reads):
+coordinator 235 turns, 111k → 358k, 61M cache reads (42% of the session), 311k at the
+first lead dispatch; Explore 129 turns, 56k → 220k, 19M; the three leads 2.7M, 12M and
+24M; the two reviewers 2M each. The lead for WP2 ran to 336k without a hand-off because
+the budget stood at 650k at the time. Several agents show one-off `max_ctx` records far
+above their neighbours (coordinator 612k, Explore 420k), which is why the hook takes the
+minimum of the last three records.
+
+The fixed hook fired in the local-recording session on the lead's own transcript at 252k
+(`measured from agent-a5c3….jsonl`), the lead wrote `HANDOFF.md`, and mission control
+dispatched the continuation lead with it: the hand-off works end to end.
+
+Findings and what 1.9.0 does about them:
+
+1. **The base every agent carries.** A lead starts at 49-63k tokens before it has read a
+   single project file. Of that, the user-controlled part is: plugin skill and agent
+   descriptions listed in every system prompt (~7.5k tokens across 17 installed plugins;
+   `vercel` 3.2k, `figma` 1.6k, `pr-review-toolkit` 1.0k, `superpowers` 0.5k, `evelan` 0.4k),
+   the global `CLAUDE.md` (~5.6k tokens) and the project `CLAUDE.md` (local-recording:
+   ~12k tokens). The rest is the harness prompt and built-in tools. Disabling the plugins a
+   machine does not use and condensing both `CLAUDE.md` files saves 10-15k tokens per turn
+   of every agent, roughly 8% of a lead's average context. That is the user's housekeeping,
+   outside the plugin; the numbers are here so it can be decided.
+2. **The plan is read whole, several times.** `PLAN.md` was 480-513 lines; a lead read it in
+   full one to three times per dispatch, the plan reviewer and Codex read it as well. 1.9.0
+   splits it: `PLAN.md` is the short index (scope, goal artifact, decisions, package list
+   with statuses, aim under 150 lines) and each package has `packages/<id>.md`; a lead reads
+   exactly `PLAN.md`, its package file and `DIGEST.md`, the reviewer gets the package file.
+   Expected saving: 5-10k tokens per dispatch plus fewer re-reads.
+3. **The Explore agent dumps files.** 83 `cat -n` calls, 36k → 153k (local-recording) and
+   56k → 220k (evelan-slides). Its prompt carried no reading rules. 1.9.0 puts the rules
+   into the mission-control and autopilot instructions for the Explore prompt and the
+   plan-review prompt (grep to locate, sed slices of at most ~80 lines, paths and line
+   references instead of contents, digest under ~2000 words).
+4. **A planner subagent for mission control: measured, not built.** The coordinator carried
+   241k (local-recording) and 291k (evelan-slides) into the first lead dispatch, i.e.
+   planning costs it 130-180k of context for the rest of the run. But most coordinator
+   turns ARE planning turns (about 110 of 135 in local-recording); after the first dispatch
+   it made ~25 turns. Moving planning into a subagent would save those ~25 turns × ~130k ≈
+   3M cache-read tokens of 68M in the session, about 4%; in evelan-slides (65 post-planning
+   turns × ~200k) about 13M of 147M, 9%. Not worth the restructuring at this stage;
+   re-measure when sessions run 8+ packages and the coordinator's post-planning share grows. `autopilot-usage` prints the figure ("coordinator context at the first
+   autopilot-lead dispatch") so every session answers this question itself.
+5. **Truncating outputs was proposed and rejected** (Andreas: cut-off output is missing
+   information, not saved tokens). Reading discipline stays a rule, not a filter.
