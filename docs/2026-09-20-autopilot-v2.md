@@ -28,22 +28,24 @@ That is a queue, not a coordinating model.
    exercised for real, `REPORT.md`, PR with CI watched. Hand-off through `HANDOFF.md` when the
    context-budget hook fires; a fresh session resumes. No implementer sub-agent, no
    orchestrated modes, no per-package reviews.
-3. **`autopilot-queue`** (a script): runs prepared sessions one after another. Design below;
-   format to be agreed with Andreas before it is built.
+3. **`mission-control`** (a script): runs prepared sessions one after another. Design below;
+   format to be agreed with Andreas before it is built. Built first under a queue name,
+   renamed 2026-09-20: the name mission control now belongs to the queue script (and its
+   `/mission-control` skill), no longer to a coordinating model.
 
-Removed in 2.0: `mission-control`, `autopilot-lead`, `autopilot-implementer`,
-`autopilot-planner`. Kept: `autopilot-reviewer`, `autopilot-plan-reviewer`, the four hooks,
+Removed in 2.0: the mission-control coordinating model, `autopilot-lead`,
+`autopilot-implementer`, `autopilot-planner`. Kept: `autopilot-reviewer`, `autopilot-plan-reviewer`, the four hooks,
 `autopilot-watchdog` (the queue's stall detector), `autopilot-usage`.
 
-## Queue design (built 2026-09-20 as `bin/autopilot-queue`)
+## Queue design (built 2026-09-20 as `bin/mission-control`)
 
-User documentation, file formats and commands: `skills/autopilot/references/queue.md`. In
-short: `~/.claude/autopilot-queue/queue.txt` (`<repo> <item> [<branch>]`, one per line) plus
+User documentation, file formats and commands: `skills/autopilot/references/mission-control.md`. In
+short: `~/.claude/mission-control/queue.txt` (`<repo> <item> [<branch>]`, one per line) plus
 every open PR labelled `autopilot-ready` in the repos of `repos.txt`; results in `done.txt`,
 on the PR and in Slack.
 
-**Per item** the script (`bin/autopilot-queue`, built 2026-09-20; user docs in
-`skills/autopilot/references/queue.md`):
+**Per item** the script (`bin/mission-control`, built 2026-09-20; user docs in
+`skills/autopilot/references/mission-control.md`):
 
 1. creates a worktree from the PR branch (label items) or from the repo's default branch
    (list items), reusing the worktree of a continuation;
@@ -62,12 +64,12 @@ on the PR and in Slack.
 5. notifies: macOS notification and a Slack message per finished or blocked item when a
    webhook is configured.
 
-**Sources:** the machine-wide list `~/.claude/autopilot-queue/queue.txt` and, per repo listed
+**Sources:** the machine-wide list `~/.claude/mission-control/queue.txt` and, per repo listed
 in `repos.txt`, every open PR with the label `autopilot-ready`. Developers produce the second
 kind without talking to Andreas: `/autopilot-plan <ticket or topic>` (a topic without a ticket
 gets its ticket created through the project's tracker), answer the questions, say "hand to the
 queue"; the skill pushes the branch and opens the draft PR with the label. Andreas' part is
-zero: the queue runs nightly on the office Mini (`autopilot-queue install-schedule 22:00`,
+zero: the queue runs nightly on the office Mini (`mission-control install-schedule 22:00`,
 a LaunchAgent in the GUI session so the Keychain login is readable) and the results arrive on
 the PR and in Slack.
 

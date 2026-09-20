@@ -128,8 +128,8 @@ fresh; printf '# Fake plugin\n\nSkills: alpha.\n' > "$P/README.md"; run
 check "skill missing from README" 1 "README.md: does not mention skill 'beta'" "$got" "$out"
 
 # 15. removed-concept mention
-fresh; echo "Old flow: mission-control decides." >> "$P/README.md"; run
-check "removed concept" 1 "README.md: line 4: removed concept \"mission-control\"" "$got" "$out"
+fresh; echo "Old flow: autopilot-lead decides." >> "$P/README.md"; run
+check "removed concept" 1 "README.md: line 4: removed concept \"autopilot-lead\"" "$got" "$out"
 
 # 16. excluded files are not scanned for evelan:/removed concepts
 fresh

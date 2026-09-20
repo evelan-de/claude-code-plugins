@@ -206,7 +206,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 7. removed concepts
-removed='mission-control|autopilot-lead|autopilot-implementer|autopilot-planner|DIGEST\.md|STATUS: incomplete|wayfinder|which-skill|wait-what|reflect-on-changes|\.scratch/|ready-for-agent|triage-backlog'
+removed='autopilot-lead|autopilot-implementer|autopilot-planner|DIGEST\.md|STATUS: incomplete|wayfinder|which-skill|wait-what|reflect-on-changes|\.scratch/|ready-for-agent|triage-backlog'
 removed_hits="$(
   { shipped_files
     [ -f README.md ] && echo README.md

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Tests for bin/autopilot-queue. Run: bash bin/autopilot-queue.test.sh
+# Tests for bin/mission-control. Run: bash bin/mission-control.test.sh
 # Fake claude, gh, curl and osascript scripts record their arguments; no network, no real runs.
 set -uo pipefail
 
 BIN="$(cd "$(dirname "$0")" && pwd)"
-TOOL="$BIN/autopilot-queue"
+TOOL="$BIN/mission-control"
 PASS=0; FAIL=0
 
 tmp="$(mktemp -d)"
@@ -129,14 +129,14 @@ git -C "$proj" push -q origin feat/PAUL-21-branchy
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
-export AUTOPILOT_QUEUE_WATCH_MIN=0 AUTOPILOT_QUEUE_NO_NOTIFY=1 AUTOPILOT_QUEUE_TIMEOUT_MIN=5
-unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS AUTOPILOT_QUEUE_EFFORT AUTOPILOT_QUEUE_MODEL
+export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
+unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
-# fresh_home <name>: new AUTOPILOT_QUEUE_HOME and record dir; sets QH and REC.
+# fresh_home <name>: new MISSION_CONTROL_HOME and record dir; sets QH and REC.
 fresh_home() {
   QH="$tmp/home-$1"; REC="$tmp/rec-$1"
   mkdir -p "$QH" "$REC"
-  export AUTOPILOT_QUEUE_HOME="$QH" FAKE_RECORD="$REC"
+  export MISSION_CONTROL_HOME="$QH" FAKE_RECORD="$REC"
 }
 
 # ---------- (a) text item, REPORT.md with Status: done -> done ----------
@@ -156,7 +156,7 @@ check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
 check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
 check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
-check "(a) progress lines on stdout" has "[autopilot-queue] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
+check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
 check "(a) log file written" ls "$QH"/logs/*-PAUL-1.log >/dev/null 2>&1
@@ -211,7 +211,7 @@ check "(b) restart announced" has "hand-off found, restart 1/3" "$out"
 
 # ---------- (c) HANDOFF.md every time -> handoff-limit ----------
 fresh_home c
-export FAKE_SCENARIO=handoff-always AUTOPILOT_QUEUE_MAX_RESTARTS=2
+export FAKE_SCENARIO=handoff-always MISSION_CONTROL_MAX_RESTARTS=2
 printf '%s PAUL-3\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(c) run exits 0" [ "$got" -eq 0 ]
@@ -219,7 +219,7 @@ check "(c) claude called 1 + MAX_RESTARTS times" [ "$(count_lines "$REC/claude.a
 check "(c) status handoff-limit in done.txt" grep -q " PAUL-3 handoff-limit " "$QH/done.txt"
 check "(c) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
 check "(c) worktree kept" [ -e "$QH/worktrees/proj-PAUL-3/.git" ]
-unset AUTOPILOT_QUEUE_MAX_RESTARTS
+unset MISSION_CONTROL_MAX_RESTARTS
 
 # ---------- (d) PR items from repos.txt, including a PR whose branch is missing ----------
 fresh_home d
@@ -373,7 +373,7 @@ check "(h) lock released after the run" [ ! -e "$QH/run.lock" ]
 # ---------- (i) no secret printed, curl failure logged with its exit code ----------
 fresh_home i
 export FAKE_SCENARIO=report
-unset AUTOPILOT_QUEUE_NO_NOTIFY
+unset MISSION_CONTROL_NO_NOTIFY
 secret="https://hooks.slack.com/services/T000/B000/SECRETXYZ"
 printf 'SLACK_WEBHOOK_URL=%s\n' "$secret" >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-7\n' "$proj" >"$QH/queue.txt"
@@ -386,7 +386,7 @@ check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/lo
 printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
 check "(i) curl failure logged with its exit code" grep -q "Slack webhook failed (curl exit 22)" "$QH"/logs/*-PAUL-8.log
-export AUTOPILOT_QUEUE_NO_NOTIFY=1
+export MISSION_CONTROL_NO_NOTIFY=1
 
 # ---------- (j) reused worktree: fetch and fast-forward before the retry ----------
 fresh_home j
@@ -416,7 +416,7 @@ check "(j) diverged worktree: item still processed" [ "$(grep -c "PAUL-9-thing b
 
 # ---------- (k) timeout kills the run ----------
 fresh_home k
-export FAKE_SCENARIO=sleep AUTOPILOT_QUEUE_TIMEOUT_MIN=0.02
+export FAKE_SCENARIO=sleep MISSION_CONTROL_TIMEOUT_MIN=0.02
 printf '%s PAUL-34\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
@@ -425,23 +425,23 @@ check "(k) status timeout in done.txt" grep -q " PAUL-34 timeout " "$QH/done.txt
 check "(k) reason names the wall-clock timeout" has "wall-clock timeout of 0.02 min" "$out"
 check "(k) fake claude killed" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
 kill -9 "$cpid" 2>/dev/null
-export AUTOPILOT_QUEUE_TIMEOUT_MIN=5
+export MISSION_CONTROL_TIMEOUT_MIN=5
 
 # ---------- (l) env precedence: environment over env file over default; effort from the plan ----------
 fresh_home l
 export FAKE_SCENARIO=report
-printf 'AUTOPILOT_QUEUE_MODEL=haiku\nAUTOPILOT_QUEUE_EFFORT=xhigh\nAUTOPILOT_QUEUE_FALLBACK_MODEL=sonnet\n' >"$QH/env"; chmod 600 "$QH/env"
+printf 'MISSION_CONTROL_MODEL=haiku\nMISSION_CONTROL_EFFORT=xhigh\nMISSION_CONTROL_FALLBACK_MODEL=sonnet\n' >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) env file beats the default (model haiku, effort xhigh, fallback sonnet)" has "--model haiku --effort xhigh --advisor fable --fallback-model sonnet" "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-AUTOPILOT_QUEUE_MODEL=sonnet AUTOPILOT_QUEUE_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_MODEL=sonnet MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
 check "(l) environment beats the env file" has "--model sonnet --effort low " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) Effort: high from PLAN.md beats the env file" has "--effort high " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
-AUTOPILOT_QUEUE_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
 check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tail -n 1 "$REC/claude.args")"
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
@@ -472,7 +472,7 @@ check "(n) queue.txt emptied" [ "$(live_lines "$QH/queue.txt")" = 0 ]
 # ---------- (o) env file mode warning on run and list ----------
 fresh_home o
 export FAKE_SCENARIO=report
-printf 'AUTOPILOT_QUEUE_BUDGET_USD=5\n' >"$QH/env"; chmod 644 "$QH/env"
+printf 'MISSION_CONTROL_BUDGET_USD=5\n' >"$QH/env"; chmod 644 "$QH/env"
 printf '%s PAUL-39\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" list 2>&1)"; got=$?
 check "(o) list warns once about the env mode" [ "$(printf '%s\n' "$out" | grep -c "has mode 644, want 600")" = 1 ]
@@ -493,6 +493,111 @@ check "(p) the failure is said" has "PAUL-40: gh pr edit (labels) failed" "$out"
 check "(p) the final line shows done labels-failed" has "PAUL-40: done labels-failed (PR" "$out"
 check "(p) the comment was still attempted" has "pr comment 7 --body-file" "$(cat "$REC/gh.args")"
 unset FAKE_GH_FAIL
+
+# ---------- (q) status while a run is active, then stop ----------
+fresh_home q
+export FAKE_SCENARIO=sleep
+fakehome="$tmp/fakehome-q"; mkdir -p "$fakehome"
+printf '%s PAUL-50\n%s PAUL-51\n%s PAUL-52\n%s PAUL-53\n' "$proj" "$proj" "$proj" "$proj" >"$QH/queue.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '2026-09-19T20:00:00Z %s PAUL-40 done https://github.com/e/r/pull/40\n' "$proj" >"$QH/done.txt"
+sh "$TOOL" run >"$REC/out" 2>&1 &
+runpid=$!
+for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
+sleep 0.5
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(q) status exits 0" [ "$got" -eq 0 ]
+check "(q) status shows the running item with attempt and phase" has "running: proj PAUL-50 (attempt 1, since " "$out"
+check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort medium)" "$out"
+check "(q) status counts the queue" has "queue: 4 items" "$out"
+check "(q) status lists the next three lines only" [ "$(printf '%s\n' "$out" | grep -c "^  $proj PAUL-5")" = 3 ]
+check "(q) status counts the labelled PRs per repo" has "labelled PRs: 1 (proj 1)" "$out"
+check "(q) status shows the last done lines" has "  2026-09-19T20:00:00Z $proj PAUL-40 done" "$out"
+check "(q) status says no schedule" has "schedule: not installed" "$out"
+check "(q) status names the lock holder" has "lock: held by pid $runpid" "$out"
+check "(q) status never prints the webhook variable" lacks "SLACK_WEBHOOK_URL" "$out"
+mkdir -p "$fakehome/Library/LaunchAgents"
+printf '<dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>5</integer></dict>\n' >"$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(q) status reads the schedule time from the plist" has "schedule: installed at 22:05" "$out"
+out="$(sh "$TOOL" stop 2>&1)"; got=$?
+cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
+wait "$runpid" 2>/dev/null
+check "(q) stop exits 0" [ "$got" -eq 0 ]
+check "(q) stop reports stopped" has "stopped" "$out"
+check "(q) stop killed the fake claude" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+check "(q) lock released after stop" [ ! -e "$QH/run.lock" ]
+kill -9 "$cpid" 2>/dev/null
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(q) status after stop: running none" has "running: none" "$out"
+check "(q) status after stop: lock free" has "lock: free" "$out"
+out="$(sh "$TOOL" stop 2>&1)"; got=$?
+check "(q) stop without a run says so" has "nothing running" "$out"
+check "(q) stop without a run exits 0" [ "$got" -eq 0 ]
+export FAKE_GH_FAIL="pr list --label"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(q) status tolerates a gh failure with a FAIL line" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
+check "(q) status still exits 0 on a gh failure" [ "$got" -eq 0 ]
+unset FAKE_GH_FAIL FAKE_GH_PRS
+
+# ---------- (r) retry: a PR gets its label back, an item is queued again ----------
+fresh_home r
+export FAKE_SCENARIO=report-blocked
+out="$(sh "$TOOL" retry "$proj" '#41' 2>&1)"; got=$?
+check "(r) retry #pr exits 0" [ "$got" -eq 0 ]
+check "(r) retry #pr swaps blocked for ready" has "pr edit 41 --remove-label autopilot-blocked --add-label autopilot-ready" "$(cat "$REC/gh.args")"
+check "(r) retry #pr says so" has "retry: PR #41 in proj labelled autopilot-ready again" "$out"
+out="$(sh "$TOOL" retry "$proj" 42 2>&1)"
+check "(r) retry accepts a bare number" has "pr edit 42 --remove-label autopilot-blocked" "$(cat "$REC/gh.args")"
+export FAKE_GH_FAIL="pr edit"
+out="$(sh "$TOOL" retry "$proj" '#43' 2>&1)"; got=$?
+check "(r) retry #pr exits 1 when gh fails" [ "$got" -eq 1 ]
+check "(r) retry #pr names the failure" has "gh pr edit 43 failed" "$out"
+unset FAKE_GH_FAIL
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+sh "$TOOL" run >/dev/null 2>&1
+check "(r) blocked run left its worktree" [ -e "$QH/worktrees/proj-2026-09-19-PAUL-9-thing/.git" ]
+check "(r) queue empty before retry" [ "$(live_lines "$QH/queue.txt")" = 0 ]
+# the branch the kept worktree is on (detached at its tip when (j) still holds the branch,
+# then the fake run created its own); retry must record exactly that one
+wt_branch="$(git -C "$QH/worktrees/proj-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)"
+check "(r) the worktree is on a branch" [ -n "$wt_branch" ]
+out="$(sh "$TOOL" retry "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing 2>&1)"; got=$?
+check "(r) retry item exits 0" [ "$got" -eq 0 ]
+check "(r) retry item queues it with the worktree's branch" grep -qxF "$proj docs/autopilot/sessions/2026-09-19-PAUL-9-thing $wt_branch" "$QH/queue.txt"
+check "(r) retry item says added" has "added: $proj docs/autopilot/sessions/2026-09-19-PAUL-9-thing $wt_branch" "$out"
+out="$(sh "$TOOL" retry "$proj" PAUL-31 2>&1)"
+check "(r) retry ticket key queues it" grep -qxF "$proj PAUL-31" "$QH/queue.txt"
+out="$(sh "$TOOL" retry "$tmp/nowhere" '#1' 2>&1)"; got=$?
+check "(r) retry refuses a non-repo" [ "$got" -eq 1 ]
+
+# ---------- (s) log: newest item log, or by substring ----------
+fresh_home s
+export FAKE_SCENARIO=report
+printf '%s PAUL-60\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+sleep 1
+printf '%s PAUL-61\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+out="$(sh "$TOOL" log 2>&1)"; got=$?
+check "(s) log exits 0" [ "$got" -eq 0 ]
+check "(s) log names the newest item log" has "log: $QH/logs/" "$out"
+check "(s) log picks the newest item" has "PAUL-61.log" "$(printf '%s\n' "$out" | head -n 1)"
+check "(s) log shows the log content" has "PAUL-61: done (PR" "$out"
+out="$(sh "$TOOL" log PAUL-60 2>&1)"; got=$?
+check "(s) log <substring> exits 0" [ "$got" -eq 0 ]
+check "(s) log <substring> names that file" has "PAUL-60.log" "$(printf '%s\n' "$out" | head -n 1)"
+check "(s) log <substring> shows that run" has "PAUL-60: done (PR" "$out"
+check "(s) log output is at most 41 lines" [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -le 41 ]
+out="$(sh "$TOOL" log NOPE 2>&1)"; got=$?
+check "(s) log with no match exits 1" [ "$got" -eq 1 ]
+check "(s) log with no match says so" has "no item log with 'NOPE'" "$out"
+out="$(sh "$TOOL" bogus 2>&1)"
+check "(s) unknown command lists the new commands" has "status | stop | retry | log" "$out"
+out="$(sh "$TOOL" help 2>&1)"
+check "(s) usage mentions kickstart" has "kickstart" "$out"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -7,7 +7,7 @@
 # (input + cache_creation + cache_read tokens = the context the next turn will carry) and,
 # once that exceeds the budget, injects a system reminder via additionalContext: write
 # HANDOFF.md into the autopilot session folder, commit, and end the turn so a fresh session
-# (started by the user or the queue runner) continues from the file.
+# (started by the user or mission-control) continues from the file.
 #
 # Which transcript is measured (verified against Claude Code 2.1.241):
 #   - `transcript_path` in the hook input is ALWAYS the main session's transcript, also when

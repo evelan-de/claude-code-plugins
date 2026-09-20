@@ -101,7 +101,7 @@ and say so; a missing label makes every re-review request fail silently. If the 
 uses another label name (read the workflow file), report it: the run follows the project's
 `CLAUDE.md`, which must name it.
 
-**Queue labels.** Run `autopilot-queue labels` in the project: it creates `autopilot-ready`,
+**Queue labels.** Run `mission-control labels` in the project: it creates `autopilot-ready`,
 `autopilot-done` and `autopilot-blocked` when missing (colours and descriptions live in the
 script), so a developer's hand-over from `/autopilot-plan` and the nightly queue can label PRs.
 

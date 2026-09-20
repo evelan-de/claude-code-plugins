@@ -8,7 +8,7 @@ docs/autopilot/
     DECISIONS.md     # assumptions the run made, with reasons
     HANDOFF.md       # transient; deleted when consumed
     REPORT.md        # first line `Status: done` or `Status: blocked - <reason>`; then shipped work,
-                     # verification, review findings, open items (the queue runner reads the first line)
+                     # verification, review findings, open items (mission-control reads the first line)
     MANUAL_TESTING.md  # only for steps impossible in this environment
 ```
 
