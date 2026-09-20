@@ -162,6 +162,11 @@ it did not. A genuine transient (e.g. the benign `failed to renew cache TTL`
 line) with a real review still present is **not** a limit - only fall back when
 there is no usable review.
 
+**Inside an autopilot run** (called by the `evelan:autopilot` skill, or
+`.claude/.autopilot-active` exists): no fallback. The adversarial Claude
+review has already run; report the failure and return, the autopilot skill
+records the skip in `REPORT.md`.
+
 ## Output handling - raw passthrough
 
 Codex's review text is relayed **verbatim and unjudged**. Do not summarize
@@ -178,4 +183,6 @@ Everything else stays. Always report the path of the untouched log file
 alongside the cleaned output, so the user can read the raw stream.
 
 **Nothing is fixed automatically.** After presenting the findings, ask which
-ones to act on and wait for the user's pick.
+ones to act on and wait for the user's pick. Exception: inside an autopilot
+run nobody can pick, so return the findings to the autopilot skill, which
+fixes real gaps test-first and rebuts the rest in `REPORT.md`.

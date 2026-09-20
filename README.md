@@ -140,8 +140,9 @@ Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a 
 
 **Usage:**
 - Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`.
-- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session with `--permission-mode auto`. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
-- Options in the prompt: "defer PR" (no push, no PR), "mit Codex" (adds the Codex cross-model review on the branch).
+- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with `claude --model sonnet --effort medium --advisor fable --permission-mode auto`. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+- Options in the prompt: "defer PR" (no push, no PR), "ohne Codex" / "no Codex" (skips the Codex cross-model review, which otherwise runs by default after the Claude review whenever the Codex CLI is installed; its findings are fixed or rebutted in `REPORT.md`).
+- Write-less rules are part of the skill (vendored from Ponytail, see `skills/THIRD-PARTY-NOTICES.md`): reuse before write, stdlib and platform before dependencies, shortest root-cause diff, no speculative abstractions. JetBrains measured about 10% lower cost with unchanged quality when the rules sit in the context for the whole session, which is what the skill does.
 - Continue after a hand-off: the same command; the run finds `HANDOFF.md`.
 
 **Hand-off instead of compaction.** When the context-budget hook reports the budget, the run commits, writes `HANDOFF.md` (state, verified evidence, open items, exact next step) and ends its turn with `Resume with /autopilot <session directory>`. Auto-compaction is never relied on.

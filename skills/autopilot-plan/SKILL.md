@@ -69,6 +69,7 @@ hyphenated; ticket key first when there is one). One file, under 200 lines, this
 # PLAN - <ticket key or topic> - <YYYY-MM-DD>
 Branch: <prefix>/<KEY>-<slug>   Base: <integration branch>   Ticket: <key or none>
 Branch mode: session | feature-branch <name>     PR: per session | none (feature branch reviewed as a whole)
+Effort: medium   (low | medium | high | xhigh | max; the launch line passes it as --effort)
 Sources: <spec, ADRs, docs the packages point to>
 
 ## Destination
@@ -114,6 +115,9 @@ sources; fold real findings in, dismiss with a reason under "Decisions".
 ## 7. Commit and hand over
 
 Commit `PLAN.md` on the current branch (`docs(autopilot): plan for <key or slug>`). Tell the
-user the path and the one command that runs it: `/autopilot <session directory>`, and how to
-pick the run's model at launch (`claude --model sonnet --advisor fable`, see the autopilot
-skill). Say what is still open, if anything. Do not implement anything here.
+user the path and the one command that runs it: `/autopilot <session directory>`, and the
+launch line that picks the run's model, effort and advisor
+(`claude --model sonnet --effort medium --advisor fable`, see the autopilot skill). Effort is
+`medium` unless the plan's risks call for more; write the chosen effort into the plan header
+(`Effort: medium`) so the queue and the launch line agree. Say what is still open, if
+anything. Do not implement anything here.

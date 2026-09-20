@@ -58,7 +58,8 @@ always shows what is left.
 
 1. creates a worktree from the repo's integration branch (`git worktree add`), or reuses the
    session branch when the item is a continuation;
-2. starts `claude -p "/autopilot <item> defer PR" --permission-mode auto` in that worktree,
+2. starts `claude -p "/autopilot <item> defer PR" --model <model column> --effort <effort
+   column, default medium> --permission-mode auto` in that worktree,
    with `--max-turns` and a wall-clock timeout, output to `logs/<item>.log`;
 3. watches with `autopilot-watchdog` every 20 minutes (zero tokens); on `stalls=4` it kills
    the session and restarts it once with the hand-off;
@@ -118,6 +119,30 @@ feature-branch <name>` and `PR: none`; each run checks out that branch, commits 
 it (rebase-pull first), opens no PR; the last session or Andreas opens the feature PR. The
 queue processes the feature's items strictly in order and rebases each on the current branch
 head. Built into the plan and autopilot skills.
+
+**Effort per run.** Claude Code's `--effort <low|medium|high|xhigh|max>` is, like the
+model, a launch parameter. Autopilot runs default to `medium` (the global `effortLevel`
+setting is `high` on Andreas' Macs, so the launch line always passes `--effort`). The plan
+header carries `Effort: <level>`, the plan skill's hand-over line prints the full launch line
+(`claude --model sonnet --effort medium --advisor fable`), and the queue gets an effort column
+next to the model column. Raised only when the plan's risks call for it.
+
+**Codex review on by default.** After the Claude adversarial review, the run calls
+`evelan:codex-review` on the branch whenever `codex-cli --version` succeeds; "ohne Codex" /
+"no Codex" in the prompt switches it off. Unattended, nobody picks findings, so Codex's
+findings are handled like the reviewer's: correctness, requirement and safety gaps fixed
+test-first (one cycle), the rest rebutted in `REPORT.md`. Codex rate-limited or missing →
+skipped with one line in `REPORT.md`, no Claude fallback (the adversarial review already ran).
+
+**Write-less rules (Ponytail) in the skill, not as a plugin.** JetBrains tested Ponytail
+(blog.jetbrains.com/ai/2026/07/ponytail-skill-claude-tested): the skill installed alone never
+self-activated in ten sessions; with the ruleset injected at session start it cut typical task
+cost by 10.3% (p=0.004), code written by 15.4% median, wall-clock by 11%, with no measurable
+quality change (65 of 80 tasks identical). Andreas' rule: vendor, never install third-party
+skills. So the ladder and rules are condensed into the autopilot skill's "Write less"
+section, which is in context for the whole run (the skill body is the injection); attribution
+in `skills/THIRD-PARTY-NOTICES.md` (MIT, DietrichGebert/ponytail, commit `e3ba2aa`,
+2026-09-14). Not vendored: the intensity levels, statusline, review/audit/debt/gain skills.
 
 **Plan skill borrows from the vendored Pocock skills:** seams agreed with the user before
 slicing (write-spec), tracer-bullet slices with blocking edges, prefactoring first,

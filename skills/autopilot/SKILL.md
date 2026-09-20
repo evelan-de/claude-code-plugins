@@ -2,7 +2,7 @@
 name: autopilot
 description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um". Also handles "autopilot init" to set up the per-project hooks.
 user-invocable: true
-argument-hint: "[init | <session directory> | <ticket key or topic>]   (add 'defer PR' to skip push/PR, 'mit Codex' for a cross-model review)"
+argument-hint: "[init | <session directory> | <ticket key or topic>]   (add 'defer PR' to skip push/PR, 'ohne Codex' / 'no Codex' to skip the Codex cross-model review that runs by default when Codex is installed)"
 ---
 
 # Autopilot
@@ -41,6 +41,24 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 - **Hand off, never compact.** When the context-budget hook reports the budget: hand off
   (below). Do not push on, do not wait for compaction.
 
+## Write less
+
+The best code is the code never written; every line you write is written, read by the
+reviewer and read back in every later turn. Before each change, stop at the first rung that
+holds: (1) does it need to exist at all (speculative need → skip, record under
+`DECISIONS.md`); (2) a helper, type or pattern already in this codebase → reuse it; (3) the
+standard library does it; (4) a native platform feature covers it (`<input type="date">`
+over a picker, CSS over JS, a DB constraint over app code); (5) an installed dependency
+solves it (never add one for a few lines); (6) it can be one line; (7) only then the minimum
+that works. No abstraction with one implementation, no factory for one product, no config for
+a value that never changes, no scaffolding "for later". Fewest files, shortest working diff
+that fixes the root cause where all callers route through, not the symptom. A bug fix greps
+every caller first. Explanations: code and the one-line result under the package, no essays.
+Never simplify away input validation at trust boundaries, error handling that prevents data
+loss, security, accessibility basics, the plan's verification criteria or anything the plan
+asks for explicitly. Lazy about the solution, never about understanding the problem: read the
+flow end to end first.
+
 ## Run
 
 ### 1. Gate and branch
@@ -72,9 +90,16 @@ For each package with `[ ]`: set `[~]`, then
 ### 3. Review, once, on the whole branch
 `evelan:autopilot-reviewer` with the diff against the base branch and `PLAN.md`. Fix every
 correctness, requirement or safety gap test-first, re-gate, commit. At most two cycles;
-unresolved real gaps go to the top of `REPORT.md` and into the PR description. "mit Codex" /
-"use Codex as reviewer" in the prompt → additionally `evelan:codex-review` on the branch
-(its fallback applies).
+unresolved real gaps go to the top of `REPORT.md` and into the PR description.
+
+**Codex cross-model review, on by default.** After the Claude review is settled, run
+`evelan:codex-review` on the branch (`--base <base branch>`) unless the prompt says
+"ohne Codex" / "no Codex" or `codex-cli --version` fails (then write one line in
+`REPORT.md`: Codex review skipped, why). Nobody picks findings here: treat Codex's findings
+exactly like the reviewer's (fix every correctness, requirement or safety gap test-first,
+re-gate, commit; one cycle), rebut the rest with evidence in `REPORT.md` under "Codex
+review". Codex rate-limited or unavailable → skip with the reason in `REPORT.md`; do not run
+the skill's Claude fallback, the adversarial review already happened.
 
 ### 4. Goal artifact
 Exercise the goal artifact from the plan in the real thing: start the dev server, drive the
@@ -148,12 +173,16 @@ docs/autopilot/
 - **YYYY-MM-DD HH:MM** - <title> - <one line> - [PR](<url>) [→](./sessions/<slug>/REPORT.md)
 ```
 
-## Model, advisor, permissions, hooks
-The run uses the session's model; pick it at launch, never mid-run (a switch throws away the
-cache): `claude --model sonnet --advisor fable` runs on Sonnet and lets it consult Fable at
-decision points (before committing to an approach, on a recurring error, before declaring
-done). "Consult the advisor" in the prompt makes it consult more. Unattended runs:
-`--permission-mode auto`. The hooks from `/autopilot init` are optional;
+## Model, effort, advisor, permissions, hooks
+The run uses the session's model and effort; pick both at launch, never mid-run (a model
+switch throws away the cache): `claude --model sonnet --effort medium --advisor fable` runs
+on Sonnet at medium effort and lets it consult Fable at decision points (before committing to
+an approach, on a recurring error, before declaring done). **Effort default for autopilot
+runs is `medium`** (`low`, `medium`, `high`, `xhigh`, `max`); the plan's hand-over line
+names the effort, and a run launched without `--effort` inherits the user's `effortLevel`
+setting, so always pass it. Raise it only for a plan that says so (security-critical
+backend, tricky migrations). "Consult the advisor" in the prompt makes it consult more.
+Unattended runs: `--permission-mode auto`. The hooks from `/autopilot init` are optional;
 the hand-off rules apply with or without them. At the end, print the table of
 `autopilot-usage <this session's transcript>` (newest `.jsonl` under
 `~/.claude/projects/<cwd with "/" replaced by "-">/`) so every run leaves a measurement.
