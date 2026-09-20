@@ -145,7 +145,7 @@ in `skills/THIRD-PARTY-NOTICES.md` (MIT, DietrichGebert/ponytail, commit `e3ba2a
 2026-09-14). Not vendored: the intensity levels, statusline, review/audit/debt/gain skills.
 
 **Plan skill borrows from the vendored Pocock skills:** seams agreed with the user before
-slicing (write-spec), tracer-bullet slices with blocking edges, prefactoring first,
-expand/migrate/contract for wide refactors, and a granularity quiz (spec-to-tickets), a named
+slicing (to-spec), tracer-bullet slices with blocking edges, prefactoring first,
+expand/migrate/contract for wide refactors, and a granularity quiz (to-tasks), a named
 destination and "decisions before plans" (wayfinder). A plan for a topic that still has open
 decision tickets on a wayfinder map is refused.

@@ -10,8 +10,8 @@ argument-hint: "<ticket key | spec file | topic>   (add 'feature branch <name>' 
 One topic, one plan file, written with the user in the loop. The plan is what `/autopilot`
 executes unattended, so every decision an unattended agent would otherwise guess is made
 here, once. Developers run this too. It borrows the working rules of the interactive
-workflow skills: seams agreed before slicing (`write-spec`), tracer-bullet slices with
-blocking edges and a quiz on granularity (`spec-to-tickets`), and a named destination
+workflow skills: seams agreed before slicing (`to-spec`), tracer-bullet slices with
+blocking edges and a quiz on granularity (`to-tasks`), and a named destination
 (`wayfinder`).
 
 **Input:** `$ARGUMENTS`.
@@ -20,7 +20,7 @@ blocking edges and a quiz on granularity (`spec-to-tickets`), and a named destin
 
 - Ticket key (`WEB-1095`, `#42`): fetch it via the project's tracker (`docs/agents/issue-tracker.md`
   or `gh issue view`). Title, description, acceptance criteria, comments.
-- Spec file, `SPEC.md`, or a spec issue from `/evelan:write-spec`: read it; its user stories,
+- Spec file, `SPEC.md`, or a spec issue from `/evelan:to-spec`: read it; its user stories,
   implementation and testing decisions are the plan's raw material.
 - A `wayfinder:map` with open decision tickets: stop and say so; decisions come before plans.
 - Otherwise the prompt is the topic. If `CONTEXT.md` or ADRs exist, read them first and use

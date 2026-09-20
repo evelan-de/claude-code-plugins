@@ -10,33 +10,25 @@ They are maintained here as Evelan skills from now on and may diverge from upstr
 
 | Upstream | Evelan skill |
 | --- | --- |
-| grill-me | question-me |
-| grilling | questioning |
-| grill-with-docs | question-with-docs |
-| to-spec | write-spec |
-| to-tickets | spec-to-tickets |
-| implement | implement-spec |
+| grill-me, grilling, grill-with-docs | question-me (merged into one skill) |
+| to-spec | to-spec |
+| to-tickets | to-tasks |
+| implement | implement |
 | tdd | tdd |
 | code-review | code-review |
 | diagnosing-bugs | diagnose-bug |
 | domain-modeling | domain-model |
 | codebase-design | codebase-design |
 | improve-codebase-architecture | improve-architecture |
-| prototype | prototype |
-| research | research |
-| resolving-merge-conflicts | resolve-merge-conflicts |
-| triage | triage-backlog |
 | wayfinder | wayfinder |
 | ask-matt | which-skill |
 | setup-matt-pocock-skills | setup-workflow-skills |
 | handoff | handoff |
-| teach | teach |
-| to-questionnaire | to-questionnaire |
 | wait-what | wait-what |
-| wizard | wizard |
-| writing-for-agents | writing-for-agents |
 
-Not vendored: the `in-progress`, `misc` and `deprecated` folders.
+Not vendored: the `in-progress`, `misc` and `deprecated` folders. Vendored at first and
+removed on 2026-09-20 (plugin 2.0.0): prototype, research, resolving-merge-conflicts, triage,
+teach, to-questionnaire, wizard, writing-for-agents.
 
 ### MIT License
 

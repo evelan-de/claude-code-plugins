@@ -104,27 +104,22 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 
 | Skill | What it does |
 | --- | --- |
-| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker (Jira via Atlassian MCP, GitHub Issues, GitLab or local markdown; Jira is proposed when `atlassian.net` or ticket keys turn up in the repo, GitHub Issues otherwise), triage labels, `docs/agents/` layout |
-| `/evelan:question-with-docs` | Relentless interview to sharpen a plan; writes `CONTEXT.md` and ADRs as it goes |
-| `/evelan:question-me` | Same interview, stateless (no repo) |
-| `evelan:questioning` | The interview primitive the others run on (model-invoked) |
-| `/evelan:write-spec` | Turn the conversation into a spec on the tracker |
-| `/evelan:spec-to-tickets` | Split a spec into tracer-bullet tickets with blocking edges |
-| `/evelan:implement-spec` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
+| `/evelan:setup-workflow-skills` | One-time per repo: issue tracker (Jira via Atlassian MCP, GitHub Issues, GitLab or local markdown; Jira is proposed when `atlassian.net` or ticket keys turn up in the repo, GitHub Issues otherwise), `docs/agents/` layout |
+| `/evelan:question-me` | Relentless interview to sharpen a plan or idea; in a repo it writes `CONTEXT.md` and ADRs as it goes |
+| `/evelan:to-spec` | Turn the conversation into a spec on the tracker |
+| `/evelan:to-tasks` | Split a spec into tracer-bullet tickets with blocking edges |
+| `/evelan:implement` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
 | `evelan:tdd` | Test-first at pre-agreed seams, vertical slices, anti-pattern list |
 | `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents |
 | `evelan:diagnose-bug` | Diagnosis loop for hard bugs: tight feedback loop first, regression test last |
 | `evelan:domain-model`, `evelan:codebase-design` | Vocabulary references: domain terms and ADRs; deep modules and seams |
 | `/evelan:improve-architecture` | Scan for deepening opportunities, HTML report, then interview |
-| `evelan:prototype`, `evelan:research` | Throwaway prototype for a design question; cited research file from primary sources |
-| `evelan:resolve-merge-conflicts` | Resolve a merge or rebase hunk by hunk by intent |
-| `/evelan:triage-backlog` | Move incoming issues through triage roles into agent-ready briefs |
 | `/evelan:wayfinder` | Map a huge effort as decision tickets and resolve them one at a time |
 | `/evelan:handoff` | Write a hand-off document for a fresh agent |
-| `/evelan:teach`, `/evelan:to-questionnaire`, `/evelan:wait-what` | Learn a concept; questionnaire for someone else; re-pitch a message that did not land |
+| `/evelan:wait-what` | Re-pitch a message that did not land |
 | `/evelan:which-skill` | Router: which skill or flow fits the situation |
 
-**Rule for autonomous work:** the plan is written with you in the loop (`/evelan:autopilot-plan`, after `/evelan:question-with-docs` for anything with open shape questions); the run itself asks nothing.
+**Rule for autonomous work:** the plan is written with you in the loop (`/evelan:autopilot-plan`, after `/evelan:question-me` for anything with open shape questions); the run itself asks nothing.
 
 ### Autonomous work: three building blocks
 
