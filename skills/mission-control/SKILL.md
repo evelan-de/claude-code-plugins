@@ -25,7 +25,12 @@ final summary):
 ## Non-negotiables
 
 - **No production code, tests or configs of the target project from you.** Not one line.
-  Findings go to a subagent. Session artifacts (plan, context digest, notes) are yours.
+  Findings go to a subagent. Session artifacts (plan, package files, digest) are written by
+  the planner agent on your instruction; of them you read `PLAN.md` only.
+- **Your context stays small.** You carry the returned blocks, `PLAN.md`, `git log` and
+  review findings; never the digest, never a package file, never a design document in full.
+  Every token you carry is re-read on each of your requests and re-written whenever you sat
+  idle longer than the cache lifetime.
 - **Never trust a completion claim.** A lead's "done" starts your verification.
 - **Never read subagent transcripts.** No `TaskOutput`, no task output files, no agent logs.
   A subagent's result is its returned block plus `PLAN.md`, `git log`, `REPORT.md` on disk.
@@ -34,9 +39,9 @@ final summary):
 
 ## Phase 0 - Resolve input, check the decision precondition, fix the goal artifact
 
-Resolve the input: ticket key → fetch the ticket (tracker MCP or CLI); spec file → read it;
-otherwise the prompt is the task. Only you have tracker access; everything the lead needs
-from the ticket goes into `PLAN.md`.
+Resolve the input: ticket key → fetch the ticket (tracker MCP or CLI); spec file → note its
+path; otherwise the prompt is the task. Only you have tracker access: the ticket text goes
+verbatim into the planner's prompt, the planner puts what the leads need into `PLAN.md`.
 
 **Precondition: the shape decisions are made.** Accepted evidence: a spec from
 `evelan:write-spec`, a ticket with acceptance criteria and non-goals, `CONTEXT.md`/ADRs from
@@ -57,42 +62,40 @@ Ask the user now only when the goal artifact itself could take materially differ
 (HTML page vs PDF). Ordinary scope details: decide conservatively, record in the plan's
 "Decisions" section. After this point the session runs unattended.
 
-## Phase 1 - Plan (main context)
+## Phase 1 - Plan (planner agent)
 
-1. Delegate wide read-only exploration to an `Explore` subagent (files, patterns, risks).
-   Its prompt carries the reading rules, or it dumps whole files: locate with `grep -n`,
-   read with `sed -n a,bp` in slices of at most ~80 lines, never `cat` a file, and return
-   paths with line references, patterns and risks, not file contents; digest at most ~2000
-   words.
-2. Create `docs/autopilot/sessions/YYYY-MM-DD-<slug>/` in the target repo with:
-   - `PLAN.md`, the short index every lead reads in full (aim for under 150 lines): branch
-     and design sources, scope + non-goals, the goal artifact as end-to-end check,
-     "Decisions", and the package list with one line per package: id, status marker
-     `[ ] / [~] / [x] / [!]`, title, dependencies. No recon facts here (they belong in
-     `DIGEST.md`), no package details.
-   - `packages/<id>.md`, one file per package, read only by the lead that implements it
-     and by its reviewer: Definition of Done ("the user gets this working"), the files,
-     interfaces and test seams it touches, verification criteria (test cases with inputs
-     and expected outputs), edge cases, dependencies on other packages, and an empty
-     "Result" section the lead fills (commits, gate line, reviewer verdict).
-   - `DIGEST.md`: exploration digest (architecture, conventions, gate command, test
-     patterns, risks, verified anchors with `file:line`).
-   Never place the plan anywhere else. The copy the lead commits on the session branch is
-   authoritative.
-3. **One package = one dispatch:** a coherent change a fresh agent finishes well under 400
-   turns with the gate green and a commit. When in doubt, split.
+Dispatch `evelan:autopilot-planner` (Agent tool, mode `PLAN`, background, no model
+override; never `general-purpose`, never an `Explore` agent of your own). Its prompt carries:
+the absolute repo path; the session directory `docs/autopilot/sessions/YYYY-MM-DD-<slug>/`;
+the task verbatim (ticket text, spec path, or the prompt); the goal artifact verbatim; the
+decisions from Phase 0; `PLAN`.
+
+The planner explores the repo and writes `PLAN.md` (the short index the leads read in full),
+`packages/<id>.md` (one per package) and `DIGEST.md`; the formats are in its definition and
+in the `evelan:autopilot` skill. It returns a block with the package list. `STATUS: blocked`
+with `OPEN` questions means shape questions are open: back to Phase 0, to the user.
+
+On `done`: confirm the three kinds of files exist (`ls`), read `PLAN.md` once (it is the
+index, under 150 lines), and keep the planner's block. Do not open `DIGEST.md` or any
+package file. Never place the plan anywhere else; the copy the first lead commits on the
+session branch is authoritative.
 
 ## Phase 2 - Plan review (two lenses)
 
-1. **Fresh-context agent review:** plan, package files, digest + repo access; completeness,
-   ordering, package sizing, risks, testability. Its prompt carries the same reading rules
-   as the Explore prompt.
+1. **Fresh-context agent review:** dispatch `evelan:autopilot-plan-reviewer` (read-only,
+   small tool set; never `general-purpose`) with the session directory and the spec sources.
+   It returns numbered findings with evidence.
 2. **Codex review** via `evelan:codex-ask` on the session folder (gaps, wrong assumptions,
    missing edge cases); `/mission-control` counts as the explicit Codex routing. Codex
    unavailable → agent review alone, note the skip in the final report.
 
-Fold every real finding into `PLAN.md` or the package file it belongs to yourself; dismiss
-only with a recorded reason under "Decisions". Only the revised plan gets implemented.
+Send both findings lists to the planner: `SendMessage` to the same planner agent (its
+context is intact) with mode `REVISE`; if it is no longer reachable, dispatch a fresh
+`evelan:autopilot-planner` in mode `REVISE` with the session directory and the findings. The
+planner folds every real finding into `PLAN.md` or the package file it belongs to and
+records each dismissal with a reason under "Decisions"; you read its block and the revised
+`PLAN.md`. A dismissal you disagree with goes back to the planner, not into the files by
+your hand. Only the revised plan gets implemented.
 
 ## Phase 3 - Dispatch, one package at a time
 
@@ -186,13 +189,18 @@ active voice, common words. Language of the user's initial prompt.
 
 Cover: what was built · how it was verified (commands, results) · where to check it (URL /
 path) · PR link and CI state · open items and skipped steps with reasons · launch notes ·
-the token table from `autopilot-usage <this session's transcript>` (plugin binary on PATH;
-the transcript path is in the hook input or under `~/.claude/projects/<project>/`), so
-every session leaves a measurement behind.
+the token table from `autopilot-usage <this session's transcript>` (plugin binary on PATH).
+Your transcript is the newest `.jsonl` in `~/.claude/projects/<cwd with every "/" replaced
+by "-">/`, e.g. `ls -t ~/.claude/projects/-Users-me-dev-projects-app/*.jsonl | head -n 1`.
+So every session leaves a measurement behind.
 
 ## Red flags
 
 - "I'll just fix this one line myself" → dispatch it.
+- "I'll write the plan myself, I have the ticket right here" → the planner writes it; you
+  pass the ticket text in the prompt and read the index back.
+- "Let me read the digest to judge the plan" → the plan reviewer judges it; you read
+  findings.
 - "The subagent said tests pass" → run the gate yourself.
 - "Let me look at what the agent is doing" → block and disk only.
 - "One agent for the whole topic is simpler" → one dispatch per package.

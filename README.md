@@ -158,13 +158,17 @@ For unattended runs, launch with `--permission-mode auto`.
 
 Coordinates an autonomous development session **without implementing anything itself**: it
 resolves the task and pins down the user-verifiable **goal artifact** (feature running in
-the local app, a generated report, a finished PDF, …), prepares the autopilot session
-folder (`docs/autopilot/sessions/<slug>/` with `PLAN.md` and a `DIGEST.md` exploration
-digest) in the main context, has the plan reviewed by a fresh-context agent **and**
-cross-model via `evelan:codex-ask` (fixing the findings itself), then dispatches the
+the local app, a generated report, a finished PDF, …), has the `evelan:autopilot-planner`
+agent explore the repo and write the session folder (`docs/autopilot/sessions/<slug>/` with
+the `PLAN.md` index, one `packages/<id>.md` per work package and the `DIGEST.md` exploration
+digest) so that the planning content never enters the coordinator's own context, has the
+plan reviewed by the read-only `evelan:autopilot-plan-reviewer` agent **and** cross-model via
+`evelan:codex-ask`, sends the findings back to the planner to fold in, then dispatches the
 `evelan:autopilot-lead` agent **once per work package** (`PACKAGE <id>`, fresh context each
 time, "defer PR") and once at the end (`FINALIZE`, with the Codex cross-model review on the
-whole branch). A 20-minute watchdog (`autopilot-watchdog`) reads task status and branch progress,
+whole branch). The coordinator reads `PLAN.md`, returned blocks, `git log` and review
+findings, nothing larger: measured on real sessions, a coordinator that carried the planning
+itself grew to 300-400k tokens and was 30-35% of the session's cost, mostly cache writes. A 20-minute watchdog (`autopilot-watchdog`) reads task status and branch progress,
 nudges a stalled agent and replaces it if it stays stuck; it never reads subagent
 transcripts and never stops an agent that has returned its result. At the end mission control verifies the result
 independently (re-runs the gate, has a verifier subagent exercise the goal artifact), and

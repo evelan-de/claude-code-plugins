@@ -220,8 +220,12 @@ Decisions and next steps recorded here:
   needed. The coordinator's fixed cost is roughly $20-25 per session plus a few dollars per
   package.
 - Plan review on a small-base agent (allowlisted tools like `autopilot-reviewer`), never
-  `general-purpose`.
-- Keep the coordinator small: planning content out of its context (a planner agent that
-  returns file paths) is worth revisiting now that writes are priced correctly: each idle
-  re-write of a 350k coordinator costs $7.
+  `general-purpose`. Built in 1.11.0: `agents/autopilot-plan-reviewer.md` (Opus, medium,
+  Read/Grep/Glob/Bash).
+- Keep the coordinator small: planning content out of its context. Built in 1.11.0:
+  `agents/autopilot-planner.md` (Fable, mode `PLAN` writes the session folder, mode `REVISE`
+  folds review findings in); mission control reads `PLAN.md`, blocks, `git log` and findings
+  only, never the digest or a package file. Expected effect: coordinator context stays near
+  its base (~110k with connectors) instead of 300-400k, so its reads shrink and an idle
+  re-write costs ~$2 instead of ~$7. Measure on the next session with `autopilot-usage`.
 - Every session ends with the `autopilot-usage` table so these numbers keep being real.
