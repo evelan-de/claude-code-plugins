@@ -162,10 +162,9 @@ it did not. A genuine transient (e.g. the benign `failed to renew cache TTL`
 line) with a real review still present is **not** a limit - only fall back when
 there is no usable review.
 
-**Inside an autopilot run** (called by the `evelan:autopilot` skill, or
-`.claude/.autopilot-active` exists): no fallback. The adversarial Claude
-review has already run; report the failure and return, the autopilot skill
-records the skip in `REPORT.md`.
+**Called by another skill** (`evelan:autopilot` or `evelan:code-review`): no
+fallback. A Claude review runs there anyway; report the failure in one line
+and return, the calling skill records the skip.
 
 ## Output handling - raw passthrough
 

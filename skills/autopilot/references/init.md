@@ -17,11 +17,12 @@ Never overwrite existing config.
    always the main session's file and is only used in a standalone run), takes the context
    the next turn will carry, and once it exceeds the budget (default 250k tokens,
    `contextBudget` in `.claude/autopilot.json` or `AUTOPILOT_CONTEXT_BUDGET`) injects the
-   instruction to write `HANDOFF.md`, commit, and return `STATUS: incomplete`. The reminder
-   names the measured file. Active only inside subagents (hook input carries `agent_id`) or
-   while the `.claude/.autopilot-active` sentinel exists; silent in interactive sessions.
-   Do not raise the budget when a fresh lead hits it within minutes: a fresh lead starts at
-   roughly 50-80k tokens, so an instant hit means the wrong transcript was measured.
+   instruction to write `HANDOFF.md`, commit, and end the turn with `Resume with /autopilot
+   <session directory>`. The reminder names the measured file. Active while the
+   `.claude/.autopilot-active` sentinel exists (and inside any subagent, where the hook input
+   carries `agent_id`); silent in interactive sessions. Do not raise the budget when a fresh
+   session hits it within minutes: a fresh session starts at roughly 50-80k tokens, so an
+   instant hit means the wrong transcript was measured.
 4. **Post-compaction pointer** (`autopilot-session-start.sh`, SessionStart with matcher
    `compact`): if compaction happens anyway, re-injects where the session artifacts live.
 

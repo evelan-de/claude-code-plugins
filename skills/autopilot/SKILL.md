@@ -66,10 +66,13 @@ Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package 
 (lockfile) and the existing scripts (`references/init.md`) and persist it. No test runner →
 set one up minimally, project-consistent, before implementing. Create
 `.claude/.autopilot-active` when the Stop hook exists; remove it at the end and on every
-abort. Branch per the plan header: **session mode** creates `<prefix>/<KEY>-<slug>` from the
-base; **feature-branch mode** checks out the named feature branch (create it from the base if
-missing) and commits straight onto it, so several sessions add up to one branch that gets one
-review at the end. A continuation checks out the existing branch. Work in the current
+abort. Branch per the plan header: **session mode** checks out `<prefix>/<KEY>-<slug>`, which
+`/autopilot-plan` created with the plan on it (create it from the base only when you wrote
+the plan yourself, and commit the plan there first); **feature-branch mode** checks out the
+named feature branch (create it from the base if missing) and commits straight onto it, so
+several sessions add up to one branch that gets one review at the end. Either way `PLAN.md`
+must be on the checked-out branch before the first package. A continuation checks out the
+existing branch. Work in the current
 checkout; a worktree only when the tree is dirty with foreign changes.
 
 ### 2. Packages, in order

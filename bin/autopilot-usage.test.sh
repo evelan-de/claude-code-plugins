@@ -51,7 +51,6 @@ echo "$out" | grep -E '^agent-lead1 +evelan:autopilot-lead \(lead-P1\) +3 +50002
 echo "$out" | grep -E '^agent-explore +\? +2 +56002 +60002 +60002 +0\.1 +0\.06 +20\.0' >/dev/null && ok "agent without meta.json gets type ?" || fail "explore row: $(echo "$out" | grep '^agent-explore')"
 echo "$out" | grep -E '^agent-wf +\? +1 +30002' >/dev/null && ok "nested workflow agent is included" || fail "workflow row missing"
 echo "$out" | grep -E '^TOTAL +12 ' >/dev/null && ok "total requests across all agents" || fail "total: $(echo "$out" | grep '^TOTAL')"
-echo "$out" | grep -q 'first autopilot-lead dispatch.*: 151002$' && ok "planning cost = context of the dispatch request itself" || fail "planning cost line: $(echo "$out" | grep dispatch)"
 
 # records without a message id are counted per line (synthetic transcripts)
 M3="$P/noid.jsonl"

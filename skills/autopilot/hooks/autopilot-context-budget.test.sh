@@ -73,7 +73,7 @@ mk_transcript "$MAIN" 100000
 mk_transcript "$SUB/agent-lead1.jsonl" 300000
 out="$(hook_input "$MAIN" sess1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 ac="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // empty')"
-case "$ac" in *"CONTEXT BUDGET REACHED"*"HANDOFF.md"*"STATUS: incomplete"*) ok "subagent above budget -> hand-off instruction";; *) fail "above budget output: $out";; esac
+case "$ac" in *"CONTEXT BUDGET REACHED"*"HANDOFF.md"*"Resume with /autopilot"*) ok "subagent above budget -> hand-off instruction";; *) fail "above budget output: $out";; esac
 printf '%s' "$out" | jq -e '.hookSpecificOutput.hookEventName=="PostToolUse"' >/dev/null && ok "hookEventName is PostToolUse" || fail "hookEventName"
 case "$ac" in *"302003 tokens"*) ok "reports the measured context (302003)";; *) fail "context figure missing: $ac";; esac
 case "$ac" in *"measured from agent-lead1.jsonl"*) ok "names the measured transcript";; *) fail "measured-from missing: $ac";; esac

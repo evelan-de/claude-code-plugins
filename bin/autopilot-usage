@@ -78,17 +78,4 @@ row() {
     calls += $3; cr += $7; cw += $8; out += $9
   }
   END { printf "%-26s %-40s %6d %10s %9s %9s %13.1f %14.2f %9.1f\n", "TOTAL", "", calls, "", "", "", cr/1000000, cw/1000000, out/1000 }'
-
-# Planning cost of the coordinator: the context of the request that dispatched the first
-# autopilot lead (the assistant record carrying the Agent tool_use whose subagent_type names
-# autopilot-lead; its usage is the context that request carried).
-plan_ctx="$(jq -s -r '
-  [ .[] | select(.type=="assistant")
-    | select(.message.content | if type=="array" then any(.[]; .type=="tool_use" and .name=="Agent" and ((.input.subagent_type // "") | test("autopilot-lead"))) else false end)
-    | .message.usage // empty
-    | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) ]
-  | if length == 0 then "none" else (.[0] | tostring) end' "$main" 2>/dev/null || echo none)"
-if [ "$plan_ctx" != "none" ]; then
-  echo "coordinator context at the first autopilot-lead dispatch (planning cost carried for the rest of the session): $plan_ctx"
-fi
 exit 0

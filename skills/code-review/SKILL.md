@@ -1,14 +1,15 @@
 ---
 name: code-review
-description: "Evelan's code review. ALWAYS use this skill (never the built-in code-review) whenever the user asks for a code review in any wording: \"code review\", \"review this\", \"review the PR\", \"review the branch\", \"review my changes\", \"review since X\", German \"Code Review\", \"reviewe das\", \"mach ein Review\", \"schau dir den Diff an\". Reviews the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?), both in parallel sub-agents, reported side by side."
+description: "Evelan's code review. ALWAYS use this skill (never the built-in code-review) whenever the user asks for a code review in any wording: \"code review\", \"review this\", \"review the PR\", \"review the branch\", \"review my changes\", \"review since X\", German \"Code Review\", \"reviewe das\", \"mach ein Review\", \"schau dir den Diff an\". Reviews the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?), both in parallel sub-agents, plus a Codex cross-model review whenever the Codex CLI is installed (skipped with one line otherwise), reported side by side."
 ---
 
-Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
+Review of the diff between `HEAD` and a fixed point the user supplies, on two Claude axes plus a Codex second opinion:
 
 - **Standards**: does the code conform to this repo's documented coding standards?
 - **Spec**: does the code faithfully implement the originating issue / spec?
+- **Codex**: an independent cross-model review of the same diff, run automatically whenever the Codex CLI is installed, skipped silently otherwise.
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+The two Claude axes run as **parallel sub-agents** so they don't pollute each other's context; Codex runs in the background next to them; then this skill aggregates the findings.
 
 The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/evelan:setup-workflow-skills`.
 
@@ -71,9 +72,18 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 If the spec is missing, skip the Spec sub-agent and note this in the final report.
 
+**Codex, third axis, automatic.** In the same step, run `codex-cli --version`. If it succeeds,
+start `evelan:codex-review` on the same range (`--base <fixed-point>`, or `--uncommitted`
+when the tree is dirty) in the background alongside the two sub-agents; it needs no extra
+prompt. If the binary is missing, skip it with one line in the report ("Codex: not installed,
+skipped") and nothing else; a developer without Codex gets the two Claude axes. Codex
+rate-limited or failing: same one line with the reason, no Claude fallback (the two axes
+already are the Claude review). The user never has to ask for Codex; "ohne Codex" / "no
+Codex" in the request switches it off.
+
 ### 5. Aggregate
 
-Present the two reports under `## Standards` and `## Spec` headings, verbatim or lightly cleaned. Do **not** merge or rerank findings, because the two axes are deliberately separate (see _Why two axes_).
+Present the reports under `## Standards`, `## Spec` and `## Codex` headings, verbatim or lightly cleaned (Codex: its findings untouched, tool-call noise stripped, log path named). Do **not** merge or rerank findings, because the axes are deliberately separate (see _Why two axes_).
 
 End with a one-line summary: total findings per axis, and the worst issue _within each axis_ (if any). Don't pick a single winner across axes: that's the reranking the separation exists to prevent.
 

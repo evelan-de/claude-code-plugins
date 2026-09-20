@@ -20,11 +20,11 @@ The route most work travels. You have an idea and want it built.
    - **Yes** → **`/evelan:to-spec`** (turn the thread into a spec), then **`/evelan:to-tasks`** to split it into tracer-bullet tickets, each declaring its **blocking edges**. On a local tracker that's one file per ticket under `.scratch/<feature>/issues/`, worked blockers-first by hand; on a real tracker the edges become native blocking links, so any ticket whose blockers are done can be grabbed: kick off **`/evelan:implement`** per ticket, **`/clear`ing context between each one**. Each ticket is self-contained, so the last one's context is disposable.
    - **No** → **`/evelan:implement`** right here, in the same context window.
 
-   Either way, **`/evelan:implement`** builds each issue by driving **`/evelan:tdd`** internally (one red-green slice at a time), then closes out by running **`/evelan:code-review`**, a two-axis review (Standards + Spec) of the diff, before committing. Reach for **`/evelan:tdd`** on its own when you just want to build a concrete behaviour test-first without a full spec, and **`/evelan:code-review`** on its own whenever you want to review a branch or PR against a fixed point.
+   Either way, **`/evelan:implement`** builds each issue by driving **`/evelan:tdd`** internally (one red-green slice at a time), then closes out by running **`/evelan:code-review`**, a review of the diff on Standards, Spec and, when Codex is installed, a Codex second opinion, before committing. Reach for **`/evelan:tdd`** on its own when you just want to build a concrete behaviour test-first without a full spec, and **`/evelan:code-review`** on its own whenever you want to review a branch or PR against a fixed point.
 
 ### Context hygiene
 
-Keep steps 1–3 in **one unbroken context window** (don't compact or clear until after `/evelan:to-tasks`) so the grilling, spec, and tickets all build on the same thinking. Each `/evelan:implement` then starts fresh, working from the ticket.
+Keep steps 1 to 3 in **one unbroken context window** (don't compact or clear until after `/evelan:to-tasks`) so the grilling, spec, and tickets all build on the same thinking. Each `/evelan:implement` then starts fresh, working from the ticket.
 
 The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/evelan:to-tasks`, don't push on degraded; `/compact` at the nearest phase boundary and carry on (see Phase boundaries).
 

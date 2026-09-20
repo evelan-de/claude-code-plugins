@@ -114,8 +114,11 @@ sources; fold real findings in, dismiss with a reason under "Decisions".
 
 ## 7. Commit and hand over
 
-Commit `PLAN.md` on the current branch (`docs(autopilot): plan for <key or slug>`). Tell the
-user the path and the one command that runs it: `/autopilot <session directory>`, and the
+Commit `PLAN.md` on the branch the plan header names, so the run finds it: session mode →
+create `<prefix>/<KEY>-<slug>` from the base and commit there; feature-branch mode → check out
+the feature branch (create it from the base if missing) and commit there. Commit message
+`docs(autopilot): plan for <key or slug>`. Tell the user the path and the one command that
+runs it: `/autopilot <session directory>`, and the
 launch line that picks the run's model, effort and advisor
 (`claude --model sonnet --effort medium --advisor fable`, see the autopilot skill). Effort is
 `medium` unless the plan's risks call for more; write the chosen effort into the plan header
