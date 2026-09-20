@@ -125,7 +125,7 @@ Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a 
 | Block | What | Status |
 | --- | --- | --- |
 | `/evelan:autopilot-plan` | Writes `PLAN.md` for one topic with you in the loop: resolves the ticket or spec, explores with bounded reads, asks the shape questions once, records decisions, lists packages with seams and verification criteria, commits the plan. Developers run it too. Optional fresh-context plan review (`evelan:autopilot-plan-reviewer`). | shipped |
-| `/evelan:autopilot` | Executes a plan unattended in one context: gate, branch, per package test-first with the gate green and a commit, one adversarial review on the whole branch (`evelan:autopilot-reviewer`), the goal artifact exercised in the running app, `REPORT.md`, PR with CI watched. Outgrows its context → `HANDOFF.md` and a fresh session resumes. No sub-agents for implementation. | shipped |
+| `/evelan:autopilot` | Executes a plan unattended in one context: gate, branch, per package test-first with the gate green and a commit, one adversarial review on the whole branch (`evelan:autopilot-reviewer`), the goal artifact exercised in the running app, `REPORT.md`, optional full gate (`gateFull`) before the push, PR with CI watched and the Claude review bot answered (findings fixed or rebutted, re-review requested via label). Outgrows its context → `HANDOFF.md` and a fresh session resumes. No sub-agents for implementation. | shipped |
 | `autopilot-queue` | A script, not a model: takes a list of prepared sessions (or tickets) and runs `/autopilot` for each in turn, in a worktree, restarting on hand-off, notifying you on completion or blockers. Zero tokens for coordination. | design in `docs/2026-09-20-autopilot-v2.md`, format to be agreed |
 
 ### autopilot

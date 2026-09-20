@@ -56,9 +56,10 @@ runner's `--help` before adding a flag; never break an existing script.
 ```json
 { "gate": "<composed cheap gate>" }
 ```
-If the
-file exists with a different gate, show the diff and keep the existing one unless the detected
-commands are clearly better - explain what you chose.
+If the file exists with a different gate, show the diff and keep the existing one unless the
+detected commands are clearly better - explain what you chose. Optional second key `gateFull`:
+the project's full gate (e.g. `npm run gate:full` with integration tests), run once before
+the push. Wire it only when the project already has such a script; never invent one.
 
 ### 4. Copy the hooks
 Copy `autopilot-gate.sh`, `autopilot-gate-filter.sh`, `autopilot-context-budget.sh` and

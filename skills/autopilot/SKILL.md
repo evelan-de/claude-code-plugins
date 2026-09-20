@@ -122,12 +122,30 @@ delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and
 marker: `references/artifacts.md`.
 
 ### 6. PR and CI
-"defer PR" in the prompt → report branch and state, stop. Feature-branch mode → push the
-feature branch (`git push origin <feature>`; pull with rebase first if it moved), no PR; the
-feature branch gets its PR when the last session of the feature is done. Otherwise push, open
-**one PR** (`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix,
-re-push, until green. Verify the review bot's comments on both surfaces, fix or rebut; a
-finding that contradicts a recorded decision is escalated in the PR, not implemented.
+"defer PR" in the prompt → report branch and state, stop. Before any push: when
+`.claude/autopilot.json` has `gateFull` (the project's full gate, e.g. with integration
+tests), run it once; red → fix, re-run; a precondition it needs (a test database, a service)
+is a blocker to resolve, not a skip. Feature-branch mode → push the feature branch
+(`git push origin <feature>`; pull with rebase first if it moved), no PR; the feature branch
+gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
+(`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix, re-push,
+until green.
+
+**Review bot.** Projects with a Claude review workflow (`.github/workflows/claude-code-review.yml`)
+review each PR once, asynchronously; the project's `CLAUDE.md` or its review doc names the
+contract, read it. Default contract: findings arrive as inline comments
+(`gh api repos/{owner}/{repo}/pulls/<n>/comments`) plus one top-level comment
+(`gh api repos/{owner}/{repo}/issues/<n>/comments`); a green `review` check proves nothing,
+only a comment does; a PR over the size gate (100 reviewable files or 5000 lines) gets a
+notice instead of a review; a later push is not re-reviewed unless the label
+`claude-re-review` is added. Loop: (1) wait for the comment (poll both surfaces every
+minute, up to 20 minutes; the size notice or "No issues found" ends the loop); (2) verify
+each finding in the code, fix real ones test-first, re-gate, commit, push; (3) rebut the
+rest with evidence in a PR comment; a finding that contradicts a recorded decision is
+escalated in the PR, not implemented; (4) after a fix push add the label
+(`gh pr edit <n> --add-label claude-re-review`) and wait again. At most two rounds; whatever
+remains goes into `REPORT.md` and the PR description. No workflow file → no review to wait
+for; say so in `REPORT.md`.
 
 ## Hand-off
 
