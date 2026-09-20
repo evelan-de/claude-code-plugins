@@ -61,6 +61,9 @@ cat >"$tmp/fakes/gh" <<'EOF'
 printf '%s\n' "$*" >>"$FAKE_RECORD/gh.args"
 prs="${FAKE_GH_PRS:-/nonexistent}"
 case "$*" in *"${FAKE_GH_FAIL:-@@none@@}"*) echo "fake gh: failing on purpose" >&2; exit 1 ;; esac
+if [ "$1 $2" = "auth status" ] && [ -n "${FAKE_GH_AUTH_FAIL:-}" ]; then
+  echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1
+fi
 case "$1 $2" in
   "auth status"|"label create"|"pr ready"|"pr edit") exit 0 ;;
   "pr comment")
@@ -130,7 +133,7 @@ git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
 export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
-unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
+unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS FAKE_GH_AUTH_FAIL MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
 # fresh_home <name>: new MISSION_CONTROL_HOME and record dir; sets QH and REC.
 fresh_home() {
@@ -294,6 +297,59 @@ out="$(sh "$TOOL" list 2>&1)"; got=$?
 check "(d3) list reports the failure too" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
 check "(d3) list exits 1 when a source failed" [ "$got" -eq 1 ]
 unset FAKE_GH_FAIL
+
+# ---------- (d4) gh cannot read its token: one notice, no per-repo FAIL lines ----------
+fresh_home d4
+export FAKE_SCENARIO=report FAKE_GH_AUTH_FAIL=1
+fakehome="$tmp/fakehome-d4"; mkdir -p "$fakehome"
+printf '%s\n%s\n' "$proj" "$proj" >"$QH/repos.txt"
+ssh_notice="gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown here, the scheduled run in the GUI session sees them"
+login_notice='gh: not authenticated (run "gh auth login -h github.com -w"); labelled PRs unknown'
+unknown_line="labelled PRs: unknown (gh not authenticated in this session)"
+ssh_env="SSH_CONNECTION=10.0.0.2 51234 10.0.0.1 22"
+# over SSH: the token sits in the Keychain of the GUI session
+out="$(env "$ssh_env" HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(d4) status over SSH exits 0" [ "$got" -eq 0 ]
+check "(d4) status over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
+check "(d4) status over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
+check "(d4) status over SSH says the labelled PRs are unknown" has "$unknown_line" "$out"
+check "(d4) status over SSH prints no PR count" lacks "labelled PRs: 0" "$out"
+check "(d4) status over SSH did not poll the repos" lacks "pr list --label" "$(cat "$REC/gh.args")"
+out="$(env SSH_TTY=/dev/ttys003 HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(d4) SSH_TTY alone counts as an SSH session" has "$ssh_notice" "$out"
+out="$(env "$ssh_env" sh "$TOOL" list 2>&1)"; got=$?
+check "(d4) list over SSH exits 0" [ "$got" -eq 0 ]
+check "(d4) list over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
+check "(d4) list over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
+printf '%s PAUL-90\n' "$proj" >"$QH/queue.txt"
+out="$(env "$ssh_env" sh "$TOOL" run 2>&1)"; got=$?
+check "(d4) run over SSH exits 0" [ "$got" -eq 0 ]
+check "(d4) run over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
+check "(d4) run over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
+check "(d4) run over SSH still processed the queue item" grep -q " PAUL-90 done " "$QH/done.txt"
+check "(d4) run over SSH logged the notice" grep -qF "$ssh_notice" "$QH/logs/queue.log"
+check "(d4) run over SSH does not say a source failed" lacks "one source failed" "$out"
+# not over SSH: a real login problem
+out="$(env -u SSH_CONNECTION -u SSH_TTY HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+check "(d4) status without SSH exits 0" [ "$got" -eq 0 ]
+check "(d4) status without SSH says to log in" has "$login_notice" "$out"
+check "(d4) status without SSH does not mention the Keychain" lacks "Keychain" "$out"
+check "(d4) status without SSH says the labelled PRs are unknown" has "$unknown_line" "$out"
+out="$(env -u SSH_CONNECTION -u SSH_TTY sh "$TOOL" list 2>&1)"; got=$?
+check "(d4) list without SSH exits 1" [ "$got" -eq 1 ]
+check "(d4) list without SSH prints the login notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$login_notice")" = 1 ]
+check "(d4) list without SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
+printf '%s PAUL-91\n' "$proj" >"$QH/queue.txt"
+out="$(env -u SSH_CONNECTION -u SSH_TTY sh "$TOOL" run 2>&1)"; got=$?
+check "(d4) run without SSH exits 1 (a real auth problem)" [ "$got" -eq 1 ]
+check "(d4) run without SSH prints the login notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$login_notice")" = 1 ]
+check "(d4) run without SSH still processed the queue item" grep -q " PAUL-91 done " "$QH/done.txt"
+# no repos: gh is not asked at all
+: >"$QH/repos.txt"
+out="$(env "$ssh_env" sh "$TOOL" list 2>&1)"; got=$?
+check "(d4) list without repos exits 0" [ "$got" -eq 0 ]
+check "(d4) list without repos prints no notice" lacks "gh:" "$out"
+unset FAKE_GH_AUTH_FAIL
 
 # ---------- (e) list prints both sources without running ----------
 fresh_home e
