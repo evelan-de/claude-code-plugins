@@ -101,11 +101,9 @@ and say so; a missing label makes every re-review request fail silently. If the 
 uses another label name (read the workflow file), report it: the run follows the project's
 `CLAUDE.md`, which must name it.
 
-**Queue labels.** Create the three queue labels when missing, so a developer's hand-over
-from `/autopilot-plan` and the nightly queue can label PRs: `autopilot-ready` (color 0E8A16,
-"Plan ready, the autopilot queue picks this PR up"), `autopilot-done` (color 1D76DB, "Autopilot
-finished, report in the comments"), `autopilot-blocked` (color B60205, "Autopilot stopped,
-reason in the comments").
+**Queue labels.** Run `autopilot-queue labels` in the project: it creates `autopilot-ready`,
+`autopilot-done` and `autopilot-blocked` when missing (colours and descriptions live in the
+script), so a developer's hand-over from `/autopilot-plan` and the nightly queue can label PRs.
 
 Then print: detected package manager, the resolved gate command and `gateFull` when wired,
 the files created/modified, whether each merge was a no-op (already initialized), whether `jq`

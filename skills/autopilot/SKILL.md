@@ -122,8 +122,10 @@ stale: README and top-level docs for user-facing behaviour or public API; `docs/
 describe the touched area; `CLAUDE.md` and `.claude/rules/` when a convention, command or
 gate changed; inline doc comments on changed public interfaces. A stale doc is a gap, the
 reviewer flags it. `build` once.
-Write `REPORT.md` (what shipped, verification with commands and results, review findings,
-open items), prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
+Write `REPORT.md`: first line `Status: done` (or, on an abort, `Status: blocked - <reason>`;
+the queue runner reads this line and treats anything else as blocked), then what shipped,
+verification with commands and results, review findings, open items. Prepend one line to
+`docs/autopilot/INDEX.md` (below the marker, never rewrite),
 delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX
 marker: `references/artifacts.md`.
 
@@ -133,8 +135,11 @@ marker: `references/artifacts.md`.
 tests), run it once; red → fix, re-run; a precondition it needs (a test database, a service)
 is a blocker to resolve, not a skip. Feature-branch mode → push the feature branch
 (`git push origin <feature>`; pull with rebase first if it moved), no PR; the feature branch
-gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
-(`gh pr create`, ticket key in the title), never merge. `gh pr checks <n> --watch`; a red CI check → fix,
+gets its PR when the last session of the feature is done. Otherwise push, then **one PR**:
+`gh pr list --head <branch>` first; a PR exists (the plan skill opened a draft for the queue)
+→ update its body with the report summary and mark it ready (`gh pr ready <n>`; review
+workflows skip drafts, so this is what triggers the review); none → `gh pr create` (ticket
+key in the title). Never merge. `gh pr checks <n> --watch`; a red CI check → fix,
 re-push, until green. The review check is not CI: red there means the review pipeline is
 broken, never a finding; note it in `REPORT.md` and move on.
 
@@ -170,7 +175,7 @@ one line: `Resume with /autopilot <session directory>`. The queue runner or the 
 the fresh session. HANDOFF.md format: `references/handoff.md`. The queue runner (`autopilot-queue`,
 docs in `references/queue.md`) restarts a handed-off item by itself, up to three times.
 
-## Stop conditions (abort: `REPORT.md` with the blocker on top, artifacts committed, sentinel removed)
+## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, artifacts committed, sentinel removed)
 - The gate cannot go green without a destructive action or human input.
 - The task needs anything on the never-list: force-push, `migrations/`, secrets, env files,
   production config, CI credentials, other people's branches.

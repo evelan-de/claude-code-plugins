@@ -21,6 +21,7 @@ lacks() { ! has "$1" "$2"; }
 count_lines() { grep -c . "$1" 2>/dev/null; }
 live_lines() { grep -c -v -E '^[[:space:]]*(#|$)' "$1" 2>/dev/null; }
 is_main_clean() { [ "$(git -C "$proj" symbolic-ref --short HEAD)" = main ] && [ -z "$(git -C "$proj" status --porcelain)" ]; }
+commit() { git -C "$1" -c user.name=t -c user.email=t@t commit -q "${@:2}"; }
 
 # ---------- fakes ----------
 mkdir -p "$tmp/fakes"
@@ -30,6 +31,8 @@ printf '%s\n' "$*" >>"$FAKE_RECORD/claude.args"
 case "${FAKE_SCENARIO:-}" in
   ok) echo OK; exit 0 ;;
   notloggedin) echo "Not logged in"; exit 1 ;;
+  noop) echo '{"type":"result"}'; exit 0 ;;
+  sleep) echo "$$" >"$FAKE_RECORD/claude.pid"; exec sleep 30 ;;
 esac
 item="${2#/autopilot }"
 case "$item" in
@@ -38,12 +41,15 @@ case "$item" in
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
+git log --oneline -20 >"$FAKE_RECORD/claude.gitlog.$n"
 mkdir -p "$sd"
 case "${FAKE_SCENARIO:-report}" in
-  report) rm -f "$sd/HANDOFF.md"; printf '# REPORT\n\nshipped %s\n' "$item" >"$sd/REPORT.md" ;;
+  report) rm -f "$sd/HANDOFF.md"; printf 'Status: done\n\n# REPORT\n\nshipped %s\n' "$item" >"$sd/REPORT.md" ;;
+  report-blocked) printf 'Status: blocked - cannot reach the API\n\n# REPORT\n' >"$sd/REPORT.md" ;;
+  report-nostatus) printf '# REPORT\n\nno status here\n' >"$sd/REPORT.md" ;;
   handoff-then-report)
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
-    else rm -f "$sd/HANDOFF.md"; echo "# REPORT" >"$sd/REPORT.md"; fi ;;
+    else rm -f "$sd/HANDOFF.md"; printf 'Status: done\n' >"$sd/REPORT.md"; fi ;;
   handoff-always) echo "# HANDOFF $n" >"$sd/HANDOFF.md" ;;
 esac
 git add -A >/dev/null
@@ -54,9 +60,14 @@ cat >"$tmp/fakes/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_RECORD/gh.args"
 prs="${FAKE_GH_PRS:-/nonexistent}"
+case "$*" in *"${FAKE_GH_FAIL:-@@none@@}"*) echo "fake gh: failing on purpose" >&2; exit 1 ;; esac
 case "$1 $2" in
-  "auth status"|"label create"|"pr ready"|"pr edit"|"pr comment") exit 0 ;;
-  "label list") printf '%s\n' autopilot-ready autopilot-done autopilot-blocked; exit 0 ;;
+  "auth status"|"label create"|"pr ready"|"pr edit") exit 0 ;;
+  "pr comment")
+    n="$(ls "$FAKE_RECORD" | grep -c '^comment\.')"
+    while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_RECORD/comment.$((n+1))"; shift; done
+    exit 0 ;;
+  "label list") printf '%s\n' ${FAKE_GH_LABELS-autopilot-ready autopilot-done autopilot-blocked}; exit 0 ;;
   "pr view") grep "^$3 " "$prs"; exit 0 ;;
   "pr list")
     case "$*" in
@@ -74,7 +85,7 @@ EOF
 cat >"$tmp/fakes/curl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_RECORD/curl.args"
-exit 0
+exit "${FAKE_CURL_EXIT:-0}"
 EOF
 cat >"$tmp/fakes/osascript" <<'EOF'
 #!/usr/bin/env bash
@@ -83,10 +94,17 @@ exit 0
 EOF
 chmod +x "$tmp/fakes"/*
 
-# ---------- the project: a repo with main, an origin, and two PR branches ----------
+# ---------- the project: a repo with main, an origin, and feature branches ----------
 proj="$tmp/proj"
 git init -q -b main "$proj"
-git -C "$proj" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+commit "$proj" --allow-empty -m init
+# an old, unrelated session with a REPORT.md on main (must never count for another item)
+mkdir -p "$proj/docs/autopilot/sessions/2026-01-01-OLD-1-unrelated"
+printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-01-01-OLD-1-unrelated/REPORT.md"
+# a planned session on main with an Effort header
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort"
+printf '# PLAN\n\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "sessions on main"
 git init -q --bare "$tmp/origin.git"
 git -C "$proj" remote add origin "$tmp/origin.git"
 git -C "$proj" push -q origin main
@@ -94,19 +112,25 @@ git -C "$proj" push -q origin main
 git -C "$proj" checkout -q -b feat/PAUL-9-thing
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-19-PAUL-9-thing"
 echo "# PLAN" >"$proj/docs/autopilot/sessions/2026-09-19-PAUL-9-thing/PLAN.md"
-git -C "$proj" add -A
-git -C "$proj" -c user.name=t -c user.email=t@t commit -q -m "plan"
+git -C "$proj" add -A; commit "$proj" -m "plan"
 git -C "$proj" push -q origin feat/PAUL-9-thing
 # PR branch without a plan
 git -C "$proj" checkout -q main
 git -C "$proj" checkout -q -b feat/PAUL-10-noplan
-git -C "$proj" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "work"
+commit "$proj" --allow-empty -m "work"
 git -C "$proj" push -q origin feat/PAUL-10-noplan
+# a session dir committed only on a feature branch (list item with a branch)
+git -C "$proj" checkout -q main
+git -C "$proj" checkout -q -b feat/PAUL-21-branchy
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy"
+printf '# PLAN\n\nEffort: low\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan on branch"
+git -C "$proj" push -q origin feat/PAUL-21-branchy
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
 export AUTOPILOT_QUEUE_WATCH_MIN=0 AUTOPILOT_QUEUE_NO_NOTIFY=1 AUTOPILOT_QUEUE_TIMEOUT_MIN=5
-unset FAKE_GH_PRS FAKE_GH_NO_PR
+unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS AUTOPILOT_QUEUE_EFFORT AUTOPILOT_QUEUE_MODEL
 
 # fresh_home <name>: new AUTOPILOT_QUEUE_HOME and record dir; sets QH and REC.
 fresh_home() {
@@ -115,7 +139,7 @@ fresh_home() {
   export AUTOPILOT_QUEUE_HOME="$QH" FAKE_RECORD="$REC"
 }
 
-# ---------- (a) text item, REPORT.md -> done ----------
+# ---------- (a) text item, REPORT.md with Status: done -> done ----------
 fresh_home a
 export FAKE_SCENARIO=report
 printf '# comment\n%s PAUL-1\n' "$proj" >"$QH/queue.txt"
@@ -129,11 +153,51 @@ gh_args="$(cat "$REC/gh.args")"
 check "(a) gh pr ready called" has "pr ready 7" "$gh_args"
 check "(a) gh pr edit swaps labels to autopilot-done" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
 check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
+check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
+check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
 check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[autopilot-queue] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
 check "(a) log file written" ls "$QH"/logs/*-PAUL-1.log >/dev/null 2>&1
+
+# ---------- (a2) Status: blocked -> blocked with the reason ----------
+fresh_home a2
+export FAKE_SCENARIO=report-blocked
+printf '%s PAUL-31\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(a2) run exits 0" [ "$got" -eq 0 ]
+check "(a2) status blocked in done.txt" grep -q " PAUL-31 blocked " "$QH/done.txt"
+check "(a2) reason from the Status line on stdout" has "blocked: cannot reach the API" "$out"
+check "(a2) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
+check "(a2) PR comment carries the reason" has "cannot reach the API" "$(cat "$REC/comment.1")"
+check "(a2) worktree kept" [ -e "$QH/worktrees/proj-PAUL-31/.git" ]
+
+# ---------- (a3) REPORT.md without a Status line -> blocked ----------
+fresh_home a3
+export FAKE_SCENARIO=report-nostatus
+printf '%s PAUL-32\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(a3) status blocked in done.txt" grep -q " PAUL-32 blocked " "$QH/done.txt"
+check "(a3) reason names the missing status line" has "report without status line" "$out"
+
+# ---------- (a4) an old unrelated session never makes a new item done ----------
+fresh_home a4
+export FAKE_SCENARIO=noop
+printf '%s PAUL-99\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" list 2>&1)"
+check "(a4) list marks the item no plan (OLD-1 does not count)" has "PAUL-99 (no plan)" "$out"
+out="$(sh "$TOOL" run 2>&1)"
+check "(a4) run does not report done" grep -qv " PAUL-99 done " "$QH/done.txt"
+check "(a4) status blocked, no session directory" grep -q " PAUL-99 blocked - no-plan" "$QH/done.txt"
+check "(a4) reason names the missing session directory" has "no session directory for this item" "$out"
+
+# ---------- (a5) topic item: session dir found because it was created since the start ----------
+fresh_home a5
+export FAKE_SCENARIO=report
+printf '%s "Move the picker"\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(a5) topic item done via the directory created by the run" grep -q ' "Move the picker" done ' "$QH/done.txt"
 
 # ---------- (b) HANDOFF.md then REPORT.md -> done with restarts=1 ----------
 fresh_home b
@@ -157,10 +221,10 @@ check "(c) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilo
 check "(c) worktree kept" [ -e "$QH/worktrees/proj-PAUL-3/.git" ]
 unset AUTOPILOT_QUEUE_MAX_RESTARTS
 
-# ---------- (d) PR items from repos.txt ----------
+# ---------- (d) PR items from repos.txt, including a PR whose branch is missing ----------
 fresh_home d
 export FAKE_SCENARIO=report
-printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n12 feat/PAUL-10-noplan https://github.com/e/r/pull/12\n' >"$REC/prs.txt"
+printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n12 feat/PAUL-10-noplan https://github.com/e/r/pull/12\n13 feat/PAUL-11-missing https://github.com/e/r/pull/13\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
@@ -173,12 +237,52 @@ check "(d) PR 12 done and marked no-plan" grep -q " PAUL-10 done https://github.
 gh_args="$(cat "$REC/gh.args")"
 check "(d) labels swapped on PR 11" has "pr edit 11 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
 check "(d) labels swapped on PR 12" has "pr edit 12 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
+check "(d) PR 13 (branch missing) blocked in done.txt" grep -q " #13 blocked https://github.com/e/r/pull/13$" "$QH/done.txt"
+check "(d) PR 13 labelled autopilot-blocked although no worktree exists" has "pr edit 13 --remove-label autopilot-ready --add-label autopilot-blocked" "$gh_args"
+check "(d) PR 13 got a comment" has "pr comment 13 --body-file" "$gh_args"
+check "(d) PR 13 was not run" lacks "PAUL-11" "$cl"
 check "(d) main checkout still on main, clean" is_main_clean
 unset FAKE_GH_PRS
 
+# ---------- (d2) TERM during a PR item kills the claude process ----------
+fresh_home d2
+export FAKE_SCENARIO=sleep
+printf '12 feat/PAUL-10-noplan https://github.com/e/r/pull/12\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+sh "$TOOL" run >"$REC/out" 2>&1 &
+runpid=$!
+for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
+sleep 0.5
+kill -TERM "$runpid"
+wait "$runpid" 2>/dev/null; got=$?
+cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
+sleep 0.5
+check "(d2) claude pid recorded" [ "$cpid" -gt 0 ]
+check "(d2) run exited on TERM with 130" [ "$got" -eq 130 ]
+check "(d2) fake claude is gone after TERM to the queue" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+check "(d2) lock released" [ ! -e "$QH/run.lock" ]
+kill -9 "$cpid" 2>/dev/null
+unset FAKE_GH_PRS
+
+# ---------- (d3) gh pr list --label failure is reported, the other source still runs ----------
+fresh_home d3
+export FAKE_SCENARIO=report FAKE_GH_FAIL="pr list --label"
+printf '%s PAUL-33\n' "$proj" >"$QH/queue.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(d3) run exits 1 when a source failed" [ "$got" -eq 1 ]
+check "(d3) FAIL line on stdout" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
+check "(d3) FAIL line in the log" grep -q "gh pr list --label autopilot-ready failed" "$QH/logs/queue.log"
+check "(d3) the list item was still processed" grep -q " PAUL-33 done " "$QH/done.txt"
+out="$(sh "$TOOL" list 2>&1)"; got=$?
+check "(d3) list reports the failure too" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
+check "(d3) list exits 1 when a source failed" [ "$got" -eq 1 ]
+unset FAKE_GH_FAIL
+
 # ---------- (e) list prints both sources without running ----------
 fresh_home e
-printf '%s PAUL-4\n%s "Move the picker"\n' "$proj" "$proj" >"$QH/queue.txt"
+printf '%s PAUL-4\n%s "Move the picker"\n%s PAUL-20\n%s docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/PAUL-21-branchy\n' "$proj" "$proj" "$proj" "$proj" >"$QH/queue.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
 printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
@@ -186,12 +290,14 @@ out="$(sh "$TOOL" list 2>&1)"; got=$?
 check "(e) list exits 0" [ "$got" -eq 0 ]
 check "(e) list shows the ticket item" has "queue  $proj  PAUL-4 (no plan)" "$out"
 check "(e) list shows the quoted topic" has "queue  $proj  \"Move the picker\" (no plan)" "$out"
+check "(e) list finds the plan by ticket key" has "queue  $proj  PAUL-20"$'\n' "$out"
+check "(e) list finds the plan on the recorded branch" has "queue  $proj  docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/PAUL-21-branchy"$'\n' "$out"
 check "(e) list shows the labelled PR" has "pr     $proj  #11 feat/PAUL-9-thing https://github.com/e/r/pull/11" "$out"
 check "(e) list did not start claude" [ ! -e "$REC/claude.args" ]
-check "(e) list left queue.txt alone" [ "$(live_lines "$QH/queue.txt")" = 2 ]
+check "(e) list left queue.txt alone" [ "$(live_lines "$QH/queue.txt")" = 4 ]
 unset FAKE_GH_PRS
 
-# ---------- (f) add quoting ----------
+# ---------- (f) add: quoting and branch detection ----------
 fresh_home f
 sh "$TOOL" add "$proj" PAUL-5 >/dev/null
 sh "$TOOL" add "$proj" Move the picker into the composer >/dev/null
@@ -200,8 +306,26 @@ check "(f) add quotes an item with spaces" grep -qxF "$proj \"Move the picker in
 out="$(sh "$TOOL" add "$tmp/nowhere" X 2>&1)"; got=$?
 check "(f) add refuses a non-repo (exit 1)" [ "$got" -eq 1 ]
 check "(f) add names the reason" has "not a git repository" "$out"
+out="$(sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy 2>&1)"
+check "(f) add finds the branch holding a session dir absent from the checkout" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/PAUL-21-branchy" "$QH/queue.txt"
+check "(f) add prints the branch" has "feat/PAUL-21-branchy" "$out"
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-20-effort/ >/dev/null
+check "(f) add records the current branch for a session dir in the checkout" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-20-effort main" "$QH/queue.txt"
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/given >/dev/null
+check "(f) add takes an explicit branch" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/given" "$QH/queue.txt"
 
-# ---------- (g) doctor ----------
+# ---------- (f2) a list item on a feature branch runs on that branch with its plan ----------
+fresh_home f2
+export FAKE_SCENARIO=report
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy >/dev/null
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(f2) run exits 0" [ "$got" -eq 0 ]
+check "(f2) done without no-plan" grep -q " docs/autopilot/sessions/2026-09-18-PAUL-21-branchy done https://github.com/e/r/pull/7$" "$QH/done.txt"
+check "(f2) effort low taken from the plan on the branch" has "--effort low" "$(cat "$REC/claude.args")"
+check "(f2) the run saw the branch history" grep -q "plan on branch" "$REC/claude.gitlog.1"
+check "(f2) the run was on feat/PAUL-21-branchy" grep -q "PAUL-21-branchy" "$QH/done.txt"
+
+# ---------- (g) doctor and labels ----------
 fresh_home g
 printf '%s\n' "$proj" >"$QH/repos.txt"
 export FAKE_SCENARIO=notloggedin
@@ -217,7 +341,20 @@ chmod 600 "$QH/env"
 out="$(sh "$TOOL" doctor 2>&1)"; got=$?
 check "(g) doctor passes with login, gh, repo, labels, env 600" [ "$got" -eq 0 ]
 check "(g) doctor reports all checks passed" has "all checks passed" "$out"
-check "(g) doctor checked the labels" has "label autopilot-blocked in proj" "$out"
+check "(g) doctor checked the labels" has "label autopilot-blocked exists in proj" "$out"
+check "(g) doctor lists the repos" has "repos in the queue: 1" "$out"
+export FAKE_GH_LABELS=autopilot-ready
+out="$(cd "$proj" && sh "$TOOL" labels 2>&1)"; got=$?
+check "(g) labels exits 0" [ "$got" -eq 0 ]
+check "(g) labels keeps an existing label" has "label autopilot-ready exists in proj" "$out"
+check "(g) labels creates the missing ones" has "label autopilot-done created in proj" "$out"
+check "(g) labels uses the agreed colours" has "label create autopilot-blocked --color B60205" "$(cat "$REC/gh.args")"
+check "(g) labels uses the agreed colours (done)" has "label create autopilot-done --color 1D76DB" "$(cat "$REC/gh.args")"
+export FAKE_GH_FAIL="label create"
+out="$(sh "$TOOL" labels "$proj" 2>&1)"; got=$?
+check "(g) labels exits 1 when a label cannot be created" [ "$got" -eq 1 ]
+check "(g) labels names the failure" has "FAIL - label autopilot-done missing in proj" "$out"
+unset FAKE_GH_FAIL FAKE_GH_LABELS
 
 # ---------- (h) lock ----------
 fresh_home h
@@ -233,7 +370,7 @@ out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(h) stale lock (dead pid) is taken over" [ "$got" -eq 0 ]
 check "(h) lock released after the run" [ ! -e "$QH/run.lock" ]
 
-# ---------- (i) no secret printed ----------
+# ---------- (i) no secret printed, curl failure logged with its exit code ----------
 fresh_home i
 export FAKE_SCENARIO=report
 unset AUTOPILOT_QUEUE_NO_NOTIFY
@@ -246,7 +383,116 @@ check "(i) Slack webhook was called" has "SECRETXYZ" "$(cat "$REC/curl.args" 2>/
 check "(i) macOS notification was sent" has "PAUL-7: done" "$(cat "$REC/osascript.args" 2>/dev/null)"
 check "(i) stdout never contains the webhook URL" lacks "SECRETXYZ" "$out"
 check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/logs/*.log)"
+printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+check "(i) curl failure logged with its exit code" grep -q "Slack webhook failed (curl exit 22)" "$QH"/logs/*-PAUL-8.log
 export AUTOPILOT_QUEUE_NO_NOTIFY=1
+
+# ---------- (j) reused worktree: fetch and fast-forward before the retry ----------
+fresh_home j
+export FAKE_SCENARIO=report-blocked
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(sh "$TOOL" run 2>&1)"
+wt="$QH/worktrees/proj-2026-09-19-PAUL-9-thing"
+check "(j) first run blocked, worktree kept" [ -e "$wt/.git" ]
+git -C "$proj" push -q origin feat/PAUL-9-thing   # the run's commit, as the real run would push it
+git clone -q "$tmp/origin.git" "$tmp/devclone"
+git -C "$tmp/devclone" checkout -q feat/PAUL-9-thing
+commit "$tmp/devclone" --allow-empty -m "developer fix"
+git -C "$tmp/devclone" push -q origin feat/PAUL-9-thing
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(sh "$TOOL" run 2>&1)"
+git -C "$wt" log --oneline -5 >"$REC/wt.gitlog"
+check "(j) retry fast-forwarded the reused worktree to the developer's push" grep -q "developer fix" "$REC/wt.gitlog"
+check "(j) the run saw the developer fix" grep -q "developer fix" "$REC/claude.gitlog.2"
+check "(j) no fast-forward complaint" lacks "not fast-forwardable" "$out"
+commit "$wt" --allow-empty -m "local divergence"
+commit "$tmp/devclone" --allow-empty -m "another fix"
+git -C "$tmp/devclone" push -q origin feat/PAUL-9-thing
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(j) diverged worktree: said, run continues" has "feat/PAUL-9-thing is not fast-forwardable to origin/feat/PAUL-9-thing, continuing on the local state" "$out"
+check "(j) diverged worktree: item still processed" [ "$(grep -c "PAUL-9-thing blocked" "$QH/done.txt")" = 3 ]
+
+# ---------- (k) timeout kills the run ----------
+fresh_home k
+export FAKE_SCENARIO=sleep AUTOPILOT_QUEUE_TIMEOUT_MIN=0.02
+printf '%s PAUL-34\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
+check "(k) run exits 0" [ "$got" -eq 0 ]
+check "(k) status timeout in done.txt" grep -q " PAUL-34 timeout " "$QH/done.txt"
+check "(k) reason names the wall-clock timeout" has "wall-clock timeout of 0.02 min" "$out"
+check "(k) fake claude killed" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
+kill -9 "$cpid" 2>/dev/null
+export AUTOPILOT_QUEUE_TIMEOUT_MIN=5
+
+# ---------- (l) env precedence: environment over env file over default; effort from the plan ----------
+fresh_home l
+export FAKE_SCENARIO=report
+printf 'AUTOPILOT_QUEUE_MODEL=haiku\nAUTOPILOT_QUEUE_EFFORT=xhigh\nAUTOPILOT_QUEUE_FALLBACK_MODEL=sonnet\n' >"$QH/env"; chmod 600 "$QH/env"
+printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l) env file beats the default (model haiku, effort xhigh, fallback sonnet)" has "--model haiku --effort xhigh --advisor fable --fallback-model sonnet" "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
+AUTOPILOT_QUEUE_MODEL=sonnet AUTOPILOT_QUEUE_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+check "(l) environment beats the env file" has "--model sonnet --effort low " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l) Effort: high from PLAN.md beats the env file" has "--effort high " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
+AUTOPILOT_QUEUE_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tail -n 1 "$REC/claude.args")"
+rm -f "$QH/env"
+printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l) defaults without env file" has "--model sonnet --effort medium --advisor fable --fallback-model opus" "$(tail -n 1 "$REC/claude.args")"
+
+# ---------- (m) no PR found after the run ----------
+fresh_home m
+export FAKE_SCENARIO=report FAKE_GH_NO_PR=1
+printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(m) run exits 0" [ "$got" -eq 0 ]
+check "(m) done with - as the PR url" grep -q " PAUL-37 done - no-plan$" "$QH/done.txt"
+check "(m) no label or comment call without a PR" lacks "pr edit" "$(cat "$REC/gh.args")"
+check "(m) stdout says done (PR -)" has "PAUL-37: done (PR -" "$out"
+unset FAKE_GH_NO_PR
+
+# ---------- (n) unparsable queue lines are removed and named ----------
+fresh_home n
+export FAKE_SCENARIO=report
+printf '%s\n%s PAUL-38\n' "$proj" "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(n) run exits 0" [ "$got" -eq 0 ]
+check "(n) the unparsable line is named" has "removed unparsable line from queue.txt: $proj" "$out"
+check "(n) the good line was processed" grep -q " PAUL-38 done " "$QH/done.txt"
+check "(n) queue.txt emptied" [ "$(live_lines "$QH/queue.txt")" = 0 ]
+
+# ---------- (o) env file mode warning on run and list ----------
+fresh_home o
+export FAKE_SCENARIO=report
+printf 'AUTOPILOT_QUEUE_BUDGET_USD=5\n' >"$QH/env"; chmod 644 "$QH/env"
+printf '%s PAUL-39\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" list 2>&1)"; got=$?
+check "(o) list warns once about the env mode" [ "$(printf '%s\n' "$out" | grep -c "has mode 644, want 600")" = 1 ]
+check "(o) list still exits 0" [ "$got" -eq 0 ]
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(o) run warns about the env mode and continues" has "has mode 644, want 600" "$out"
+check "(o) run still used the env file" has "--max-budget-usd 5 " "$(cat "$REC/claude.args")"
+check "(o) run exits 0" [ "$got" -eq 0 ]
+
+# ---------- (p) gh label or comment failure after the run -> labels-failed ----------
+fresh_home p
+export FAKE_SCENARIO=report FAKE_GH_FAIL="pr edit"
+printf '%s PAUL-40\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(p) run exits 0" [ "$got" -eq 0 ]
+check "(p) done.txt records done with labels-failed" grep -q " PAUL-40 done https://github.com/e/r/pull/7 no-plan labels-failed$" "$QH/done.txt"
+check "(p) the failure is said" has "PAUL-40: gh pr edit (labels) failed" "$out"
+check "(p) the final line shows done labels-failed" has "PAUL-40: done labels-failed (PR" "$out"
+check "(p) the comment was still attempted" has "pr comment 7 --body-file" "$(cat "$REC/gh.args")"
+unset FAKE_GH_FAIL
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

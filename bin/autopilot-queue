@@ -1,20 +1,25 @@
 #!/bin/sh
 # autopilot-queue - run prepared autopilot sessions one after another, unattended.
 #
-# usage: autopilot-queue run | list | add <repo> <item...> | doctor
+# usage: autopilot-queue run | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
 #        autopilot-queue install-schedule HH:MM | uninstall-schedule
 #
 # One machine-wide queue under $AUTOPILOT_QUEUE_HOME (default ~/.claude/autopilot-queue):
-#   queue.txt   one item per line: <repo path> <item>   (# comments; item = session dir,
-#               ticket key, or a "quoted topic"); processed top to bottom
+#   queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
+#               dir, ticket key, or a "quoted topic"; the branch column exists for session dirs
+#               only, `add` fills it in); processed top to bottom
 #   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
-#   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan]
+#   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
 #   env         optional, mode 600: SLACK_WEBHOOK_URL and AUTOPILOT_QUEUE_* settings
-#   logs/       one log per item, worktrees/ one worktree per item
+#   logs/       one log per item, queue.log for lines outside an item, worktrees/ one per item
 #
 # The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
-# the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, labels
-# the PR with the outcome and notifies. Sequential, one run at a time (lock).
+# the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
+# first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
+# the outcome and notifies. Sequential, one run at a time (lock).
+#
+# Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
+# 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
 #
 # Dependencies: git, gh, curl (Slack), osascript (macOS notification). jq is optional.
 # Test hooks: CLAUDE_BIN, GH_BIN, AUTOPILOT_QUEUE_WATCH_MIN=0 (no stall check),
@@ -33,10 +38,12 @@ LOGDIR="$QHOME/logs"
 WTDIR="$QHOME/worktrees"
 LOCK="$QHOME/run.lock"
 PLIST="$HOME/Library/LaunchAgents/de.evelan.autopilot-queue.plist"
+MARKETPLACE_BIN="$HOME/.claude/plugins/marketplaces/evelan-plugins/bin"
+SESSIONS=docs/autopilot/sessions
 LABEL_READY=autopilot-ready
 LABEL_DONE=autopilot-done
 LABEL_BLOCKED=autopilot-blocked
-CONFIG_VARS="SLACK_WEBHOOK_URL AUTOPILOT_QUEUE_MODEL AUTOPILOT_QUEUE_EFFORT AUTOPILOT_QUEUE_ADVISOR AUTOPILOT_QUEUE_BUDGET_USD AUTOPILOT_QUEUE_MAX_RESTARTS AUTOPILOT_QUEUE_TIMEOUT_MIN AUTOPILOT_QUEUE_WATCH_MIN"
+CONFIG_VARS="SLACK_WEBHOOK_URL AUTOPILOT_QUEUE_MODEL AUTOPILOT_QUEUE_EFFORT AUTOPILOT_QUEUE_ADVISOR AUTOPILOT_QUEUE_FALLBACK_MODEL AUTOPILOT_QUEUE_BUDGET_USD AUTOPILOT_QUEUE_MAX_RESTARTS AUTOPILOT_QUEUE_TIMEOUT_MIN AUTOPILOT_QUEUE_WATCH_MIN"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$script_dir/autopilot-watchdog"
@@ -46,6 +53,7 @@ DEFBRANCH="$script_dir/git-default-branch"
 
 ITEM_LOG=""
 RUN_PIDFILE=""
+SOURCE_FAILED=0
 
 usage() {
   sed -n '3,5p' "$0" | sed 's/^# //; s/^#//'
@@ -56,17 +64,21 @@ die() { echo "autopilot-queue: $*" >&2; exit 1; }
 expand_tilde() { case "$1" in \~/*) printf '%s\n' "$HOME/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# say: one progress line to stdout (and to the item log when one is open). log: log only.
+# say: one progress line to stdout and to the log. log: log only. The log is the item log
+# while an item is open, else logs/queue.log.
 say() {
   printf '[autopilot-queue] %s\n' "$*"
-  if [ -n "$ITEM_LOG" ]; then printf '%s %s\n' "$(now_iso)" "$*" >>"$ITEM_LOG"; fi
+  log "$*"
 }
 log() {
-  if [ -n "$ITEM_LOG" ]; then printf '%s %s\n' "$(now_iso)" "$*" >>"$ITEM_LOG"; fi
+  mkdir -p "$LOGDIR"
+  printf '%s %s\n' "$(now_iso)" "$*" >>"${ITEM_LOG:-$LOGDIR/queue.log}"
 }
 
 # The environment wins over the env file; the env file wins over the defaults.
 load_env() {
+  EFFORT_FROM_ENV=""
+  [ -n "${AUTOPILOT_QUEUE_EFFORT:-}" ] && EFFORT_FROM_ENV=1
   for v in $CONFIG_VARS; do
     eval "keep=\${$v:-}"
     if [ -n "$keep" ]; then eval "keep_$v=\$keep"; fi
@@ -82,6 +94,7 @@ load_env() {
   MODEL="${AUTOPILOT_QUEUE_MODEL:-sonnet}"
   EFFORT="${AUTOPILOT_QUEUE_EFFORT:-medium}"
   ADVISOR="${AUTOPILOT_QUEUE_ADVISOR:-fable}"
+  FALLBACK_MODEL="${AUTOPILOT_QUEUE_FALLBACK_MODEL:-opus}"
   BUDGET="${AUTOPILOT_QUEUE_BUDGET_USD:-60}"
   MAX_RESTARTS="${AUTOPILOT_QUEUE_MAX_RESTARTS:-3}"
   TIMEOUT_MIN="${AUTOPILOT_QUEUE_TIMEOUT_MIN:-240}"
@@ -90,16 +103,33 @@ load_env() {
   WATCH_S="$(awk -v m="$WATCH_MIN" 'BEGIN { printf "%d", m * 60 }')"
 }
 
+file_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+
+warn_env_mode() {
+  [ -f "$ENVFILE" ] || return 0
+  we_mode="$(file_mode "$ENVFILE")"
+  [ "$we_mode" = 600 ] || say "warning: $ENVFILE has mode $we_mode, want 600 (chmod 600 $ENVFILE)"
+}
+
 # ---------- queue file helpers ----------
 
-# parse_line <line>: sets P_REPO and P_ITEM; returns 1 for comments and blank lines.
+# parse_line <line>: sets P_REPO, P_ITEM and P_BRANCH (session dir items only); returns 1 for
+# comments, blank lines and lines without an item.
 parse_line() {
   pl_line="$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   case "$pl_line" in ''|\#*) return 1 ;; esac
   P_REPO="${pl_line%%[[:space:]]*}"
   pl_rest="${pl_line#"$P_REPO"}"
-  P_ITEM="$(printf '%s' "$pl_rest" | sed 's/^[[:space:]]*//')"
-  case "$P_ITEM" in \"*\") P_ITEM="${P_ITEM#\"}"; P_ITEM="${P_ITEM%\"}" ;; esac
+  pl_rest="$(printf '%s' "$pl_rest" | sed 's/^[[:space:]]*//')"
+  P_BRANCH=""
+  case "$pl_rest" in
+    \"*\") P_ITEM="${pl_rest#\"}"; P_ITEM="${P_ITEM%\"}" ;;
+    "$SESSIONS"/*)
+      P_ITEM="${pl_rest%%[[:space:]]*}"
+      P_BRANCH="$(printf '%s' "${pl_rest#"$P_ITEM"}" | sed 's/^[[:space:]]*//')"
+      P_ITEM="${P_ITEM%/}" ;;
+    *) P_ITEM="$pl_rest" ;;
+  esac
   P_REPO="$(expand_tilde "$P_REPO")"
   [ -n "$P_ITEM" ]
 }
@@ -118,6 +148,7 @@ first_queue_line() {
 remove_queue_line() {
   L="$1" awk 'BEGIN { l = ENVIRON["L"] } !d && $0 == l { d = 1; next } { print }' "$QUEUE" >"$QUEUE.tmp" \
     && mv "$QUEUE.tmp" "$QUEUE"
+  if first_queue_line | grep -qxF "$1"; then die "could not remove the processed line from $QUEUE, stopping"; fi
 }
 
 # resolve_repo <path>: prints the absolute path of a git repository, or returns 1.
@@ -129,7 +160,7 @@ resolve_repo() {
 
 safe_name() {
   sn="$1"
-  case "$sn" in docs/autopilot/sessions/*) sn="${sn%/}"; sn="${sn##*/}" ;; esac
+  case "$sn" in "$SESSIONS"/*) sn="${sn%/}"; sn="${sn##*/}" ;; esac
   printf '%s' "$sn" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-60
 }
 
@@ -137,50 +168,136 @@ ticket_from() {
   printf '%s' "$1" | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -n 1
 }
 
-# item_has_plan <tree> <item>: 0 when a PLAN.md for the item exists in that checkout.
-item_has_plan() {
-  case "$2" in
-    docs/autopilot/sessions/*) [ -f "$1/${2%/}/PLAN.md" ]; return ;;
-  esac
-  for ihp in "$1"/docs/autopilot/sessions/*"$2"*/; do
-    [ -f "${ihp}PLAN.md" ] && return 0
-  done
-  return 1
+current_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || true; }
+
+# default_ref <tree>: prints origin/<default> when that ref exists, else the local default branch.
+default_ref() {
+  dr_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null)" || return 1
+  if git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$dr_def"; then printf 'origin/%s\n' "$dr_def"
+  elif git -C "$1" show-ref --verify --quiet "refs/heads/$dr_def"; then printf '%s\n' "$dr_def"
+  else return 1; fi
 }
 
-# find_session_dir <tree> <item> [plan]: prints the session directory (relative) that
-# belongs to the item: the item itself, else the newest one whose name contains the item's
-# ticket key, else the newest one. With "plan", only directories that contain PLAN.md count.
+# base_sha <tree>: the commit the item started from: merge-base with the default branch,
+# else HEAD. Session directories created or changed since it belong to the item.
+base_sha() {
+  bs_ref="$(default_ref "$1")" || bs_ref=""
+  { [ -n "$bs_ref" ] && git -C "$1" merge-base "$bs_ref" HEAD 2>/dev/null; } \
+    || git -C "$1" rev-parse HEAD 2>/dev/null
+}
+
+# changed_session_dirs <tree> <base sha>: session directories (relative) with tracked changes
+# since the base or untracked files.
+changed_session_dirs() {
+  { git -C "$1" diff --name-only "$2" -- "$SESSIONS" 2>/dev/null
+    git -C "$1" ls-files --others --exclude-standard -- "$SESSIONS" 2>/dev/null
+  } | awk -F/ 'NF > 4 && $1 == "docs" && $2 == "autopilot" && $3 == "sessions" { print $1 "/" $2 "/" $3 "/" $4 }' | sort -u
+}
+
+# find_session_dir <tree> <item> <base sha or empty> [plan]: prints the session directory
+# (relative) that belongs to the item: the item itself when it is a session dir, else the
+# newest one whose name contains the item's ticket key, else the newest one created or changed
+# since the base sha. Never an unrelated directory. With "plan", only directories that contain
+# PLAN.md count.
 find_session_dir() {
-  fsd_tree="$1"; fsd_item="$2"; fsd_need="${3:-}"
+  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"
   case "$fsd_item" in
-    docs/autopilot/sessions/*)
-      if [ -d "$fsd_tree/${fsd_item%/}" ]; then
-        if [ -z "$fsd_need" ] || [ -f "$fsd_tree/${fsd_item%/}/PLAN.md" ]; then
-          printf '%s\n' "${fsd_item%/}"; return 0
-        fi
-      fi ;;
+    "$SESSIONS"/*)
+      fsd_d="${fsd_item%/}"
+      if [ -d "$fsd_tree/$fsd_d" ] && { [ -z "$fsd_need" ] || [ -f "$fsd_tree/$fsd_d/PLAN.md" ]; }; then
+        printf '%s\n' "$fsd_d"; return 0
+      fi
+      return 1 ;;
   esac
   fsd_key="$(ticket_from "$fsd_item")"
-  fsd_hit=""; fsd_any=""
-  for d in "$fsd_tree"/docs/autopilot/sessions/*/; do
-    [ -d "$d" ] || continue
-    if [ -n "$fsd_need" ] && [ ! -f "${d}PLAN.md" ]; then continue; fi
-    fsd_any="$d"
-    case "$d" in *"$fsd_key"*) [ -n "$fsd_key" ] && fsd_hit="$d" ;; esac
-  done
-  [ -n "$fsd_hit" ] || fsd_hit="$fsd_any"
+  fsd_hit=""
+  if [ -n "$fsd_key" ]; then
+    for d in "$fsd_tree/$SESSIONS"/*/; do
+      [ -d "$d" ] || continue
+      fsd_name="${d%/}"; fsd_name="${fsd_name##*/}"
+      case "$fsd_name" in *"$fsd_key"[!0-9]*|*"$fsd_key") ;; *) continue ;; esac
+      if [ -n "$fsd_need" ] && [ ! -f "${d}PLAN.md" ]; then continue; fi
+      fsd_hit="$SESSIONS/$fsd_name"
+    done
+  fi
+  if [ -z "$fsd_hit" ] && [ -n "$fsd_base" ]; then
+    fsd_list="$(changed_session_dirs "$fsd_tree" "$fsd_base")"
+    for d in $fsd_list; do
+      [ -d "$fsd_tree/$d" ] || continue
+      if [ -n "$fsd_need" ] && [ ! -f "$fsd_tree/$d/PLAN.md" ]; then continue; fi
+      fsd_hit="$d"
+    done
+  fi
   [ -n "$fsd_hit" ] || return 1
-  fsd_hit="${fsd_hit%/}"
-  printf '%s\n' "${fsd_hit#"$fsd_tree"/}"
+  printf '%s\n' "$fsd_hit"
+}
+
+# item_has_plan <repo> <item> [branch]: 0 when a PLAN.md for the item exists in the checkout,
+# or, with a branch, in that branch (local or origin).
+item_has_plan() {
+  if [ -n "${3:-}" ]; then
+    git -C "$1" cat-file -e "$3:${2%/}/PLAN.md" 2>/dev/null && return 0
+    git -C "$1" cat-file -e "origin/$3:${2%/}/PLAN.md" 2>/dev/null && return 0
+    return 1
+  fi
+  find_session_dir "$1" "$2" "" plan >/dev/null
+}
+
+# plan_effort <PLAN.md>: the value of the "Effort:" header line, or nothing.
+plan_effort() {
+  sed -n 's/^Effort:[[:space:]]*\([A-Za-z]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# branch_of_dir <repo> <session dir>: the branch that holds the directory: the current branch
+# when the directory exists in the checkout, else the branch at whose tip it was last touched
+# (git log --all), else the default branch.
+branch_of_dir() {
+  bd_repo="$1"; bd_dir="${2%/}"
+  bd_cur="$(current_branch "$bd_repo")"
+  if [ -n "$bd_cur" ] && [ -d "$bd_repo/$bd_dir" ]; then printf '%s\n' "$bd_cur"; return 0; fi
+  git -C "$bd_repo" fetch -q origin >/dev/null 2>&1 || true
+  bd_dec="$(git -C "$bd_repo" log --all --format=%D -1 -- "$bd_dir" 2>/dev/null)"
+  bd_hit="$(printf '%s\n' "$bd_dec" | tr ',' '\n' | sed 's/^ *//; s/^HEAD -> //; s#^origin/##' \
+    | grep -v -E '^(HEAD|tag: .*)?$' | head -n 1)"
+  if [ -n "$bd_hit" ]; then printf '%s\n' "$bd_hit"; return 0; fi
+  (cd "$bd_repo" && "$DEFBRANCH")
 }
 
 gh_in() { gi_dir="$1"; shift; (cd "$gi_dir" && "$GH_BIN" "$@"); }
 
-# list_ready_prs <repo>: lines "<number> <branch> <url>" of open PRs labelled autopilot-ready.
+# list_ready_prs <repo> <outfile>: writes lines "<number> <branch> <url>" of open PRs labelled
+# autopilot-ready. On failure prints a FAIL line, sets SOURCE_FAILED and returns 1.
 list_ready_prs() {
-  gh_in "$1" pr list --label "$LABEL_READY" --state open --json number,headRefName,url \
-    --jq '.[] | "\(.number) \(.headRefName) \(.url)"' 2>/dev/null
+  lr_err="$(gh_in "$1" pr list --label "$LABEL_READY" --state open --json number,headRefName,url \
+    --jq '.[] | "\(.number) \(.headRefName) \(.url)"' 2>&1 >"$2")"; lr_rc=$?
+  if [ "$lr_rc" -ne 0 ]; then
+    say "FAIL - $1: gh pr list --label $LABEL_READY failed (exit $lr_rc): $(printf '%s' "$lr_err" | head -n 1)"
+    SOURCE_FAILED=1
+    : >"$2"
+    return 1
+  fi
+}
+
+# ---------- labels ----------
+
+# ensure_labels <repo>: creates the three queue labels when missing; prints one line per
+# label; returns 1 when one is missing and could not be created.
+ensure_labels() {
+  el_repo="$1"; el_rb="$(basename "$el_repo")"; el_fail=0
+  el_have="$(gh_in "$el_repo" label list --limit 200 --json name --jq '.[].name' 2>/dev/null)"
+  for el_l in "$LABEL_READY:0E8A16:Plan ready, the autopilot queue picks this PR up" \
+              "$LABEL_DONE:1D76DB:Autopilot finished, report in the comments" \
+              "$LABEL_BLOCKED:B60205:Autopilot stopped, reason in the comments"; do
+    el_name="${el_l%%:*}"; el_rest="${el_l#*:}"; el_color="${el_rest%%:*}"; el_desc="${el_rest#*:}"
+    if printf '%s\n' "$el_have" | grep -qx "$el_name"; then
+      echo "ok   - label $el_name exists in $el_rb"
+    elif gh_in "$el_repo" label create "$el_name" --color "$el_color" --description "$el_desc" >/dev/null 2>&1; then
+      echo "ok   - label $el_name created in $el_rb"
+    else
+      echo "FAIL - label $el_name missing in $el_rb and gh label create failed"; el_fail=1
+    fi
+  done
+  return "$el_fail"
 }
 
 # ---------- notifications ----------
@@ -202,10 +319,10 @@ notify() {
       n_json="{\"text\":\"$n_esc\"}"
     fi
     # stderr is dropped on purpose: curl error messages can quote the URL.
-    if ! curl -sS --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
-        "$SLACK_WEBHOOK_URL" >/dev/null 2>&1; then
-      log "notification: Slack webhook failed (curl exit $?)"
-    fi
+    curl -sS --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
+      "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
+    n_rc=$?
+    [ "$n_rc" -eq 0 ] || log "notification: Slack webhook failed (curl exit $n_rc)"
   fi
   return 0
 }
@@ -229,6 +346,7 @@ acquire_lock() {
 
 release_lock() { rm -rf "$LOCK"; }
 
+# kill_run: SIGTERM to the claude pid, SIGKILL after 10 s. Children of a tool call may survive.
 kill_run() {
   [ -n "$RUN_PIDFILE" ] && [ -f "$RUN_PIDFILE" ] || return 0
   kr_pid="$(cat "$RUN_PIDFILE")"
@@ -238,30 +356,51 @@ kill_run() {
   kill -9 "$kr_pid" 2>/dev/null || true
 }
 
-# prepare_worktree <repo> <worktree> <text|pr> [branch]
+# refresh_worktree <worktree>: fetch and fast-forward the checked-out branch (a developer may
+# have pushed a fix). Not fast-forwardable: say so and continue on the local state.
+refresh_worktree() {
+  rw_wt="$1"; rw_b="$(current_branch "$rw_wt")"
+  [ -n "$rw_b" ] || return 0
+  git -C "$rw_wt" fetch -q origin "$rw_b" >>"$ITEM_LOG" 2>&1 || { log "fetch of $rw_b failed, using the local state"; return 0; }
+  if git -C "$rw_wt" merge -q --ff-only "origin/$rw_b" >>"$ITEM_LOG" 2>&1; then
+    log "$rw_b fast-forwarded to origin/$rw_b"
+  else
+    say "$rw_b is not fast-forwardable to origin/$rw_b, continuing on the local state"
+  fi
+}
+
+# prepare_worktree <repo> <worktree> [branch]: a worktree on the branch (fetched first), or
+# detached from the default branch when no branch is given. An existing worktree is reused
+# and refreshed.
 prepare_worktree() {
-  pw_repo="$1"; pw_wt="$2"; pw_kind="$3"; pw_branch="${4:-}"
-  if [ -e "$pw_wt/.git" ]; then log "reusing worktree $pw_wt"; return 0; fi
+  pw_repo="$1"; pw_wt="$2"; pw_branch="${3:-}"
+  if [ -e "$pw_wt/.git" ]; then log "reusing worktree $pw_wt"; refresh_worktree "$pw_wt"; return 0; fi
   mkdir -p "$WTDIR"
   git -C "$pw_repo" worktree prune >>"$ITEM_LOG" 2>&1
-  if [ "$pw_kind" = pr ]; then
-    git -C "$pw_repo" fetch -q origin "$pw_branch" >>"$ITEM_LOG" 2>&1 || { log "fetch of $pw_branch failed"; return 1; }
-    if git -C "$pw_repo" show-ref --verify --quiet "refs/heads/$pw_branch"; then
+  if [ -n "$pw_branch" ]; then
+    git -C "$pw_repo" fetch -q origin "$pw_branch" >>"$ITEM_LOG" 2>&1 || log "fetch of $pw_branch failed"
+    pw_local=""; pw_remote=""
+    git -C "$pw_repo" show-ref --verify --quiet "refs/heads/$pw_branch" && pw_local=1
+    git -C "$pw_repo" show-ref --verify --quiet "refs/remotes/origin/$pw_branch" && pw_remote=1
+    if [ -z "$pw_local" ] && [ -z "$pw_remote" ]; then log "branch $pw_branch exists neither locally nor on origin"; return 1; fi
+    if [ -n "$pw_local" ] && git -C "$pw_repo" worktree list --porcelain | grep -qx "branch refs/heads/$pw_branch"; then
+      say "branch $pw_branch is checked out in another worktree, using a detached worktree at its tip"
+      git -C "$pw_repo" worktree add --detach "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
+    elif [ -n "$pw_local" ]; then
       git -C "$pw_repo" worktree add "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
-      git -C "$pw_wt" merge -q --ff-only "origin/$pw_branch" >>"$ITEM_LOG" 2>&1 || log "local $pw_branch is not behind origin, left as is"
+      if [ -n "$pw_remote" ]; then
+        git -C "$pw_wt" merge -q --ff-only "origin/$pw_branch" >>"$ITEM_LOG" 2>&1 \
+          || say "$pw_branch is not fast-forwardable to origin/$pw_branch, continuing on the local state"
+      fi
     else
       git -C "$pw_repo" worktree add -b "$pw_branch" "$pw_wt" "origin/$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
     fi
   else
-    pw_base="$(cd "$pw_repo" && "$DEFBRANCH")" || return 1
-    git -C "$pw_repo" fetch -q origin >>"$ITEM_LOG" 2>&1 || log "fetch failed, using the local $pw_base"
-    pw_start="$pw_base"
-    if git -C "$pw_repo" show-ref --verify --quiet "refs/remotes/origin/$pw_base"; then pw_start="origin/$pw_base"; fi
+    git -C "$pw_repo" fetch -q origin >>"$ITEM_LOG" 2>&1 || log "fetch failed, using the local default branch"
+    pw_start="$(default_ref "$pw_repo")" || { log "no default branch found"; return 1; }
     git -C "$pw_repo" worktree add --detach "$pw_wt" "$pw_start" >>"$ITEM_LOG" 2>&1 || return 1
   fi
 }
-
-current_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || true; }
 
 # run_attempt <worktree> <item> <item start epoch> <watchdog state>: sets RUN_RESULT to
 # exited|stalled|timeout and RUN_EXIT to the claude exit code.
@@ -271,8 +410,8 @@ run_attempt() {
   rm -f "$ra_exit" "$RUN_PIDFILE"
   (
     cd "$ra_wt" || exit 1
-    "$CLAUDE_BIN" -p "/autopilot $ra_item" --model "$MODEL" --effort "$EFFORT" --advisor "$ADVISOR" \
-      --fallback-model opus --permission-mode auto --max-budget-usd "$BUDGET" --output-format json \
+    "$CLAUDE_BIN" -p "/autopilot $ra_item" --model "$MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR" \
+      --fallback-model "$FALLBACK_MODEL" --permission-mode auto --max-budget-usd "$BUDGET" --output-format json \
       >>"$ITEM_LOG" 2>&1 &
     echo "$!" >"$RUN_PIDFILE"
     wait "$!"
@@ -306,12 +445,26 @@ run_attempt() {
   log "claude exited with $RUN_EXIT ($RUN_RESULT)"
 }
 
-# process_item <repo> <text|pr> <item or PR number> [queue line]
+# report_status <REPORT.md>: sets pi_status and pi_reason from the first line of the report:
+# "Status: done" -> done, "Status: blocked - <reason>" -> blocked, anything else -> blocked.
+report_status() {
+  rs_line="$(head -n 1 "$1" 2>/dev/null | sed 's/[[:space:]]*$//')"
+  case "$rs_line" in
+    "Status: done"|"Status: done "*) pi_status="done"; pi_reason="" ;;
+    "Status: blocked"*)
+      pi_status=blocked
+      pi_reason="$(printf '%s' "${rs_line#Status: blocked}" | sed 's/^[[:space:]]*-*[[:space:]]*//')"
+      [ -n "$pi_reason" ] || pi_reason="blocked by the run, no reason given in REPORT.md" ;;
+    *) pi_status=blocked; pi_reason="report without status line (first line of REPORT.md: '${rs_line:-empty}')" ;;
+  esac
+}
+
+# process_item <repo> <text|pr> <item or PR number> [queue line] [branch]
 process_item() {
-  pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"
+  pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_branch=""; pi_noplan=""
-  pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""
+  pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   mkdir -p "$LOGDIR"
   ITEM_LOG="$LOGDIR/$(date +%Y%m%d-%H%M%S)-$(safe_name "$pi_item").log"
@@ -319,6 +472,7 @@ process_item() {
   say "$pi_rb $pi_item: resolving"
 
   pi_repo="$(resolve_repo "$pi_repo_in")" || { pi_status=blocked; pi_reason="$pi_repo_in is not a git repository"; }
+  pi_gh_dir="${pi_repo:-}"
 
   if [ -z "$pi_status" ] && [ "$pi_kind" = pr ]; then
     pi_view="$(gh_in "$pi_repo" pr view "$pi_ref" --json headRefName,url,number --jq '"\(.number) \(.headRefName) \(.url)"' 2>>"$ITEM_LOG")"
@@ -332,51 +486,64 @@ process_item() {
 
   if [ -z "$pi_status" ]; then
     pi_wt="$WTDIR/$pi_rb-$(safe_name "$pi_item")"
-    if ! prepare_worktree "$pi_repo" "$pi_wt" "$pi_kind" "$pi_branch"; then
+    if prepare_worktree "$pi_repo" "$pi_wt" "$pi_branch"; then
+      pi_gh_dir="$pi_wt"
+    else
       pi_status=blocked; pi_reason="worktree could not be created (see $ITEM_LOG)"
     fi
   fi
 
   if [ -z "$pi_status" ]; then
+    pi_base="$(base_sha "$pi_wt")"
     if [ "$pi_kind" = pr ]; then
-      pi_sd="$(find_session_dir "$pi_wt" "$pi_branch" plan || true)"
-      if [ -n "$pi_sd" ]; then
-        pi_item="$pi_sd"
+      pi_sd0="$(find_session_dir "$pi_wt" "$pi_branch" "$pi_base" plan || true)"
+      if [ -n "$pi_sd0" ]; then
+        pi_item="$pi_sd0"
       else
         pi_noplan=no-plan
         pi_item="$(ticket_from "$pi_branch")"; [ -n "$pi_item" ] || pi_item="$pi_branch"
       fi
       say "$pi_rb #$pi_ref: item $pi_item${pi_noplan:+ ($pi_noplan)}"
-    elif ! item_has_plan "$pi_wt" "$pi_item"; then
-      pi_noplan=no-plan
+    else
+      pi_sd0="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" plan || true)"
+      [ -n "$pi_sd0" ] || pi_noplan=no-plan
+    fi
+    RUN_EFFORT="$EFFORT"
+    if [ -n "$pi_sd0" ] && [ -z "$EFFORT_FROM_ENV" ]; then
+      pi_pe="$(plan_effort "$pi_wt/$pi_sd0/PLAN.md")"
+      if [ -n "$pi_pe" ]; then RUN_EFFORT="$pi_pe"; log "effort $pi_pe from $pi_sd0/PLAN.md"; fi
     fi
     say "$pi_rb $pi_item: worktree ready ($pi_wt)"
 
     pi_start="$(date +%s)"
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     while :; do
-      say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $MODEL, effort $EFFORT)"
+      say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $MODEL, effort $RUN_EFFORT)"
       run_attempt "$pi_wt" "$pi_item" "$pi_start" "$pi_state"
       if [ "$RUN_RESULT" = timeout ]; then
         pi_status=timeout; pi_reason="wall-clock timeout of $TIMEOUT_MIN min"; break
       fi
-      pi_sd="$(find_session_dir "$pi_wt" "$pi_item" || true)"
-      if [ -n "$pi_sd" ] && [ -f "$pi_wt/$pi_sd/HANDOFF.md" ]; then
+      pi_sd="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" || true)"
+      if [ -z "$pi_sd" ]; then
+        pi_status=blocked; pi_reason="no session directory for this item under $SESSIONS/ (claude exit $RUN_EXIT)"; break
+      fi
+      if [ -f "$pi_wt/$pi_sd/HANDOFF.md" ]; then
         if [ "$pi_restarts" -ge "$MAX_RESTARTS" ]; then
           pi_status=handoff-limit; pi_reason="HANDOFF.md still present after $MAX_RESTARTS restarts"; break
         fi
         pi_restarts=$((pi_restarts + 1))
         say "$pi_rb $pi_item: hand-off found, restart $pi_restarts/$MAX_RESTARTS"
+        refresh_worktree "$pi_wt"
         continue
       fi
-      if [ -n "$pi_sd" ] && [ -f "$pi_wt/$pi_sd/REPORT.md" ]; then
-        pi_status="done"; break
+      if [ -f "$pi_wt/$pi_sd/REPORT.md" ]; then
+        report_status "$pi_wt/$pi_sd/REPORT.md"; break
       fi
       pi_status=blocked
       if [ "$RUN_RESULT" = stalled ]; then
         pi_reason="run stalled (no commit or plan change for 4 watchdog ticks), killed"
       else
-        pi_reason="no REPORT.md or HANDOFF.md in ${pi_sd:-docs/autopilot/sessions/} (claude exit $RUN_EXIT)"
+        pi_reason="no REPORT.md or HANDOFF.md in $pi_sd (claude exit $RUN_EXIT)"
       fi
       break
     done
@@ -388,11 +555,20 @@ process_item() {
   ITEM_LOG=""
 }
 
+# gh_step <description> <gh args...>: runs gh in the item's directory; a failure is said and
+# remembered as labels-failed.
+gh_step() {
+  gs_what="$1"; shift
+  if ! gh_in "$pi_gh_dir" "$@" >>"$ITEM_LOG" 2>&1; then
+    say "$pi_rb $pi_item: $gs_what failed (see $ITEM_LOG)"; pi_gh_failed=labels-failed
+  fi
+}
+
 # finish_item: uses the pi_* variables of process_item. Labels the PR, records, notifies.
 finish_item() {
   pi_draft=""
-  if [ -n "$pi_branch" ] && [ -n "${pi_wt:-}" ] && [ -d "$pi_wt" ]; then
-    pi_found="$(gh_in "$pi_wt" pr list --head "$pi_branch" --state open --json url,number,isDraft \
+  if [ -n "$pi_branch" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
+    pi_found="$(gh_in "$pi_gh_dir" pr list --head "$pi_branch" --state open --json url,number,isDraft \
       --jq '.[0] // empty | "\(.number) \(.isDraft) \(.url)"' 2>>"$ITEM_LOG" || true)"
     if [ -n "$pi_found" ]; then
       pi_pr_number="${pi_found%% *}"
@@ -400,41 +576,39 @@ finish_item() {
     fi
   fi
 
-  if [ -n "$pi_pr_number" ]; then
+  if [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
     pi_body="$(mktemp "${TMPDIR:-/tmp}/autopilot-queue.XXXXXX")"
     if [ "$pi_status" = "done" ]; then
-      if [ "$pi_draft" = true ]; then
-        gh_in "$pi_wt" pr ready "$pi_pr_number" >>"$ITEM_LOG" 2>&1 || log "gh pr ready failed"
-      fi
-      gh_in "$pi_wt" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_DONE" >>"$ITEM_LOG" 2>&1 \
-        || log "gh pr edit (labels) failed"
+      if [ "$pi_draft" = true ]; then gh_step "gh pr ready" pr ready "$pi_pr_number"; fi
+      gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_DONE"
       {
         printf '## Autopilot report\n\n'
         head -n 60 "$pi_wt/$pi_sd/REPORT.md"
       } >"$pi_body"
     else
-      gh_in "$pi_wt" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_BLOCKED" >>"$ITEM_LOG" 2>&1 \
-        || log "gh pr edit (labels) failed"
+      gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_BLOCKED"
       # shellcheck disable=SC2016
       printf '## Autopilot queue: %s\n\n%s\n\nLog: `%s`\nWorktree kept at `%s`. Add the label `%s` again to retry.\n' \
         "$pi_status" "$pi_reason" "$ITEM_LOG" "${pi_wt:--}" "$LABEL_READY" >"$pi_body"
     fi
-    gh_in "$pi_wt" pr comment "$pi_pr_number" --body-file "$pi_body" >>"$ITEM_LOG" 2>&1 || log "gh pr comment failed"
+    gh_step "gh pr comment" pr comment "$pi_pr_number" --body-file "$pi_body"
     rm -f "$pi_body"
   fi
 
   pi_extra=""
   [ "$pi_restarts" -gt 0 ] && pi_extra=" restarts=$pi_restarts"
   [ -n "$pi_noplan" ] && pi_extra="$pi_extra $pi_noplan"
+  [ -n "$pi_gh_failed" ] && pi_extra="$pi_extra $pi_gh_failed"
   printf '%s %s %s %s %s%s\n' "$(now_iso)" "${pi_repo:-$pi_repo_in}" "$(quote_item "$pi_item")" "$pi_status" "$pi_pr_url" "$pi_extra" >>"$DONE"
   [ -n "$pi_line" ] && remove_queue_line "$pi_line"
 
+  pi_shown="$pi_status${pi_gh_failed:+ $pi_gh_failed}"
   if [ "$pi_status" = "done" ]; then
-    say "$pi_rb $pi_item: done (PR $pi_pr_url${pi_extra:+,$pi_extra})"
+    say "$pi_rb $pi_item: $pi_shown (PR $pi_pr_url${pi_extra:+,$pi_extra})"
   else
-    say "$pi_rb $pi_item: $pi_status: $pi_reason (log $ITEM_LOG)"
+    say "$pi_rb $pi_item: $pi_shown: $pi_reason (log $ITEM_LOG)"
   fi
-  notify "$pi_rb $pi_item: $pi_status $pi_pr_url"
+  notify "$pi_rb $pi_item: $pi_shown $pi_pr_url"
 
   if [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
     if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
@@ -445,68 +619,95 @@ finish_item() {
   fi
 }
 
+# live_repos <outfile>: the repo paths of repos.txt without comments and blank lines.
+live_repos() {
+  : >"$1"
+  [ -f "$REPOS" ] && grep -v -E '^[[:space:]]*(#|$)' "$REPOS" >"$1"
+  return 0
+}
+
 cmd_run() {
   load_env
+  warn_env_mode
   acquire_lock
   mkdir -p "$LOGDIR" "$WTDIR"
-  r_n=0
   while r_line="$(first_queue_line)"; do
-    parse_line "$r_line" || { remove_queue_line "$r_line"; continue; }
-    process_item "$P_REPO" text "$P_ITEM" "$r_line"
-    r_n=$((r_n + 1))
-    if first_queue_line | grep -qxF "$r_line"; then
-      die "could not remove the processed line from $QUEUE, stopping"
+    if ! parse_line "$r_line"; then
+      say "removed unparsable line from queue.txt: $r_line"
+      remove_queue_line "$r_line"; continue
     fi
+    process_item "$P_REPO" text "$P_ITEM" "$r_line" "$P_BRANCH"
   done
-  if [ -f "$REPOS" ]; then
-    grep -v -E '^[[:space:]]*(#|$)' "$REPOS" | while IFS= read -r r_repo; do
-      r_repo="$(expand_tilde "$r_repo")"
-      r_abs="$(resolve_repo "$r_repo")" || { echo "[autopilot-queue] $r_repo: not a git repository, skipped"; continue; }
-      list_ready_prs "$r_abs" >"$LOGDIR/.prs.$$"
-      while read -r r_num _; do
-        [ -n "$r_num" ] || continue
-        process_item "$r_abs" pr "$r_num"
-      done <"$LOGDIR/.prs.$$"
-      rm -f "$LOGDIR/.prs.$$"
-    done
+  r_repos="$LOGDIR/.repos.$$"; r_prs="$LOGDIR/.prs.$$"
+  live_repos "$r_repos"
+  while IFS= read -r r_repo || [ -n "$r_repo" ]; do
+    r_repo="$(expand_tilde "$r_repo")"
+    r_abs="$(resolve_repo "$r_repo")" || { say "$r_repo: not a git repository, skipped"; continue; }
+    list_ready_prs "$r_abs" "$r_prs" || continue
+    while read -r r_num _; do
+      [ -n "$r_num" ] || continue
+      process_item "$r_abs" pr "$r_num"
+    done <"$r_prs"
+  done <"$r_repos"
+  rm -f "$r_repos" "$r_prs"
+  if [ "$SOURCE_FAILED" -ne 0 ]; then
+    echo "[autopilot-queue] run finished, one source failed (see above)"; exit 1
   fi
   echo "[autopilot-queue] run finished"
 }
 
 cmd_list() {
   load_env
+  warn_env_mode
   if [ -f "$QUEUE" ]; then
     while IFS= read -r l_line || [ -n "$l_line" ]; do
       parse_line "$l_line" || continue
       l_mark=""
       if l_abs="$(resolve_repo "$P_REPO")"; then
-        item_has_plan "$l_abs" "$P_ITEM" || l_mark=" (no plan)"
+        item_has_plan "$l_abs" "$P_ITEM" "$P_BRANCH" || l_mark=" (no plan)"
       else
         l_mark=" (not a git repository)"
       fi
-      printf 'queue  %s  %s%s\n' "$P_REPO" "$(quote_item "$P_ITEM")" "$l_mark"
+      printf 'queue  %s  %s%s%s\n' "$P_REPO" "$(quote_item "$P_ITEM")" "${P_BRANCH:+ $P_BRANCH}" "$l_mark"
     done <"$QUEUE"
   fi
-  if [ -f "$REPOS" ]; then
-    grep -v -E '^[[:space:]]*(#|$)' "$REPOS" | while IFS= read -r l_repo; do
-      l_repo="$(expand_tilde "$l_repo")"
-      l_abs="$(resolve_repo "$l_repo")" || { printf 'pr     %s  (not a git repository)\n' "$l_repo"; continue; }
-      list_ready_prs "$l_abs" | while read -r l_num l_branch l_url; do
-        [ -n "$l_num" ] || continue
-        printf 'pr     %s  #%s %s %s\n' "$l_abs" "$l_num" "$l_branch" "$l_url"
-      done
-    done
-  fi
+  l_repos="$LOGDIR/.repos.list.$$"; l_prs="$LOGDIR/.prs.list.$$"
+  mkdir -p "$LOGDIR"
+  live_repos "$l_repos"
+  while IFS= read -r l_repo || [ -n "$l_repo" ]; do
+    l_repo="$(expand_tilde "$l_repo")"
+    l_abs="$(resolve_repo "$l_repo")" || { printf 'pr     %s  (not a git repository)\n' "$l_repo"; continue; }
+    list_ready_prs "$l_abs" "$l_prs" || continue
+    while read -r l_num l_branch l_url; do
+      [ -n "$l_num" ] || continue
+      printf 'pr     %s  #%s %s %s\n' "$l_abs" "$l_num" "$l_branch" "$l_url"
+    done <"$l_prs"
+  done <"$l_repos"
+  rm -f "$l_repos" "$l_prs"
+  [ "$SOURCE_FAILED" -eq 0 ]
 }
 
 cmd_add() {
-  [ $# -ge 2 ] || die "usage: autopilot-queue add <repo> <item...>"
+  [ $# -ge 2 ] || die "usage: autopilot-queue add <repo> <item> [<branch>]"
   a_repo="$(resolve_repo "$1")" || die "$1 is not a git repository"
   shift
-  a_item="$*"
+  a_item="$1"; a_branch=""
+  case "$a_item" in
+    "$SESSIONS"/*)
+      [ $# -le 2 ] || die "usage: autopilot-queue add <repo> <session dir> [<branch>]"
+      a_item="${a_item%/}"
+      a_branch="${2:-}"
+      [ -n "$a_branch" ] || a_branch="$(branch_of_dir "$a_repo" "$a_item")" || die "no branch found for $a_item in $a_repo" ;;
+    *) a_item="$*" ;;
+  esac
   mkdir -p "$QHOME"
-  printf '%s %s\n' "$a_repo" "$(quote_item "$a_item")" >>"$QUEUE"
-  echo "added: $a_repo $(quote_item "$a_item")"
+  printf '%s %s%s\n' "$a_repo" "$(quote_item "$a_item")" "${a_branch:+ $a_branch}" >>"$QUEUE"
+  echo "added: $a_repo $(quote_item "$a_item")${a_branch:+ $a_branch}"
+}
+
+cmd_labels() {
+  lb_repo="$(resolve_repo "${1:-.}")" || die "${1:-.} is not a git repository"
+  ensure_labels "$lb_repo"
 }
 
 cmd_doctor() {
@@ -531,7 +732,7 @@ cmd_doctor() {
   if "$GH_BIN" auth status >/dev/null 2>&1; then ok "gh auth status"; else bad "gh auth status failed (run: gh auth login)"; fi
 
   if [ -f "$ENVFILE" ]; then
-    if stat -f %Lp "$ENVFILE" >/dev/null 2>&1; then d_mode="$(stat -f %Lp "$ENVFILE")"; else d_mode="$(stat -c %a "$ENVFILE")"; fi
+    d_mode="$(file_mode "$ENVFILE")"
     if [ "$d_mode" = 600 ]; then ok "env file mode 600"; else bad "env file mode is $d_mode, want 600 (chmod 600 $ENVFILE)"; fi
   fi
 
@@ -540,25 +741,15 @@ cmd_doctor() {
     while IFS= read -r d_line || [ -n "$d_line" ]; do parse_line "$d_line" && printf '%s\n' "$P_REPO"; done <"$QUEUE" >>"$d_repos"
   fi
   if [ -f "$REPOS" ]; then grep -v -E '^[[:space:]]*(#|$)' "$REPOS" >>"$d_repos"; fi
-  sort -u "$d_repos" | while IFS= read -r d_repo; do
+  sort -u "$d_repos" >"$d_repos.sorted"
+  echo "repos in the queue: $(grep -c . "$d_repos.sorted")"
+  while IFS= read -r d_repo || [ -n "$d_repo" ]; do
     d_repo="$(expand_tilde "$d_repo")"
-    if ! d_abs="$(resolve_repo "$d_repo")"; then echo "FAIL - $d_repo is not a git repository"; continue; fi
-    echo "ok   - repo $d_abs"
-    d_labels="$(gh_in "$d_abs" label list --limit 200 --json name --jq '.[].name' 2>/dev/null)"
-    for d_l in "$LABEL_READY:0E8A16:autopilot queue picks this PR up" "$LABEL_DONE:5319E7:autopilot run finished" "$LABEL_BLOCKED:D93F0B:autopilot run needs a human"; do
-      d_name="${d_l%%:*}"; d_rest="${d_l#*:}"; d_color="${d_rest%%:*}"; d_desc="${d_rest#*:}"
-      if printf '%s\n' "$d_labels" | grep -qx "$d_name"; then
-        echo "ok   - label $d_name in $(basename "$d_abs")"
-      elif gh_in "$d_abs" label create "$d_name" --color "$d_color" --description "$d_desc" >/dev/null 2>&1; then
-        echo "ok   - label $d_name created in $(basename "$d_abs")"
-      else
-        echo "FAIL - label $d_name missing in $(basename "$d_abs") and gh label create failed"
-      fi
-    done
-  done >"$d_repos.out"
-  cat "$d_repos.out"
-  grep -q '^FAIL' "$d_repos.out" && d_fail=1
-  rm -f "$d_repos" "$d_repos.out"
+    if ! d_abs="$(resolve_repo "$d_repo")"; then bad "$d_repo is not a git repository"; continue; fi
+    ok "repo $d_abs"
+    ensure_labels "$d_abs" || d_fail=1
+  done <"$d_repos.sorted"
+  rm -f "$d_repos" "$d_repos.sorted"
 
   [ "$d_fail" -eq 0 ] && echo "doctor: all checks passed"
   return "$d_fail"
@@ -570,6 +761,13 @@ cmd_install_schedule() {
   case "$is_time" in [0-2][0-9]:[0-5][0-9]) ;; *) die "usage: autopilot-queue install-schedule HH:MM" ;; esac
   is_h="${is_time%%:*}"; is_m="${is_time#*:}"
   is_h="${is_h#0}"; is_m="${is_m#0}"; [ -n "$is_h" ] || is_h=0; [ -n "$is_m" ] || is_m=0
+  if [ -x "$MARKETPLACE_BIN/autopilot-queue" ]; then
+    is_bin="$MARKETPLACE_BIN"
+  else
+    is_bin="$script_dir"
+    echo "warning: $MARKETPLACE_BIN/autopilot-queue not found, the LaunchAgent points at $script_dir/autopilot-queue;"
+    echo "         that path changes with plugin versions, re-run install-schedule after a plugin update"
+  fi
   mkdir -p "$(dirname "$PLIST")" "$LOGDIR"
   cat >"$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -578,12 +776,13 @@ cmd_install_schedule() {
 <dict>
   <key>Label</key><string>de.evelan.autopilot-queue</string>
   <key>ProgramArguments</key>
-  <array><string>$script_dir/autopilot-queue</string><string>run</string></array>
+  <array><string>$is_bin/autopilot-queue</string><string>run</string></array>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>$is_h</integer><key>Minute</key><integer>$is_m</integer></dict>
+  <key>WorkingDirectory</key><string>$HOME</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$is_bin:/usr/bin:/bin</string>
     <key>HOME</key><string>$HOME</string>
     <key>AUTOPILOT_QUEUE_HOME</key><string>$QHOME</string>
   </dict>
@@ -594,7 +793,7 @@ cmd_install_schedule() {
 EOF
   launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "launchctl bootstrap failed for $PLIST"
-  echo "installed: $PLIST (daily at $is_time, in the GUI session so the Keychain login is readable)"
+  echo "installed: $PLIST (daily at $is_time, runs $is_bin/autopilot-queue in the GUI session so the Keychain login is readable)"
 }
 
 cmd_uninstall_schedule() {
@@ -610,9 +809,10 @@ case "$cmd" in
   run) cmd_run ;;
   list) cmd_list ;;
   add) cmd_add "$@" ;;
+  labels) cmd_labels "$@" ;;
   doctor) cmd_doctor ;;
   install-schedule) cmd_install_schedule "$@" ;;
   uninstall-schedule) cmd_uninstall_schedule ;;
   -h|--help|help|'') usage ;;
-  *) die "unknown command: $cmd (run | list | add | doctor | install-schedule | uninstall-schedule)" ;;
+  *) die "unknown command: $cmd (run | list | add | labels | doctor | install-schedule | uninstall-schedule)" ;;
 esac

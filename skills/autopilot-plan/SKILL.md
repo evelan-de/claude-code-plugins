@@ -93,9 +93,12 @@ does not list it. The dollar cap (`--max-budget-usd 60`) exists only in headless
 Then ask once: **run it yourself, or hand it to the queue?** Hand to the queue → push the
 branch, open a draft PR against the base (`gh pr create --draft --label autopilot-ready`,
 title `<KEY>: <destination in a few words>`, body: the Destination and Goal artifact
-paragraphs plus the path of `PLAN.md`; create the label when missing, the same as
-`autopilot-queue doctor` would) and say: the queue on the office Mini picks it up on its next
-run, the result comes back on this PR (label `autopilot-done` or `autopilot-blocked`, report
-as a comment) and in Slack. Feature-branch mode has no PR: hand-over means pushing the feature
-branch and adding the item to the queue file (`autopilot-queue add <repo> <session dir>`).
-Say what is still open, if anything. Do not implement anything here.
+paragraphs plus the path of `PLAN.md`; create the label when missing:
+`autopilot-queue labels`) and say: the queue on the office Mini picks it up on its next run,
+the result comes back on this PR (label `autopilot-done` or `autopilot-blocked`, report as a
+comment) and in Slack. Developer note: the repo must be listed in the queue's `repos.txt` on
+the Mini; Andreas adds a repo once (`autopilot-queue doctor` prints the list), so a repo not
+yet on it goes to him with the PR link. Feature-branch mode has no PR: hand-over means pushing
+the feature branch and adding the item to the queue file (`autopilot-queue add <repo>
+<session dir>`, which records the branch). Say what is still open, if anything. Do not
+implement anything here.

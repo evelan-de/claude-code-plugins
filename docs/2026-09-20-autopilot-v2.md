@@ -35,24 +35,12 @@ Removed in 2.0: `mission-control`, `autopilot-lead`, `autopilot-implementer`,
 `autopilot-planner`. Kept: `autopilot-reviewer`, `autopilot-plan-reviewer`, the four hooks,
 `autopilot-watchdog` (the queue's stall detector), `autopilot-usage`.
 
-## Queue design (proposal)
+## Queue design (built 2026-09-20 as `bin/autopilot-queue`)
 
-**Input: a plain text file**, one item per line, in the repo that owns the queue or in
-`~/.claude/autopilot-queue.txt`:
-
-```
-# repo                                  item
-/Users/me/dev/projects/paul             docs/autopilot/sessions/2026-09-20-PAUL-2800-vvg-export
-/Users/me/dev/projects/paul             PAUL-2801
-/Users/me/dev/projects/evelan-slides    #142
-/Users/me/dev/projects/evelan-slides    "Move the layout picker into the composer"
-```
-
-An item is a prepared session directory (preferred), a ticket key or GitHub issue number (the
-run writes its own plan with conservative decisions), or a quoted topic. Lines starting with
-`#` are comments. Items are processed top to bottom; a finished or blocked item is moved to
-`autopilot-queue.done.txt` with its result line (branch, PR URL or blocker), so the queue file
-always shows what is left.
+User documentation, file formats and commands: `skills/autopilot/references/queue.md`. In
+short: `~/.claude/autopilot-queue/queue.txt` (`<repo> <item> [<branch>]`, one per line) plus
+every open PR labelled `autopilot-ready` in the repos of `repos.txt`; results in `done.txt`,
+on the PR and in Slack.
 
 **Per item** the script (`bin/autopilot-queue`, built 2026-09-20; user docs in
 `skills/autopilot/references/queue.md`):
