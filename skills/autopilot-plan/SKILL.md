@@ -1,7 +1,7 @@
 ---
 name: autopilot-plan
 description: Write the plan an autopilot run executes. Interactive, in your own session, for one topic (ticket, spec, or idea). Triggers on "/autopilot-plan", "autopilot plan", "Plan für den Autopiloten", "bereite eine Autopilot-Session vor", "prepare an autopilot session".
-argument-hint: "<ticket key | spec file | topic>   (add 'feature branch <name>' when several sessions share one branch)"
+argument-hint: "<ticket key | spec file | topic>   (a topic without a ticket gets its ticket created; add 'feature branch <name>' when several sessions share one branch)"
 ---
 
 # Autopilot plan
@@ -20,7 +20,11 @@ here, once. Developers run this too.
   implementation and testing decisions are the plan's raw material.
 - A topic with open decision tickets: stop and say so; decisions come before plans.
 - Otherwise the prompt is the topic. If `CONTEXT.md` or ADRs exist, read them first and use
-  their terms.
+  their terms. **No ticket yet:** create it after step 3, once the shape is settled, via the
+  project's tracker (`docs/agents/issue-tracker.md`: Jira through the Atlassian MCP,
+  `gh issue create`, or a file under `docs/issues/`): title from the destination, description
+  from the destination, scope and goal artifact, in the tracker's description format. Use the
+  new key everywhere a key is used (plan header, slug, branch name, commits, PR title).
 
 ## 2. Explore, bounded
 
@@ -83,6 +87,15 @@ claude --model sonnet --effort medium --advisor fable --fallback-model opus --pe
 ```
 
 Effort per the plan header (default medium). `--advisor` is accepted although `claude --help`
-does not list it. Turn and dollar caps (`--max-turns 400 --max-budget-usd 60`) exist only in
-headless mode (`claude -p`, used by the queue runner), not in an interactive launch.
+does not list it. The dollar cap (`--max-budget-usd 60`) exists only in headless mode
+(`claude -p`, used by the queue runner), not in an interactive launch.
+
+Then ask once: **run it yourself, or hand it to the queue?** Hand to the queue → push the
+branch, open a draft PR against the base (`gh pr create --draft --label autopilot-ready`,
+title `<KEY>: <destination in a few words>`, body: the Destination and Goal artifact
+paragraphs plus the path of `PLAN.md`; create the label when missing, the same as
+`autopilot-queue doctor` would) and say: the queue on the office Mini picks it up on its next
+run, the result comes back on this PR (label `autopilot-done` or `autopilot-blocked`, report
+as a comment) and in Slack. Feature-branch mode has no PR: hand-over means pushing the feature
+branch and adding the item to the queue file (`autopilot-queue add <repo> <session dir>`).
 Say what is still open, if anything. Do not implement anything here.

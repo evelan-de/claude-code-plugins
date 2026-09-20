@@ -167,7 +167,8 @@ for; say so in `REPORT.md`.
 (5) remove `.claude/.autopilot-active` and `.claude/.autopilot-gate-blocks` so the Stop
 hook lets the turn end (the fresh session recreates the sentinel); (6) end the turn with
 one line: `Resume with /autopilot <session directory>`. The queue runner or the user starts
-the fresh session. HANDOFF.md format: `references/handoff.md`.
+the fresh session. HANDOFF.md format: `references/handoff.md`. The queue runner (`autopilot-queue`,
+docs in `references/queue.md`) restarts a handed-off item by itself, up to three times.
 
 ## Stop conditions (abort: `REPORT.md` with the blocker on top, artifacts committed, sentinel removed)
 - The gate cannot go green without a destructive action or human input.

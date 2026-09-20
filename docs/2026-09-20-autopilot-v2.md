@@ -54,47 +54,47 @@ run writes its own plan with conservative decisions), or a quoted topic. Lines s
 `autopilot-queue.done.txt` with its result line (branch, PR URL or blocker), so the queue file
 always shows what is left.
 
-**Per item** the script:
+**Per item** the script (`bin/autopilot-queue`, built 2026-09-20; user docs in
+`skills/autopilot/references/queue.md`):
 
-1. creates a worktree from the repo's integration branch (`git worktree add`), or reuses the
-   session branch when the item is a continuation;
-2. starts `claude -p "/autopilot <item> defer PR" --model <model column> --effort <effort
-   column, default medium> --permission-mode auto` in that worktree, with a wall-clock
-   timeout, output to `logs/<item>.log`. Further launch flags: `--max-turns` caps the turns
-   of one session. `--max-budget-usd` caps its spend. `--fallback-model opus` keeps the run
-   going when the chosen model is overloaded. `--json-schema` makes the result line
-   machine-readable for the done file. `--append-system-prompt-file` injects the write-less
-   rules once at start. `--exclude-dynamic-system-prompt-sections` keeps the system prompt
-   stable so the prompt cache is reused across items;
+1. creates a worktree from the PR branch (label items) or from the repo's default branch
+   (list items), reusing the worktree of a continuation;
+2. starts `claude -p "/autopilot <item>" --model sonnet --effort medium --advisor fable
+   --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json` in
+   that worktree (model, effort, advisor and budget from the `env` file), with a wall-clock
+   timeout, output to `logs/<item>.log`. `--max-turns` does not exist in the installed CLI;
+   the budget and the timeout are the caps. `--append-system-prompt-file` and
+   `--exclude-dynamic-system-prompt-sections` stay ideas for later;
 3. watches with `autopilot-watchdog` every 20 minutes (zero tokens); on `stalls=4` it kills
-   the session and restarts it once with the hand-off;
-4. on exit: `HANDOFF.md` present → restart with the same item (up to N times); `REPORT.md`
-   present → push the branch, open the PR (the script owns push and PR, the run does not),
-   append the result to the done file; otherwise record the blocker;
-5. notifies: macOS notification and, optionally, a Slack message per finished or blocked
-   item (the Slack step is a later addition).
+   the session;
+4. on exit: `HANDOFF.md` present → restart with the same item (up to three times); `REPORT.md`
+   present → done; otherwise blocked. The run itself pushed and opened or updated the PR;
+   the queue marks the PR ready, swaps the label to `autopilot-done` or `autopilot-blocked`,
+   posts the report head as a comment, appends the result to `done.txt`;
+5. notifies: macOS notification and a Slack message per finished or blocked item when a
+   webhook is configured.
 
-**Requires** a logged-in `claude` CLI on the machine and `gh` for the PR. Both Macs are logged
-in since 2026-09-20. Caveat, verified on the office Mini: Claude Code keeps the login in the macOS
+**Sources:** the machine-wide list `~/.claude/autopilot-queue/queue.txt` and, per repo listed
+in `repos.txt`, every open PR with the label `autopilot-ready`. Developers produce the second
+kind without talking to Andreas: `/autopilot-plan <ticket or topic>` (a topic without a ticket
+gets its ticket created through the project's tracker), answer the questions, say "hand to the
+queue"; the skill pushes the branch and opens the draft PR with the label. Andreas' part is
+zero: the queue runs nightly on the office Mini (`autopilot-queue install-schedule 22:00`,
+a LaunchAgent in the GUI session so the Keychain login is readable) and the results arrive on
+the PR and in Slack.
+
+**Requires** a logged-in `claude` CLI on the machine and `gh`. Both Macs are logged in since
+2026-09-20. Caveat, verified on the office Mini: Claude Code keeps the login in the macOS
 Keychain, and a session started over SSH (or by launchd outside the user's GUI session) cannot
-read it, so `claude -p` there reports "Not logged in" although the Mac is logged in. The queue
-therefore starts from a Terminal (or tmux) opened in the Mac's own GUI session. For SSH- or
-launchd-triggered starts the alternative is a long-lived token from `claude setup-token`,
-kept in a mode-600 file and exported as `CLAUDE_CODE_OAUTH_TOKEN` by the queue script.
+read it, so `claude -p` there reports "Not logged in" although the Mac is logged in. The
+LaunchAgent runs in the GUI session; for SSH-triggered starts the alternative is a long-lived
+token from `claude setup-token`, kept in a mode-600 file and exported as
+`CLAUDE_CODE_OAUTH_TOKEN`.
 
-**Open questions for Andreas:**
-
-- Queue file per repo (`docs/autopilot/QUEUE.txt`, committed) or one machine-wide file?
-- Should the queue open the PR itself, or leave push and PR to the run (the run can do it;
-  the script doing it keeps every run "defer PR" and gives one place to retry)? Note since
-  2026-09-20: the run's step 6 also runs `gateFull` before the push and works through the
-  Claude review bot (wait for the comment, fix, `claude-re-review` label, two rounds). If the
-  script owns the PR, it must start one more run for that loop after opening the PR, or the
-  run must own push and PR after all. Recommendation: the run owns push and PR; the queue only
-  retries.
-- Sequential only (one session at a time, as tonight's need), or up to N in parallel later?
-- Ticket keys without a plan: allowed (the run plans conservatively) or refused (plans are
-  always written interactively first)?
+**Decisions (Andreas, 2026-09-20):** one machine-wide list, not per repo; the run owns push
+and PR, the queue only retries and reports; sequential only, parallel later if the first week
+went well; items without a plan are allowed and marked `no-plan` in `done.txt`. Second source:
+GitHub PRs labelled `autopilot-ready`, so developers hand work over without a Slack message.
 
 ## Expected effect
 
