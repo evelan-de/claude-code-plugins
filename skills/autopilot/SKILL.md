@@ -48,9 +48,11 @@ Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package 
 (lockfile) and the existing scripts (`references/init.md`) and persist it. No test runner →
 set one up minimally, project-consistent, before implementing. Create
 `.claude/.autopilot-active` when the Stop hook exists; remove it at the end and on every
-abort. Branch from the plan header (`<prefix>/<KEY>-<slug>`, base = integration branch); a
-continuation checks out the existing branch. Work in the current checkout; a worktree only
-when the tree is dirty with foreign changes.
+abort. Branch per the plan header: **session mode** creates `<prefix>/<KEY>-<slug>` from the
+base; **feature-branch mode** checks out the named feature branch (create it from the base if
+missing) and commits straight onto it, so several sessions add up to one branch that gets one
+review at the end. A continuation checks out the existing branch. Work in the current
+checkout; a worktree only when the tree is dirty with foreign changes.
 
 ### 2. Packages, in order
 For each package with `[ ]`: set `[~]`, then
@@ -88,7 +90,9 @@ open items), prepend one line to `docs/autopilot/INDEX.md` (below the marker, ne
 delete a consumed `HANDOFF.md`, remove the sentinel, commit.
 
 ### 6. PR and CI
-"defer PR" in the prompt → report branch and state, stop. Otherwise push, open **one PR**
+"defer PR" in the prompt → report branch and state, stop. Feature-branch mode → push the
+feature branch (`git push origin <feature>`; pull with rebase first if it moved), no PR; the
+feature branch gets its PR when the last session of the feature is done. Otherwise push, open **one PR**
 (`gh pr create`, ticket key in the title), never merge. `gh run watch`; red → fix, re-push,
 until green. A green `review` check is not a review: fetch the bot's comments on both
 surfaces (`pulls/<n>/comments`, `issues/<n>/comments`), verify each, fix or rebut with
@@ -144,8 +148,12 @@ docs/autopilot/
 - **YYYY-MM-DD HH:MM** - <title> - <one line> - [PR](<url>) [→](./sessions/<slug>/REPORT.md)
 ```
 
-## Permissions and hooks
-Unattended runs: `--permission-mode auto`. The hooks from `/autopilot init` are optional;
+## Model, advisor, permissions, hooks
+The run uses the session's model; pick it at launch, never mid-run (a switch throws away the
+cache): `claude --model sonnet --advisor fable` runs on Sonnet and lets it consult Fable at
+decision points (before committing to an approach, on a recurring error, before declaring
+done). "Consult the advisor" in the prompt makes it consult more. Unattended runs:
+`--permission-mode auto`. The hooks from `/autopilot init` are optional;
 the hand-off rules apply with or without them. At the end, print the table of
 `autopilot-usage <this session's transcript>` (newest `.jsonl` under
 `~/.claude/projects/<cwd with "/" replaced by "-">/`) so every run leaves a measurement.

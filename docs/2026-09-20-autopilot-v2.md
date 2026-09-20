@@ -87,3 +87,40 @@ saved), seven runs of one context each instead of fifteen lead starts (fewer bas
 plan re-reads), no planner and plan-reviewer agents in the run. Estimate $90-110 instead of
 $220, and roughly a third of the agents. To be measured on the first real run with
 `autopilot-usage`.
+
+## Feedback round 1 (Andreas, 2026-09-20)
+
+**Model per run.** Claude Code fixes the model per session at launch; a skill cannot switch it
+without invalidating the whole cache. So the model is a launch parameter: `claude --model
+sonnet` (interactive) or a column in the queue (`claude -p --model sonnet ...`). Recorded in
+the autopilot skill.
+
+**Advisor.** Claude Code's advisor tool (docs: code.claude.com/docs/en/advisor) pairs the
+main model with a stronger one that Claude consults "before committing to an approach, when
+an error keeps recurring, and before declaring a task done". Sonnet main + Fable advisor is an
+accepted pairing (`claude --advisor fable`, `advisorModel` setting, or `/advisor fable`; needs
+Fable access and, on some plans, the one-time usage-credits consent). Cost: each advisor call
+re-reads the whole transcript at the advisor's rates, uncached, so a Sonnet run with a few
+Fable consultations should cost far less than a Fable run; Anthropic's own claim is that it
+"typically costs less than running the stronger model throughout". Subagents inherit the
+advisor. Recommended default for autopilot runs: Sonnet main + Fable advisor, to be measured
+against Fable-only on the first two real runs with `autopilot-usage` (advisor tokens show up
+in `/usage`; the transcript records them under the server tool).
+
+**Queue from the tracker, not only a file.** Items may come from Jira (a filter or label,
+e.g. `autopilot-ready`) or GitHub issues (a label) besides a text file; the script gets an
+input adapter per source and writes the result back (comment with branch and PR, label
+change). The text file stays as the simplest source.
+
+**Feature-branch mode.** Several sessions belong to one feature (e.g. SSO login) and must all
+land on one feature branch that is reviewed as a whole. The plan header carries `Branch mode:
+feature-branch <name>` and `PR: none`; each run checks out that branch, commits onto it, pushes
+it (rebase-pull first), opens no PR; the last session or Andreas opens the feature PR. The
+queue processes the feature's items strictly in order and rebases each on the current branch
+head. Built into the plan and autopilot skills.
+
+**Plan skill borrows from the vendored Pocock skills:** seams agreed with the user before
+slicing (write-spec), tracer-bullet slices with blocking edges, prefactoring first,
+expand/migrate/contract for wide refactors, and a granularity quiz (spec-to-tickets), a named
+destination and "decisions before plans" (wayfinder). A plan for a topic that still has open
+decision tickets on a wayfinder map is refused.
