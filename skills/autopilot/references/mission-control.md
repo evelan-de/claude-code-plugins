@@ -18,6 +18,8 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
+| `paused` | One date, `YYYY-MM-DD` (local time): the schedule is paused through that day. Written by `pause`, removed by `resume` or by the first scheduled run after the date. See "Pause the schedule". |
+| `force-once` | Written by `kickstart`; the next scheduled run consumes it and goes ahead although a pause is set. |
 | `host` | Not read by the script. Exists only on a machine that does NOT run the queue and holds the SSH alias of the one that does (`office-mini`); the `/mission-control` skill then runs every command over SSH, without it locally. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
@@ -30,7 +32,8 @@ included), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
 ## Not on this machine?
 
-The queue commands (`run`, `list`, `add`, `status`, `stop`, `retry`, `log`, `kickstart`) refuse
+The queue commands (`run`, `list`, `add`, `status`, `stop`, `retry`, `log`, `kickstart`,
+`pause`, `resume`) refuse
 with exit 3 when `~/.claude/mission-control` does not exist: the machine has no queue. The
 message points to the office Mini and to the developer's way in (`/autopilot-plan`, draft PR
 labelled `autopilot-ready`, results on the PR and in Slack `#mission-control`). `doctor`,
@@ -45,12 +48,14 @@ mission-control doctor                    # login, gh, git, repos, labels, env m
 mission-control labels [<repo>]           # create autopilot-ready/-done/-blocked when missing (default: cwd)
 mission-control add <repo> <item> [<branch>]   # append a line; a topic with spaces is quoted
 mission-control list                      # what run would process, no side effects
-mission-control run                       # process queue.txt, then the labelled PRs of repos.txt
+mission-control run [--scheduled]         # process queue.txt, then the labelled PRs of repos.txt; --scheduled honours a pause
 mission-control status                    # one screen: running item, queue, labelled PRs, last done, schedule, lock
 mission-control stop                      # TERM the active run (its trap kills claude), wait up to 45 s
 mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autopilot-ready; item: add it again
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
-mission-control install-schedule 22:00    # LaunchAgent, daily at that time (macOS)
+mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run today / through that day / for N days
+mission-control resume                    # lift the pause
+mission-control install-schedule 22:00    # LaunchAgent, daily at that time (macOS), runs "run --scheduled"
 mission-control uninstall-schedule
 mission-control kickstart                 # run the installed LaunchAgent now, inside the GUI session; refuses while a run is active
 ```
@@ -59,7 +64,8 @@ mission-control kickstart                 # run the installed LaunchAgent now, i
 since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `running: none`;
 `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
 (a failing repo gets a `FAIL - ...` line, the count goes on without it); `last done:` with the
-last five `done.txt` lines; `schedule: installed at HH:MM` (read from the plist) or `not
+last five `done.txt` lines; `schedule: installed at HH:MM, active`, `schedule: installed at
+HH:MM, paused until <date>` (time read from the plist, date from `paused`) or `schedule: not
 installed`; `lock: held by pid N`, `free`, or `stale` when the recorded pid is dead. No
 secrets: the env file is never printed.
 
@@ -90,7 +96,9 @@ even when the command arrives over SSH. It refuses with exit 1 while a run is ac
 (`a run is active (pid N, <item>), stop it first`) and when no schedule is installed
 (`no schedule installed; run "mission-control install-schedule HH:MM" once, or start
 "mission-control run" in a Terminal on this Mac`). Output goes to `logs/launchd.log`; follow
-it with `log` once an item log exists.
+it with `log` once an item log exists. It works during a pause: it writes `force-once`
+before the `launchctl kickstart`, so that one scheduled run goes ahead and the pause stays
+for the following nights. A refused kickstart writes nothing.
 
 `labels` is the one source of truth for the three labels (`autopilot-ready` 0E8A16,
 `autopilot-done` 1D76DB, `autopilot-blocked` B60205, each with a description). It prints
@@ -171,7 +179,9 @@ outside your GUI session, cannot read it: `claude -p` says "Not logged in" altho
 is logged in. So start `run` from a Terminal in the Mac's own session, or install the
 schedule: `install-schedule HH:MM` writes
 `~/Library/LaunchAgents/de.evelan.mission-control.plist`, loaded with
-`launchctl bootstrap gui/<uid>`, which runs inside the GUI session. Output goes to
+`launchctl bootstrap gui/<uid>`, which runs inside the GUI session. The agent runs
+`mission-control run --scheduled` (the flag is what makes a pause count). Re-running
+`install-schedule` replaces the plist: bootout, then bootstrap. Output goes to
 `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token` (kept in a mode-600 file) before `run`. `doctor` checks the login and
 prints this hint when it fails.
@@ -182,6 +192,33 @@ is what runs, no re-install needed. When the checkout is missing, `install-sched
 at its own path and warns that a plugin update moves it. The agent's `PATH` is
 `/opt/homebrew/bin:/usr/local/bin:~/.local/bin:<that bin dir>:/usr/bin:/bin`, its working
 directory `$HOME`.
+
+## Pause the schedule
+
+Three commands, one file (`paused`, holding a date `YYYY-MM-DD` in local time):
+
+```
+mission-control pause                     # today only: "paused until 2026-09-20"
+mission-control pause until 2026-09-25    # through that day inclusive
+mission-control pause 3d                  # today plus three days
+mission-control resume                    # "resumed", or "not paused"
+```
+
+`pause` prints `paused until <date>` and writes that date. A date that is not a real
+calendar day (`2026-02-30`, `31.12.2026`, a weekday name) is refused with exit 2 and the
+file stays as it was.
+
+What a pause does: the LaunchAgent starts `run --scheduled`. While the pause is valid (its
+date is today or later) that run prints and logs `paused until <date>: scheduled run skipped
+(manual runs still work)` and exits 0 without taking the lock or touching the queue. The
+first scheduled run after the date removes the file, logs `pause expired` in `queue.log` and
+goes on as usual. `status` shows `schedule: installed at HH:MM, paused until <date>` while
+the pause is valid, `..., active` otherwise.
+
+What a pause does not do: a manual `mission-control run` (no flag) ignores it entirely, and
+`kickstart` overrides it once: it writes `force-once`, which the scheduled run it starts
+consumes at its start (and which a scheduled run removes at its end in any case), so a
+"start now" during a pause works and the pause still holds for the following nights.
 
 ## Slack notifications
 

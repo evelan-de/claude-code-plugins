@@ -685,5 +685,131 @@ check "(s) unknown command lists the new commands" has "status | stop | retry | 
 out="$(sh "$TOOL" help 2>&1)"
 check "(s) usage mentions kickstart" has "kickstart" "$out"
 
+# ---------- (t) pause: scheduled runs skip, manual runs go on ----------
+today="$(date +%Y-%m-%d)"
+yesterday="$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d yesterday +%Y-%m-%d)"
+in3days="$(date -v+3d +%Y-%m-%d 2>/dev/null || date -d "+3 days" +%Y-%m-%d)"
+fresh_home t
+export FAKE_SCENARIO=report
+fakehome="$tmp/fakehome-t"; mkdir -p "$fakehome/Library/LaunchAgents"
+printf '<dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>\n' >"$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(t) status: schedule active without a pause file" has "schedule: installed at 22:00, active" "$out"
+out="$(sh "$TOOL" pause 2>&1)"; got=$?
+check "(t) pause exits 0" [ "$got" -eq 0 ]
+check "(t) pause says paused until today" [ "$out" = "paused until $today" ]
+check "(t) pause file holds today's date" [ "$(cat "$QH/paused")" = "$today" ]
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(t) status: schedule paused until today" has "schedule: installed at 22:00, paused until $today" "$out"
+printf '%s PAUL-80\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+check "(t) scheduled run exits 0 while paused" [ "$got" -eq 0 ]
+check "(t) scheduled run says it skipped" has "paused until $today: scheduled run skipped (manual runs still work)" "$out"
+check "(t) scheduled run logged the skip" grep -q "paused until $today: scheduled run skipped" "$QH/logs/queue.log"
+check "(t) scheduled run left the queue alone" [ "$(live_lines "$QH/queue.txt")" = 1 ]
+check "(t) scheduled run did not start claude" [ ! -e "$REC/claude.args" ]
+check "(t) scheduled run did not take the lock" [ ! -e "$QH/run.lock" ]
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(t) manual run exits 0 while paused" [ "$got" -eq 0 ]
+check "(t) manual run processed the item" grep -q " PAUL-80 done " "$QH/done.txt"
+check "(t) manual run kept the pause" [ "$(cat "$QH/paused")" = "$today" ]
+out="$(sh "$TOOL" resume 2>&1)"; got=$?
+check "(t) resume exits 0" [ "$got" -eq 0 ]
+check "(t) resume says resumed" [ "$out" = "resumed" ]
+check "(t) resume removed the file" [ ! -e "$QH/paused" ]
+out="$(sh "$TOOL" resume 2>&1)"; got=$?
+check "(t) resume without a pause exits 0" [ "$got" -eq 0 ]
+check "(t) resume without a pause says not paused" [ "$out" = "not paused" ]
+# expired pause: removed, run proceeds
+printf '%s\n' "$yesterday" >"$QH/paused"
+printf '%s PAUL-81\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+check "(t) expired pause: scheduled run exits 0" [ "$got" -eq 0 ]
+check "(t) expired pause: item processed" grep -q " PAUL-81 done " "$QH/done.txt"
+check "(t) expired pause: file removed" [ ! -e "$QH/paused" ]
+check "(t) expired pause: logged" grep -q "pause expired" "$QH/logs/queue.log"
+out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+check "(t) status: active again after the expired pause" has "schedule: installed at 22:00, active" "$out"
+# pause until <date>, pause <N>d, invalid dates
+out="$(sh "$TOOL" pause until 2099-12-31 2>&1)"; got=$?
+check "(t) pause until exits 0" [ "$got" -eq 0 ]
+check "(t) pause until says the date" [ "$out" = "paused until 2099-12-31" ]
+check "(t) pause until writes the date" [ "$(cat "$QH/paused")" = "2099-12-31" ]
+out="$(sh "$TOOL" pause 3d 2>&1)"; got=$?
+check "(t) pause 3d exits 0" [ "$got" -eq 0 ]
+check "(t) pause 3d says the date three days ahead" [ "$out" = "paused until $in3days" ]
+check "(t) pause 3d writes that date" [ "$(cat "$QH/paused")" = "$in3days" ]
+for bad in "until 2026-02-30" "until 31.12.2026" "until yesterday" "until" "3" "x3d" "3d extra"; do
+  # shellcheck disable=SC2086
+  out="$(sh "$TOOL" pause $bad 2>&1)"; got=$?
+  check "(t) pause $bad exits 2" [ "$got" -eq 2 ]
+  check "(t) pause $bad names the problem" has "mission-control:" "$out"
+done
+check "(t) an invalid pause left the previous pause untouched" [ "$(cat "$QH/paused")" = "$in3days" ]
+# force-once: consumed by the scheduled run, overrides the pause once
+: >"$QH/force-once"
+printf '%s PAUL-82\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+check "(t) force-once: scheduled run exits 0" [ "$got" -eq 0 ]
+check "(t) force-once: item processed despite the pause" grep -q " PAUL-82 done " "$QH/done.txt"
+check "(t) force-once: file consumed" [ ! -e "$QH/force-once" ]
+check "(t) force-once: pause still in place" [ "$(cat "$QH/paused")" = "$in3days" ]
+printf '%s PAUL-83\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run --scheduled 2>&1)"
+check "(t) the next scheduled run is paused again" has "paused until $in3days: scheduled run skipped" "$out"
+check "(t) the next scheduled run left the item queued" [ "$(live_lines "$QH/queue.txt")" = 1 ]
+out="$(sh "$TOOL" run --bogus 2>&1)"; got=$?
+check "(t) run rejects an unknown flag with exit 2" [ "$got" -eq 2 ]
+out="$(sh "$TOOL" bogus 2>&1)"
+check "(t) unknown command lists pause and resume" has "pause | resume" "$out"
+out="$(sh "$TOOL" help 2>&1)"
+check "(t) usage mentions pause" has "pause" "$out"
+
+# ---------- (t2) install-schedule writes run --scheduled; kickstart writes force-once ----------
+if [ "$(uname)" = Darwin ]; then
+  cat >"$tmp/fakes/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_RECORD/launchctl.args"
+exit 0
+EOF
+  chmod +x "$tmp/fakes/launchctl"
+  fresh_home t2
+  fakehome="$tmp/fakehome-t2"; mkdir -p "$fakehome"
+  plist="$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" install-schedule 22:00 2>&1)"; got=$?
+  check "(t2) install-schedule exits 0" [ "$got" -eq 0 ]
+  check "(t2) plist written under the temporary HOME" [ -f "$plist" ]
+  check "(t2) plist runs mission-control run --scheduled" grep -q '<string>run</string><string>--scheduled</string>' "$plist"
+  check "(t2) plist carries the time" grep -q '<key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer>' "$plist"
+  la="$(cat "$REC/launchctl.args")"
+  check "(t2) install-schedule boots out, then bootstraps" [ "$(printf '%s\n' "$la" | grep -c .)" = 2 ]
+  check "(t2) bootout first" has "bootout gui/" "$(printf '%s\n' "$la" | sed -n 1p)"
+  check "(t2) bootstrap second" has "bootstrap gui/" "$(printf '%s\n' "$la" | sed -n 2p)"
+  check "(t2) only the fake launchctl was called (no real launchd)" lacks "kickstart" "$la"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" install-schedule 23:30 2>&1)"
+  check "(t2) re-running install-schedule replaces the plist" grep -q '<key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer>' "$plist"
+  check "(t2) re-run booted out and bootstrapped again" [ "$(grep -c . "$REC/launchctl.args")" = 4 ]
+  sh "$TOOL" pause >/dev/null
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
+  check "(t2) kickstart exits 0 during a pause" [ "$got" -eq 0 ]
+  check "(t2) kickstart called launchctl kickstart" has "kickstart gui/" "$(tail -n 1 "$REC/launchctl.args")"
+  check "(t2) kickstart wrote force-once" [ -e "$QH/force-once" ]
+  check "(t2) kickstart says the pause is overridden once" has "pause" "$out"
+  export FAKE_SCENARIO=report
+  printf '%s PAUL-84\n' "$proj" >"$QH/queue.txt"
+  out="$(sh "$TOOL" run --scheduled 2>&1)"
+  check "(t2) the kickstarted scheduled run processed the item" grep -q " PAUL-84 done " "$QH/done.txt"
+  check "(t2) force-once consumed by that run" [ ! -e "$QH/force-once" ]
+  rm -f "$plist"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
+  check "(t2) kickstart without a schedule still exits 1" [ "$got" -eq 1 ]
+  check "(t2) refused kickstart wrote no force-once" [ ! -e "$QH/force-once" ]
+  mkdir -p "$QH/run.lock"; echo "$$" >"$QH/run.lock/pid"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
+  check "(t2) kickstart during a run exits 1" [ "$got" -eq 1 ]
+  check "(t2) refused kickstart (active run) wrote no force-once" [ ! -e "$QH/force-once" ]
+  rm -rf "$QH/run.lock"
+fi
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
