@@ -1,6 +1,6 @@
 ---
 name: setup-workflow-skills
-description: "Configure this repo for the engineering skills: set up its issue tracker and domain doc layout. Run once before first use of the other engineering skills."
+description: "Configure this repo for the engineering skills: set up its issue tracker and domain doc layout. Run once before first use of the other engineering skills. Triggers on \"/setup-workflow-skills\", \"set up the workflow skills\", \"Issue-Tracker einrichten\", \"Workflow-Skills einrichten\"."
 disable-model-invocation: true
 ---
 

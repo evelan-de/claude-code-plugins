@@ -110,7 +110,7 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 | `/evelan:to-tasks` | Split a spec into tracer-bullet tasks (tickets on the tracker) with blocking edges |
 | `/evelan:implement` | Implement a spec or ticket, driving `evelan:tdd`, closing with `evelan:code-review` |
 | `evelan:tdd` | Test-first at pre-agreed seams, vertical slices, anti-pattern list |
-| `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents, plus a Codex cross-model review whenever the Codex CLI is installed (skipped silently otherwise) |
+| `evelan:code-review` | Review a diff on Standards and Spec in parallel subagents, plus a Codex cross-model review whenever the Codex CLI is installed (one "skipped" line in the report otherwise) |
 | `evelan:diagnose-bug` | Diagnosis loop for hard bugs: tight feedback loop first, regression test last |
 | `evelan:domain-model`, `evelan:codebase-design` | Vocabulary references: domain terms and ADRs; deep modules and seams |
 | `/evelan:improve-architecture` | Scan for deepening opportunities, HTML report, then interview |
@@ -120,7 +120,7 @@ Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, se
 
 ### Autonomous work: three building blocks
 
-Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a model acting as coordinator over other agents cost 30-35% of a session and multiplied agents (33 for one ticket). Anthropic's own guidance says multi-agent setups pay off for parallel research, not for coding. Version 2.0 therefore has no coordinator model: a plan skill, an executor, and a script.
+Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md`), a model acting as coordinator over other agents cost 28% of a session and multiplied agents (33 for one ticket). Anthropic's own guidance says multi-agent setups pay off for parallel research, not for coding. Version 2.0 therefore has no coordinator model: a plan skill, an executor, and a script.
 
 | Block | What | Status |
 | --- | --- | --- |
@@ -141,7 +141,7 @@ claude
 > /autopilot-plan WEB-1095
 
 # then the run, in a fresh terminal (the plan's hand-over prints this exact line)
-claude --model sonnet --effort medium --advisor fable --permission-mode auto --max-turns 400 --max-budget-usd 60 --fallback-model opus
+claude --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto
 > /autopilot docs/autopilot/sessions/<date>-WEB-1095-<slug>
 ```
 
@@ -149,7 +149,7 @@ The run ends with a PR (or, in feature-branch mode, a pushed branch), `REPORT.md
 
 **Usage details:**
 - Prepare: `/autopilot-plan WEB-1095` (or a spec file, or a topic) → `docs/autopilot/sessions/<date>-<slug>/PLAN.md`, committed on the run's branch.
-- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with the launch line above. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header; the turn and dollar caps stop a runaway run. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
+- Run: `/autopilot docs/autopilot/sessions/<date>-<slug>` in a fresh session started with the launch line above. Model, effort and advisor are launch parameters (a mid-run switch throws away the cache); effort defaults to `medium` for autopilot runs and is written into the plan header. Turn and dollar caps (`--max-turns`, `--max-budget-usd`) exist only in headless mode (`claude -p`), which the queue runner uses. A ticket key also works when its plan exists. Without a plan the run writes one itself with conservative decisions and no questions.
 - Docs are part of done: the run updates README, `docs/`, `CLAUDE.md`/`.claude/rules/` and doc comments the change made stale, and the reviewer flags a stale document as a gap.
 - Options in the prompt: "defer PR" (no push, no PR), "ohne Codex" / "no Codex" (skips the Codex cross-model review, which otherwise runs by default after the Claude review whenever the Codex CLI is installed; its findings are fixed or rebutted in `REPORT.md`).
 - Write-less rules are part of the skill (vendored from Ponytail, see `skills/THIRD-PARTY-NOTICES.md`): reuse before write, stdlib and platform before dependencies, shortest root-cause diff, no speculative abstractions. JetBrains measured about 10% lower cost with unchanged quality when the rules sit in the context for the whole session, which is what the skill does.
@@ -201,7 +201,7 @@ Cross-model code review: delegates a review of your local diff to the Codex CLI 
 - Preflight guards: Codex binary resolution, git-repo check, empty-diff abort (no wasted model calls)
 - Runs in the background with a log file (reviews can take minutes); the untouched log path is always reported
 - Output is passed through raw - only tool-call noise and sandbox warnings are stripped
-- Falls back to a normal Claude review when Codex is rate-limited or unavailable (never leaves you with no review)
+- Falls back to a normal Claude review when Codex is rate-limited or unavailable (standalone use only; when `code-review` or `autopilot` call it, they already have a Claude review and just record the skip)
 - Optional model choice - say "mit Astra" / "mit Sol" / "nutze Luna" and the slug is resolved and validated against the live Codex catalog before the run (hidden catalog entries are never offered)
 - Never fixes anything on its own; asks which findings to act on
 
@@ -237,3 +237,7 @@ Verifies a finished task against the real running system instead of a read-throu
 - Project-agnostic - finds and follows whatever E2E/testing conventions the current project already has rather than assuming Playwright, a specific fixture pattern, or a specific report publisher
 
 **Trigger phrases:** "test this properly", "make sure this works", "show me a demo", "I want a report for this", "verify the instructions actually work for a client", "teste das richtig", "zeig mir eine Demo", "beweise dass das funktioniert", "ich will einen Report dazu"
+
+## Contributing to this plugin
+
+Before a release: `sh bin/plugin-lint` (frontmatter, reference files, `evelan:` cross-references, agents list, em dashes, README coverage, removed concepts), then every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh` with bash, then `claude plugin validate .` and the version bump in `.claude-plugin/plugin.json`. Helpers in `bin/` are POSIX sh with a test next to each.

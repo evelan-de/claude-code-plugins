@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Compact the current conversation into a handoff document for another agent to pick up.
+description: Compact the current conversation into a handoff document for another agent to pick up. Triggers on "/handoff", "write a handoff", "hand this over", "Übergabe schreiben", "Handoff für die nächste Session".
 argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---

@@ -6,9 +6,10 @@ description: >-
   use it ONLY when the user explicitly brings Codex into it - "Codex-Review",
   "lass Codex reviewen", "lass Codex drüberschauen", "zweite Meinung von
   Codex", "Cross-Model-Review", "let Codex review this", or the /codex-review
-  command. A generic "review this" / "review my changes" does NOT trigger this
-  skill - the normal Claude review flow handles those. Never auto-trigger
-  without an explicit Codex signal.
+  command - or when evelan:code-review or evelan:autopilot call it as their
+  Codex axis. A generic "review this" / "review my changes" does NOT trigger
+  this skill directly; the evelan:code-review skill handles those and calls
+  this one itself.
 ---
 
 # Codex Review

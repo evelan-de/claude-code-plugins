@@ -1,6 +1,6 @@
 ---
 name: diagnose-bug
-description: Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow.
+description: Diagnosis loop for hard bugs and performance regressions. Use when the user says "diagnose"/"debug this", or reports something broken/throwing/failing/slow. Triggers on "diagnose", "debug this", "Fehler eingrenzen", "warum bricht das", "das ist langsam geworden".
 ---
 
 # Diagnosing Bugs

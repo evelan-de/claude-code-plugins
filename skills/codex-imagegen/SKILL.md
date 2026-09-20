@@ -7,7 +7,8 @@ description: >-
   a manually-invoked skill: use it only when the user explicitly asks for it,
   by name (codex-imagegen / "the codex imagegen skill") or by asking to
   generate images "with Codex" / "through the Codex CLI" / "using gpt-image-2".
-  Without that signal, do not auto-trigger it on a generic image request.
+  German: "Bild mit Codex erzeugen", "über die Codex-CLI generieren". Without
+  that signal, do not auto-trigger it on a generic image request.
 ---
 
 # Codex Imagegen
@@ -15,8 +16,8 @@ description: >-
 Brief Codex's built-in imagegen skill, let it save the file, wire the file
 into the project. Shared procedure (preflight, model, background run,
 reporting): `${CLAUDE_PLUGIN_ROOT}/skills/codex-review/references/codex-common.md`.
-References in this folder: `brief-schema.md` (spec and sizing),
-`reference-images.md` (`--image` compositing), `copy-out.md` (where the
+References: `references/brief-schema.md` (spec and sizing),
+`references/reference-images.md` (`--image` compositing), `references/copy-out.md` (where the
 file lands, Windows).
 
 ## Before the run
@@ -26,7 +27,7 @@ file lands, Windows).
 2. Output path: the user's path when given; otherwise propose one under
    `public/` for web projects (e.g. `public/marketing/hero.png`) and confirm
    before generating. `mkdir -p` the destination folder.
-3. Write the brief (brief-schema.md) to a file from `mktemp /tmp/codex-XXXXXX`.
+3. Write the brief (references/brief-schema.md) to a file from `mktemp /tmp/codex-XXXXXX`.
    The brief must name the imagegen skill, the full spec, and the exact
    absolute output path with an instruction to print it back.
 
@@ -43,8 +44,8 @@ codex-cli exec --sandbox workspace-write -c approval_policy=on-request -c approv
   escalations to Codex's reviewer agent, so the run completes unattended.
   Do not use `--dangerously-bypass-approvals-and-sandbox`; the permission
   layer denies it. `--sandbox danger-full-access` only when a write must
-  leave the workspace and the copy-out in copy-out.md will not do.
-- Reference images: one `--image <FILE>` per file (reference-images.md).
+  leave the workspace and the copy-out in references/copy-out.md will not do.
+- Reference images: one `--image <FILE>` per file (references/reference-images.md).
 - Several assets: one run per asset, each with its own brief and output
   path; runs are independent and may run in parallel.
 - Wait for the completion notification (high quality on a large canvas takes
@@ -52,7 +53,7 @@ codex-cli exec --sandbox workspace-write -c approval_policy=on-request -c approv
 
 ## After the run
 
-1. `ls -l <ABS_PATH>`. Missing: follow copy-out.md.
+1. `ls -l <ABS_PATH>`. Missing: follow references/copy-out.md.
 2. Read the image: subject, style, text spelled correctly, negative space as
    asked, no stray watermark or logo.
 3. Wire it in when project-bound: `<Image>`/`<img>`, alt text, remove the

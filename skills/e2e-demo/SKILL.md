@@ -18,8 +18,8 @@ table, visuals, both videos for Before/After). Everything runs on the
 developer's own machine: no remote, staging or production environment, no
 push, no CI trigger. The only outward step is the gated PR comment (Phase 6).
 
-References in this folder: `track-browser.md` (Playwright track),
-`track-cli.md` (terminal recording), `tts.md` (voice), `assemble.md`
+References: `references/track-browser.md` (Playwright track),
+`references/track-cli.md` (terminal recording), `references/tts.md` (voice), `references/assemble.md`
 (ffmpeg, report embedding).
 
 ## Inputs
@@ -45,13 +45,13 @@ source for the report's Goal/Issue and for the acceptance criteria in Phase 6.
 | Screenshots | The suite's own captures or the framework's step screenshots | Terminal frames, dashboard pages when the tool has a web UI |
 
 A task can need both (install instructions plus the web UI they stand up):
-record each on its own track, concatenate as sequential cuts in assemble.md.
+record each on its own track, concatenate as sequential cuts in references/assemble.md.
 Never record the whole OS screen or drive the real desktop with simulated
 input.
 
 Track A has two modes, resolved in Phase 0: verify-only (default, zero
 footprint in the project) and coverage (a permanent test, only when asked on
-the user's own work). Details in track-browser.md.
+the user's own work). Details in references/track-browser.md.
 
 ## Before / After
 
@@ -81,7 +81,7 @@ after-only video.
    action, or commands and expected outcome. Nothing concrete, or a pure
    backend change with no observable surface, or a trivial copy fix: wrong
    skill. Pick the track(s); for Track A resolve verify-only vs coverage.
-1. Track A: track-browser.md. Track B: track-cli.md. Confirm the video file
+1. Track A: references/track-browser.md. Track B: references/track-cli.md. Confirm the video file
    exists.
 2. Narration script from the real run only: read the actual assertions
    (Track A) or the actual `session.cast` output and exit codes (Track B),
@@ -89,12 +89,12 @@ after-only video.
    what was verified and how. Unverified observations are caveats, not
    narrated facts. Language per the project's audience. Save as text with
    `[00:00]` timestamps.
-3. Synthesize per beat (tts.md), assemble and verify the MP4 (assemble.md).
+3. Synthesize per beat (references/tts.md), assemble and verify the MP4 (references/assemble.md).
 4. Report: load the `artifact-design` skill, build an HTML page with Goal /
    Issue, What changed (`path:line` references), a results table (one row
    per check: what, how, pass/fail, from the real test or script output),
    the embedded video(s), real screenshots, the narration script, and a
-   manual-step callout when a step needed a human. Embed per assemble.md.
+   manual-step callout when a step needed a human. Embed per references/assemble.md.
    Publish with the `Artifact` tool.
 5. Deliver in one message: the artifact link and two or three sentences on
    what was proven and what is open or was manual.

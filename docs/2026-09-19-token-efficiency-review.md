@@ -1,3 +1,7 @@
+> Measurement of plugin 1.x (mission control, autopilot-lead, autopilot-planner), all removed in
+> 2.0.0. The "Correction and cost model" and "Decision" sections remain the reference numbers;
+> the current design is `docs/2026-09-20-autopilot-v2.md`.
+
 # Token and wall-clock review of mission-control + autopilot (2026-09-19)
 
 Why: orchestrated sessions ran for days and burned through usage limits. This review measured

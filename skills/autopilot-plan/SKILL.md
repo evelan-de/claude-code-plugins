@@ -72,15 +72,17 @@ sources; fold real findings in, dismiss with a reason under "Decisions".
 ## 7. Commit and hand over
 
 Commit `PLAN.md` on the branch the plan header names, so the run finds it: session mode →
-create `<prefix>/<KEY>-<slug>` from the base and commit there; feature-branch mode → check out
+create `<prefix>/<KEY>-<slug>` from the base (prefix per the project's branch convention in `CLAUDE.md`, else `feat`) and commit there; feature-branch mode → check out
 the feature branch (create it from the base if missing) and commit there. Commit message
 `docs(autopilot): plan for <key or slug>`. Write the chosen effort into the plan header
 (`Effort: medium`) so the queue and the launch line agree. Tell the user the path, the one
 command that runs it (`/autopilot <session directory>`) and the launch line:
 
 ```
-claude --model sonnet --effort medium --advisor fable --permission-mode auto --max-turns 400 --max-budget-usd 60 --fallback-model opus
+claude --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto
 ```
 
-Effort per the plan header (default medium); raise the budget only for a plan that says so.
+Effort per the plan header (default medium). `--advisor` is accepted although `claude --help`
+does not list it. Turn and dollar caps (`--max-turns 400 --max-budget-usd 60`) exist only in
+headless mode (`claude -p`, used by the queue runner), not in an interactive launch.
 Say what is still open, if anything. Do not implement anything here.
