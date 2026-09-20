@@ -1009,7 +1009,21 @@ cmd_uninstall_schedule() {
   echo "removed: $PLIST"
 }
 
+# A machine without the queue home directory has no queue: refuse the queue commands with the
+# pointer to the machine that runs it, so a developer's session never creates a local list by
+# accident. doctor, labels, install-schedule and help stay available (they create the directory).
+not_set_up() {
+  echo "mission-control is not set up on this machine ($QHOME does not exist)." >&2
+  echo "The queue runs on the office Mini. Hand work over with /autopilot-plan (draft PR with the label autopilot-ready); results arrive on the PR and in Slack #mission-control." >&2
+  echo "To set this machine up: mission-control doctor, then repos.txt and install-schedule HH:MM." >&2
+  exit 3
+}
+queue_set_up() { [ -d "$QHOME" ]; }
+
 cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  run|list|add|status|stop|retry|log|kickstart) queue_set_up || not_set_up ;;
+esac
 case "$cmd" in
   run) cmd_run ;;
   list) cmd_list ;;

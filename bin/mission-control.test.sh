@@ -361,6 +361,21 @@ check "(g) labels exits 1 when a label cannot be created" [ "$got" -eq 1 ]
 check "(g) labels names the failure" has "FAIL - label autopilot-done missing in proj" "$out"
 unset FAKE_GH_FAIL FAKE_GH_LABELS
 
+# ---------- (h0) machine without a queue: queue commands refuse with exit 3 ----------
+fresh_home h0
+rm -rf "$QH"
+for c in status list run add stop log kickstart; do
+  out="$(sh "$TOOL" $c "$proj" X 2>&1)"; got=$?
+  check "(h0) $c refuses on a machine without the queue home (exit 3)" [ "$got" -eq 3 ]
+  check "(h0) $c names the office Mini and /autopilot-plan" has "office Mini" "$out"
+done
+check "(h0) no queue.txt was created by add" [ ! -e "$QH/queue.txt" ]
+out="$(sh "$TOOL" retry "$proj" 7 2>&1)"; got=$?
+check "(h0) retry refuses too (exit 3)" [ "$got" -eq 3 ]
+mkdir -p "$QH"
+out="$(sh "$TOOL" status 2>&1)"; got=$?
+check "(h0) status works once the queue home exists" [ "$got" -eq 0 ]
+
 # ---------- (h) lock ----------
 fresh_home h
 export FAKE_SCENARIO=report

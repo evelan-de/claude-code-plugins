@@ -28,6 +28,16 @@ the environment wins over the plan), `MISSION_CONTROL_ADVISOR` (fable),
 `MISSION_CONTROL_MAX_RESTARTS` (3), `MISSION_CONTROL_TIMEOUT_MIN` (240 per item, restarts
 included), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
+## Not on this machine?
+
+The queue commands (`run`, `list`, `add`, `status`, `stop`, `retry`, `log`, `kickstart`) refuse
+with exit 3 when `~/.claude/mission-control` does not exist: the machine has no queue. The
+message points to the office Mini and to the developer's way in (`/autopilot-plan`, draft PR
+labelled `autopilot-ready`, results on the PR and in Slack `#mission-control`). `doctor`,
+`labels` and `install-schedule` still work; `doctor` creates the directory. The
+`/mission-control` skill checks the same before running anything, so a developer who has the
+plugin but no queue gets the pointer instead of an empty local status.
+
 ## Commands
 
 ```
