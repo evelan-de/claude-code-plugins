@@ -40,7 +40,12 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 - A session directory, or a ticket key whose plan exists under `docs/autopilot/sessions/` →
   run it. Options come from the prompt and from the plan header `Options:` ("defer PR",
   "no Codex"). `HANDOFF.md` present → continuation: read it first, trust its "Verified", start at
-  its "Next step", never redo. A package `[~]` with uncommitted changes and no `HANDOFF.md`
+  its "Next step", never redo. `REPORT.md` with `Status: done` and an open PR → the run is
+  in its review phase: fetch both comment surfaces of the PR; findings newer than the
+  report's `## Review bot` section (or no such section) → step 6's review-bot loop (verify,
+  fix test-first, re-gate, commit, push, rebut, label), then update `## Review bot` and
+  `## Review` in `REPORT.md`, commit, push, end. Nothing new on the PR → say so, end.
+  A package `[~]` with uncommitted changes and no `HANDOFF.md`
   (the previous session died) → `git checkout -- .` and `git clean -fd` inside the touched
   paths, restart that package from its first step, one line in `DECISIONS.md`.
 - No plan → write one yourself from the ticket, spec or prompt in the `/autopilot-plan`
