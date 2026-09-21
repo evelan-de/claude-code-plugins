@@ -117,6 +117,8 @@ for every repo in `queue.txt` and `repos.txt`, and prints how many repos it foun
 
 `add`, `retry` and `labels` expand a leading `~/` in the repo path themselves, so a path
 written as `~/dev/projects/paul` works when it arrives unexpanded (over SSH, from a file).
+A bare project name (`paul`, no `/`) means `~/dev/projects/paul` (`MISSION_CONTROL_PROJECTS`
+overrides the directory); the same rule applies to `queue.txt` and `repos.txt` lines.
 
 `add` with a session directory and no branch records the branch that holds the directory as
 the third column: the repo's current branch when the directory exists in the checkout, else

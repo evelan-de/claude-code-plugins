@@ -251,8 +251,15 @@ remove_queue_line() {
 }
 
 # resolve_repo <path>: prints the absolute path of a git repository, or returns 1.
+# resolve_repo <path or bare name>: the absolute path of a git checkout. A bare name (no
+# "/") means $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>.
 resolve_repo() {
-  rr="$(cd "$1" 2>/dev/null && pwd)" || return 1
+  rr_in="$1"
+  case "$rr_in" in
+    */*|.|..) ;;
+    *) [ -d "$rr_in" ] || rr_in="${MISSION_CONTROL_PROJECTS:-$HOME/dev/projects}/$rr_in" ;;
+  esac
+  rr="$(cd "$rr_in" 2>/dev/null && pwd)" || return 1
   git -C "$rr" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   printf '%s\n' "$rr"
 }

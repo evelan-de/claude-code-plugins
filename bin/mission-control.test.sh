@@ -758,6 +758,11 @@ out="$(HOME="$tmp" sh "$TOOL" retry '~/proj' PAUL-44 2>&1)"
 check "(r) retry expands ~ in the repo path" grep -qxF "$proj PAUL-44" "$QH/queue.txt"
 out="$(HOME="$tmp" sh "$TOOL" add '~/proj' PAUL-45 2>&1)"
 check "(r) add expands ~ in the repo path" grep -qxF "$proj PAUL-45" "$QH/queue.txt"
+out="$(MISSION_CONTROL_PROJECTS="$tmp" sh "$TOOL" add proj PAUL-46 2>&1)"; got=$?
+check "(r) add resolves a bare project name under the projects directory" grep -qxF "$proj PAUL-46" "$QH/queue.txt"
+out="$(MISSION_CONTROL_PROJECTS="$tmp" sh "$TOOL" add nosuchproj PAUL-47 2>&1)"; got=$?
+check "(r) a bare name that resolves to nothing is refused" [ "$got" -eq 1 ]
+check "(r) refusal names the argument" has "nosuchproj is not a git repository" "$out"
 out="$(HOME="$tmp" sh "$TOOL" labels '~/proj' 2>&1)"; got=$?
 check "(r) labels expands ~ in the repo path" [ "$got" -eq 0 ]
 
