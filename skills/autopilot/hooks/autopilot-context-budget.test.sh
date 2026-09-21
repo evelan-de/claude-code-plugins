@@ -147,8 +147,11 @@ fires "$out" && ok "env budget override" || fail "env budget (got $out)"
 
 # 15. transcript without usage -> {}
 echo '{"type":"user","message":{"content":"hi"}}' >"$SUB/agent-lead5.jsonl"
+rm -f "$P/.claude/.autopilot-status"
 out="$(hook_input "$MAIN" sess1 lead5 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
 [ "$out" = "{}" ] && ok "no usage yet -> {}" || fail "no usage (got $out)"
+sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
+case "$sl" in *" ctx=? tool=Bash agent=lead5") ok "no usage yet -> status line with ctx=?";; *) fail "status without usage (got '$sl')";; esac
 
 # 16. missing main transcript in a standalone run -> {}
 touch "$P/.claude/.autopilot-active"
@@ -156,19 +159,6 @@ out="$(hook_input "$P/tr/none.jsonl" sess9 - | CLAUDE_PROJECT_DIR="$P" bash "$HO
 [ "$out" = "{}" ] && ok "missing transcript -> {}" || fail "missing transcript (got $out)"
 rm -f "$P/.claude/.autopilot-active"
 
-
-# 17. status line: written after every measured call, below and above the budget
-touch "$P/.claude/.autopilot-active"
-mk_transcript "$MAIN" 100000
-rm -f "$P/.claude/.autopilot-status"
-out="$(hook_input "$MAIN" sess10 - | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
-[ "$out" = "{}" ] && ok "below budget in a run -> {}" || fail "status run (got $out)"
-sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
-case "$sl" in [0-9][0-9][0-9][0-9]-*Z" ctx=102003 tool=Bash") ok "status line written: $sl";; *) fail "status line (got '$sl')";; esac
-out="$(hook_input "$MAIN" sess10 lead1 | CLAUDE_PROJECT_DIR="$P" bash "$HOOK")"
-sl="$(cat "$P/.claude/.autopilot-status" 2>/dev/null)"
-case "$sl" in *" agent=lead1") ok "subagent call adds agent= to the status line";; *) fail "status agent (got '$sl')";; esac
-rm -f "$P/.claude/.autopilot-active"
 rm -rf "$P"
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

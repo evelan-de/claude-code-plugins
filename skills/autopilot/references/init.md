@@ -103,16 +103,17 @@ agent-browser close
 
 Then write `"browserState": "~/.claude/autopilot/<repo basename>/state.json"` into
 `.claude/autopilot.json` (the run expands `~`). Print this recipe when the project has a
-login route (`grep -rl "signIn\|/login\|/sign-in" app src 2>/dev/null | head -n 3` finds one)
-and no `browserState` yet; do not create the file yourself. The state file must exist on
-every machine that runs the queue for this project.
+login route (`grep -rl -m 1 "signIn\|/login\|/sign-in" app src 2>/dev/null` finds one) and
+no `browserState` yet; do not create the file yourself. The state file must exist on every
+machine that runs the queue for this project.
 
 ### 6c. Ticket updates: `jira`
 A run sets the ticket In Progress and comments the result through the `jira` script (plugin
 `bin/`), which reads `~/.claude/jira/env` (mode 600: `JIRA_SITE`, `JIRA_EMAIL`,
-`JIRA_TOKEN`). Run `jira doctor`; when it fails, print its output (it names the file and the
-three variables) and continue: a run without the file skips the ticket update and says so
-in `REPORT.md`.
+`JIRA_TOKEN`). The file must exist on every machine that runs the queue (the office Mini,
+the MacBook), not only here. Run `jira doctor`; when it fails, print its output (it names
+the file and the three variables) and continue: a run without the file skips the ticket
+update and says so in `REPORT.md`.
 
 ### 7. Verify and report
 Hooks merged into `settings.json` take effect at the next session start, so test the scripts

@@ -147,16 +147,12 @@ note_current() {
     && mv -f "$LOCK/current.tmp" "$LOCK/current"
 }
 
-# run_status_file <worktree>: the line the run's context-budget hook writes after every
-# tool call (<ISO time> ctx=<tokens> tool=<name>), or nothing.
-run_status_file() { printf '%s\n' "$1/.claude/.autopilot-status"; }
-
 # current_package <worktree> <item>: the "[~]" package line of the item's PLAN.md, without
 # its "### " prefix, or nothing.
 current_package() {
   cp_plan="$1/$2/PLAN.md"
   [ -f "$cp_plan" ] || return 0
-  grep -m 1 '^### P[^ ]* \[~\]' "$cp_plan" 2>/dev/null | sed 's/^### //'
+  sed -n '/^### P[^ ]* \[~\]/{s/^### //;p;q;}' "$cp_plan" 2>/dev/null
 }
 
 # nap <seconds>: a sleep that a trapped signal interrupts (POSIX: a trap interrupts wait).
@@ -555,6 +551,9 @@ run_attempt() {
   ra_wt="$1"; ra_item="$2"; ra_start="$3"; ra_state="$4"
   ra_exit="$ITEM_LOG.exit"; RUN_PIDFILE="$ITEM_LOG.pid"
   rm -f "$ra_exit" "$RUN_PIDFILE"
+  # The sentinel tells the autopilot skill it is the run (an interactive /autopilot
+  # enqueues instead); the run removes it at its end and on a hand-off.
+  mkdir -p "$ra_wt/.claude" && : >"$ra_wt/.claude/.autopilot-active"
   (
     cd "$ra_wt" || exit 1
     "$CLAUDE_BIN" -p "/autopilot $ra_item" --model "$MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR" \
@@ -989,7 +988,8 @@ cmd_status() {
     if [ -n "$s_wt" ] && [ -d "$s_wt" ]; then
       case "$s_item" in "$SESSIONS"/*) s_pkg="$(current_package "$s_wt" "$s_item")" ;; *) s_pkg="" ;; esac
       echo "  package: ${s_pkg:-none marked [~]}"
-      s_sf="$(run_status_file "$s_wt")"
+      # the line the run's context-budget hook rewrites after every tool call
+      s_sf="$s_wt/.claude/.autopilot-status"
       if [ -f "$s_sf" ]; then echo "  run: $(tail -n 1 "$s_sf")"; else echo "  run: no status line yet"; fi
       s_base="$(base_sha "$s_wt" 2>/dev/null || true)"
       s_diff="$(git -C "$s_wt" diff --shortstat "${s_base:-HEAD}" 2>/dev/null | sed 's/^ *//')"
@@ -1122,17 +1122,17 @@ cmd_log() {
 # kickstarts it. Refuses while a run is active. "kickstart" is the old name.
 cmd_start() {
   [ "$(uname)" = Darwin ] || die "start needs macOS (launchd)"
-  ks_pid="$(lock_pid)"
-  if [ -n "$ks_pid" ]; then
-    ks_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
-    die "a run is active (pid $ks_pid, ${ks_item:-no item yet}), stop it first"
+  sta_pid="$(lock_pid)"
+  if [ -n "$sta_pid" ]; then
+    sta_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
+    die "a run is active (pid $sta_pid, ${sta_item:-no item yet}), stop it first"
   fi
   [ -f "$PLIST" ] || cmd_install_schedule
   # The agent runs "run --scheduled"; force-once makes that run ignore a pause, once.
   : >"$FORCE" || die "cannot write $FORCE"
   launchctl kickstart "gui/$(id -u)/de.evelan.mission-control" || { rm -f "$FORCE"; die "launchctl kickstart failed"; }
-  ks_until="$(pause_date || true)"
-  echo "started: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log, then \"mission-control status\")${ks_until:+; the pause until $ks_until is overridden for this run only}"
+  sta_until="$(pause_date || true)"
+  echo "started: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log, then \"mission-control status\")${sta_until:+; the pause until $sta_until is overridden for this run only}"
 }
 
 # cmd_install_schedule [HH:MM]: the LaunchAgent. With a time it runs daily at that time;

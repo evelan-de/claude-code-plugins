@@ -20,7 +20,7 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
 | `paused` | One date, `YYYY-MM-DD` (local time): the schedule is paused through that day. Written by `pause`, removed by `resume` or by the first scheduled run after the date. See "Pause the schedule". |
 | `force-once` | Written by `start`; the next scheduled run consumes it and goes ahead although a pause is set. |
-| `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well: Andreas' MacBook does, with an empty `repos.txt` so labelled PRs are processed by the Mini only. |
+| `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
 `SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet), `MISSION_CONTROL_EFFORT`

@@ -114,10 +114,17 @@ state, sessions that survive the UI, the diff size at a glance); the rest does n
   it committed earlier.
 - Notifications: `blocked`, `handoff-limit`, `timeout` and `stalled` play a sound
   (`Sosumi`); `done` plays `Glass`. Slack unchanged.
-- Skill routing: a local queue (`~/.claude/mission-control` without a `host` file, or with
-  one when the request says "auf dem Mini" / "on the Mini") runs locally; otherwise over SSH
-  as today. The MacBook keeps `host` for reaching the Mini and gets its own queue directory
-  for local runs; its `repos.txt` stays empty so labelled PRs are processed by the Mini only.
+- Skill routing (Andreas, review round 1): local is the default wherever
+  `~/.claude/mission-control` exists; the Mini over SSH only when the request names it
+  ("auf dem Mini"); `status` shows both. The MacBook keeps `host` for reaching the Mini and
+  gets its own queue directory for local runs; its `repos.txt` stays empty so labelled PRs
+  are processed by the Mini only.
+- The runner creates `.claude/.autopilot-active` in the worktree before every attempt: that
+  sentinel is how the skill tells a run from an interactive `/autopilot` (review round 1,
+  spec finding).
+- Run options ("defer PR", "no Codex") live in the plan header `Options:`; an interactive
+  `/autopilot` with options writes that line and commits it before enqueueing (review round
+  1, Codex finding).
 
 ### Context-budget hook
 
@@ -144,6 +151,14 @@ Adds: `agent-browser --version` check (install line when missing:
 url>`, log in by hand, `agent-browser state save ~/.claude/autopilot/<repo>/state.json`),
 `.claude/.autopilot-status` in `.gitignore`, and a note that Jira updates need
 `~/.claude/jira/env` on the queue machine.
+
+### Divergence from the vendored `to-tasks`
+
+Upstream `to-tickets` ends with "No file paths or code snippets in tickets; they go stale
+fast": tickets that wait for weeks and are picked up by a strong model that explores by
+itself. An autopilot plan is consumed within hours by a cheaper model on the same branch, so
+it carries anchors, signatures, pseudo-code and assertions; the run corrects a moved anchor
+and records it in `DECISIONS.md`. `to-tasks` itself keeps the upstream rule.
 
 ### Removed
 

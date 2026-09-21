@@ -31,11 +31,12 @@ printf '%s\n' "$user" >>"$FAKE_RECORD/users.log"
 case "$method $path" in
   "GET /rest/api/2/myself") printf '{"accountId":"acc-1","displayName":"Andreas Straub"}\n200' ;;
   "GET /rest/api/2/issue/WEB-1?fields=status") printf '{"fields":{"status":{"name":"%s"}}}\n200' "${FAKE_STATUS:-To Do}" ;;
-  "GET /rest/api/2/issue/WEB-1?fields=summary,status,assignee") printf '{"fields":{"summary":"Do the thing","status":{"name":"%s"},"assignee":{"displayName":"Andreas Straub"}}}\n200' "${FAKE_STATUS_AFTER:-In Arbeit}" ;;
+  "GET /rest/api/2/issue/WEB-1?fields=summary,status,assignee") printf '{"fields":{"summary":"Do the thing","status":{"name":"%s"},"assignee":{"displayName":"Andreas Straub","accountId":"%s"}}}\n200' "${FAKE_STATUS_AFTER:-In Arbeit}" "${FAKE_ASSIGNEE_AFTER:-acc-1}" ;;
+  "GET /rest/api/2/issue/WEB-1/comment/9001") if [ -n "${FAKE_COMMENT_EMPTY:-}" ]; then printf '{"id":"9001","body":""}\n200'; else printf '{"id":"9001","body":"Status: done"}\n200'; fi ;;
   "GET /rest/api/2/issue/WEB-1?fields=summary,status,assignee,description") printf '{"fields":{"summary":"Do the thing","status":{"name":"To Do"},"assignee":null,"description":"Body text"}}\n200' ;;
   "GET /rest/api/2/issue/WEB-1/transitions") printf '{"transitions":[{"id":"11","name":"Start work","to":{"name":"In Arbeit"}},{"id":"31","name":"Done","to":{"name":"Fertig"}}]}\n200' ;;
   "POST /rest/api/2/issue/WEB-1/transitions") printf '\n204' ;;
-  "PUT /rest/api/2/issue/WEB-1/assignee") printf '\n204' ;;
+  "PUT /rest/api/2/issue/WEB-1/assignee") [ -n "${FAKE_ASSIGN_FAIL:-}" ] && printf '{"errorMessages":["User cannot be assigned issues."]}\n400' || printf '\n204' ;;
   "POST /rest/api/2/issue/WEB-1/comment") printf '{"id":"9001"}\n201' ;;
   "GET /rest/api/2/issue/WEB-404?fields=summary,status,assignee,description") printf '{"errorMessages":["Issue does not exist or you do not have permission to see it."],"errors":{}}\n404' ;;
   *) printf '{"errorMessages":["unexpected %s %s"]}\n500' "$method" "$path" ;;
@@ -102,16 +103,35 @@ check "transition prints the read-back line" has "transitioned: WEB-1  In Arbeit
 out="$(sh "$TOOL" transition WEB-1 "Nope" 2>&1)"; got=$?
 check "transition to an unknown status exits 1" [ "$got" -eq 1 ]
 : >"$REC/curl.log"
-out="$(sh "$TOOL" assign WEB-1 acc-2 2>&1)"; got=$?
+out="$(FAKE_ASSIGNEE_AFTER=acc-2 sh "$TOOL" assign WEB-1 acc-2 2>&1)"; got=$?
 check "assign by accountId" grep -q 'PUT /rest/api/2/issue/WEB-1/assignee {"accountId":"acc-2"}' "$REC/curl.log"
 check "assign prints the read-back line" has "assigned: WEB-1" "$out"
+out="$(FAKE_ASSIGNEE_AFTER=acc-1 sh "$TOOL" assign WEB-1 acc-2 2>&1)"; got=$?
+check "assign: read-back assignee differs -> exit 1" [ "$got" -eq 1 ]
+check "assign: mismatch message names both" has "read-back assignee is 'acc-1', expected 'acc-2'" "$out"
+out="$(FAKE_ASSIGN_FAIL=1 sh "$TOOL" assign WEB-1 acc-2 2>&1)"; got=$?
+check "assign: non-2xx on the write -> exit 1" [ "$got" -eq 1 ]
+check "assign: Jira's error message relayed" has "HTTP 400 on PUT /rest/api/2/issue/WEB-1/assignee: User cannot be assigned issues." "$out"
+out="$(FAKE_STATUS_AFTER="To Do" sh "$TOOL" transition WEB-1 "In Arbeit" 2>&1)"; got=$?
+check "transition: read-back status differs -> exit 1" [ "$got" -eq 1 ]
+check "transition: mismatch message" has "read-back status is 'To Do', expected 'In Arbeit'" "$out"
+out="$(FAKE_STATUS_AFTER="To Do" sh "$TOOL" start WEB-1 2>&1)"; got=$?
+check "start: read-back status differs -> exit 1" [ "$got" -eq 1 ]
+out="$(JIRA_SITE=https://jira.test JIRA_HOME="$tmp/nohome" sh "$TOOL" view WEB-1 2>&1)"; got=$?
+check "env vars alone (no file) are not enough without email and token" [ "$got" -eq 1 ]
+out="$(JIRA_TOKEN=OTHER sh "$TOOL" view WEB-1 2>&1)"; got=$?
+check "env var overrides the file" grep -q "^a@b.c:OTHER$" "$REC/users.log"
 
 # ---------- comment ----------
 : >"$REC/curl.log"
 out="$(sh "$TOOL" comment WEB-1 'Status: done. PR https://github.com/e/r/pull/1' 2>&1)"; got=$?
 check "comment exits 0" [ "$got" -eq 0 ]
 check "comment posts the plain-text body" grep -q 'POST /rest/api/2/issue/WEB-1/comment {"body":"Status: done. PR https://github.com/e/r/pull/1"}' "$REC/curl.log"
-check "comment prints the id" has "commented: WEB-1 comment 9001" "$out"
+check "comment reads the comment back" grep -q 'GET /rest/api/2/issue/WEB-1/comment/9001' "$REC/curl.log"
+check "comment prints the id and the read-back length" has "commented: WEB-1 comment 9001 (12 chars read back)" "$out"
+out="$(FAKE_COMMENT_EMPTY=1 sh "$TOOL" comment WEB-1 'x' 2>&1)"; got=$?
+check "comment read back empty -> exit 1" [ "$got" -eq 1 ]
+check "comment read back empty: message" has "comment 9001 read back empty" "$out"
 out="$(printf 'line one\nline "two"\n' | sh "$TOOL" comment WEB-1 - 2>&1)"; got=$?
 check "comment from stdin exits 0" [ "$got" -eq 0 ]
 check "comment from stdin keeps newlines and quotes (JSON-escaped)" grep -q '{"body":"line one\\nline \\"two\\""}' "$REC/curl.log"
@@ -129,6 +149,18 @@ check "usage lists the commands" has "jira comment <KEY>" "$out"
 out="$(sh "$TOOL" bogus 2>&1)"; got=$?
 check "unknown command: exit 2" [ "$got" -eq 2 ]
 check "no temp config left behind" bash -c '! ls "${TMPDIR:-/tmp}"/jira.?????? >/dev/null 2>&1'
+# a curl that hangs, killed by TERM: the config file with the token must be gone
+cat >"$tmp/curl-hang" <<'EOF2'
+#!/usr/bin/env bash
+sleep 30
+EOF2
+chmod +x "$tmp/curl-hang"
+CURL_BIN="$tmp/curl-hang" sh "$TOOL" view WEB-1 >/dev/null 2>&1 &
+hp=$!; sleep 0.5
+check "temp config exists while curl runs" bash -c 'ls "${TMPDIR:-/tmp}"/jira.?????? >/dev/null 2>&1'
+kill -TERM "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+pkill -f "$tmp/curl-hang" 2>/dev/null; sleep 0.2
+check "temp config removed after TERM" bash -c '! ls "${TMPDIR:-/tmp}"/jira.?????? >/dev/null 2>&1'
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

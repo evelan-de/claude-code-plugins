@@ -87,18 +87,18 @@ ctx="$(tail -n 400 "$transcript" 2>/dev/null \
       | map(.message.usage | ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)))
       | .[-3:] | min // empty' 2>/dev/null)"
 case "$ctx" in
-  ''|*[!0-9]*) echo '{}'; exit 0;;
+  ''|*[!0-9]*) ctx="?" ;;
 esac
 
 # Status line for the runner (mission-control status, autopilot-watchdog): one line,
-# rewritten after every tool call of the main run; a subagent's calls add its id.
-# Runtime file, gitignored by init; never committed.
+# rewritten after every tool call of the main run (ctx=? until the transcript carries
+# usage); a subagent's calls add its id. Runtime file, gitignored by init; never committed.
 tool="$(printf '%s' "$input" | jq -r '.tool_name // "?"' 2>/dev/null)"
 status_file="$PROJECT_DIR/.claude/.autopilot-status"
 printf '%s ctx=%s tool=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ctx" "$tool" "${agent:+ agent=$agent}" >"$status_file.tmp" 2>/dev/null \
   && mv -f "$status_file.tmp" "$status_file" 2>/dev/null
 
-[ "$ctx" -ge "$budget" ] || { echo '{}'; exit 0; }
+[ "$ctx" != "?" ] && [ "$ctx" -ge "$budget" ] || { echo '{}'; exit 0; }
 
 # Rate-limit reminders per agent (per session in a standalone run) so the model is not
 # nagged on every call and a fresh agent never inherits another agent's counter.

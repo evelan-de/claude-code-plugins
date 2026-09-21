@@ -7,8 +7,8 @@ argument-hint: "<ticket key | spec file | topic>   (a topic without a ticket get
 # Autopilot plan
 
 One topic, one plan file, written with the user in the loop. The plan is what `/autopilot`
-executes unattended on a cheaper model. It carries every decision, every insertion point,
-every signature, every assertion. The run implements steps; it does not invent them.
+executes unattended. It carries every decision, every insertion point, every signature,
+every assertion. The run implements steps; it does not invent them.
 
 **Input:** `$ARGUMENTS`.
 

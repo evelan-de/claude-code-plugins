@@ -15,7 +15,8 @@ agent-browser --session autopilot open http://localhost:3000/route
 agent-browser --session autopilot close          # at the end, always
 ```
 
-Set `AGENT_BROWSER_SESSION=autopilot` once instead of repeating `--session`. Login projects:
+Pass `--session autopilot` on every command (one command per Bash call, no environment
+carries over). Login projects:
 `.claude/autopilot.json` has `browserState` (path outside the repo);
 launch with `--state <path>` on the `open` command. Without it, a check that needs a login
 is a manual step in `MANUAL_TESTING.md`, and `REPORT.md` names the missing state file.

@@ -19,13 +19,13 @@ labelled `autopilot-ready`, results arrive on the PR and in Slack `#mission-cont
 nothing. (The script refuses the queue commands with exit 3 in that state as well.)
 
 `~/.claude/mission-control/host` holds the SSH alias of the office Mini (`office-mini`). A
-machine with a `host` file may also run its own local queue (Andreas' MacBook does).
+machine with a `host` file may also run its own local queue.
 
 - No `host` file: run every command locally.
 - `host` file, `status`: run it locally AND remotely, print the local block under `local:`
   and the remote block under `<alias>:`.
-- `host` file, any other command: remote, unless the request says "hier", "lokal", "auf
-  diesem Mac", "here", "on this Mac", "local" → local.
+- `host` file, any other command: local, unless the request names the Mini ("auf dem
+  Mini", "on the Mini", "office", "remote") → remote.
 - Local: `mission-control <args>`
 - Remote: `ssh <alias> 'zsh -lc "~/.claude/plugins/marketplaces/evelan-plugins/bin/mission-control <args>"'`
   (the plugin `bin/` is not on the remote login PATH). An item with spaces goes as

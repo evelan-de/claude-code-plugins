@@ -53,12 +53,25 @@ need_env() {
     || die "no Jira credentials: write JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into $ENVFILE (chmod 600)"
 }
 
+# Temporary files (the curl config holds the token): removed after every request and,
+# via the trap, on any exit or signal in between.
+TMPFILES=""
+tmpfile() {
+  tf="$(mktemp "${TMPDIR:-/tmp}/jira.XXXXXX")" || die "mktemp failed"
+  chmod 600 "$tf"
+  TMPFILES="$TMPFILES $tf"
+  printf '%s\n' "$tf"
+}
+cleanup() { [ -n "$TMPFILES" ] && rm -f $TMPFILES; }
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
 # req <method> <path> [json body]: prints the response body; returns 1 on a non-2xx status
 # or a transport failure (the status and the first line of the body go to stderr).
 req() {
   r_method="$1"; r_path="$2"; r_body="${3:-}"
-  r_cfg="$(mktemp "${TMPDIR:-/tmp}/jira.XXXXXX")" || die "mktemp failed"
-  chmod 600 "$r_cfg"
+  r_cfg="$(tmpfile)" || exit 1
   {
     printf 'user = "%s:%s"\n' "$JIRA_EMAIL" "$JIRA_TOKEN"
     printf 'silent\nshow-error\nmax-time = 30\n'
@@ -70,7 +83,7 @@ req() {
   } >"$r_cfg"
   r_data=""
   if [ -n "$r_body" ]; then
-    r_data="$(mktemp "${TMPDIR:-/tmp}/jira.XXXXXX")" || die "mktemp failed"
+    r_data="$(tmpfile)" || exit 1
     printf '%s' "$r_body" >"$r_data"
   fi
   # the body comes with the status code as its last line; split them
@@ -97,10 +110,25 @@ key_arg() {
   esac
 }
 
-# issue_line <KEY>: "<KEY>  <status>  <assignee or unassigned>  <summary>"
+# issue_json <KEY> [extra fields]: the issue with summary, status, assignee (+ extra).
+issue_json() { req GET "/rest/api/2/issue/$1?fields=summary,status,assignee${2:+,$2}"; }
+
+# issue_line <KEY>: "<KEY>  <status>  <assignee or unassigned>  <summary>" from the JSON
+# on stdin.
 issue_line() {
-  il="$(req GET "/rest/api/2/issue/$1?fields=summary,status,assignee")" || return 1
-  printf '%s' "$il" | jq -r --arg k "$1" '"\($k)  \(.fields.status.name)  \(.fields.assignee.displayName // "unassigned")  \(.fields.summary)"'
+  jq -r --arg k "$1" '"\($k)  \(.fields.status.name)  \(.fields.assignee.displayName // "unassigned")  \(.fields.summary)"'
+}
+
+# expect <KEY> <field: status|assignee> <expected value> <json>: exit 1 with a message when
+# the read-back issue does not carry the expected status name or assignee accountId.
+expect() {
+  case "$2" in
+    status) ex_got="$(printf '%s' "$4" | jq -r '.fields.status.name')" ;;
+    assignee) ex_got="$(printf '%s' "$4" | jq -r '.fields.assignee.accountId // "unassigned"')" ;;
+  esac
+  if [ "$(printf '%s' "$ex_got" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$3" | tr 'A-Z' 'a-z')" ]; then
+    die "$1: Jira accepted the request but the read-back $2 is '$ex_got', expected '$3'"
+  fi
 }
 
 cmd_doctor() {
@@ -129,8 +157,9 @@ cmd_doctor() {
 cmd_view() {
   need_env
   v_key="$(key_arg "${1:-}")" || exit 1
-  v_json="$(req GET "/rest/api/2/issue/$v_key?fields=summary,status,assignee,description")" || exit 1
-  printf '%s' "$v_json" | jq -r --arg k "$v_key" '"\($k)  \(.fields.status.name)  \(.fields.assignee.displayName // "unassigned")  \(.fields.summary)\n\n\(.fields.description // "(no description)")"'
+  v_json="$(issue_json "$v_key" description)" || exit 1
+  printf '%s' "$v_json" | issue_line "$v_key"
+  printf '\n%s\n' "$(printf '%s' "$v_json" | jq -r '.fields.description // "(no description)"')"
 }
 
 # transition_to <KEY> <target status names, "|"-separated>: performs the first transition
@@ -146,6 +175,7 @@ transition_to() {
     echo "jira: $tt_key has no transition to '$tt_names'; available targets: $(printf '%s' "$tt_list" | jq -r '[.transitions[].to.name] | join(", ")')" >&2
     return 1
   fi
+  TT_TARGET="$(printf '%s' "$tt_list" | jq -r --arg id "$tt_id" '.transitions[] | select(.id == $id) | .to.name')"
   req POST "/rest/api/2/issue/$tt_key/transitions" "$(jq -cn --arg id "$tt_id" '{transition: {id: $id}}')" >/dev/null || return 1
 }
 
@@ -154,8 +184,9 @@ cmd_transition() {
   t_key="$(key_arg "${1:-}")" || exit 1
   [ -n "${2:-}" ] || die "usage: jira transition <KEY> <status>"
   transition_to "$t_key" "$2" || exit 1
-  t_line="$(issue_line "$t_key")" || exit 1
-  echo "transitioned: $t_line"
+  t_json="$(issue_json "$t_key")" || exit 1
+  expect "$t_key" status "$TT_TARGET" "$t_json"
+  echo "transitioned: $(printf '%s' "$t_json" | issue_line "$t_key")"
 }
 
 assign_to() {
@@ -174,8 +205,9 @@ cmd_assign() {
   a_who="${2:-me}"
   if [ "$a_who" = me ]; then a_who="$(my_account)" || exit 1; fi
   assign_to "$a_key" "$a_who" || exit 1
-  a_line="$(issue_line "$a_key")" || exit 1
-  echo "assigned: $a_line"
+  a_json="$(issue_json "$a_key")" || exit 1
+  expect "$a_key" assignee "$a_who" "$a_json"
+  echo "assigned: $(printf '%s' "$a_json" | issue_line "$a_key")"
 }
 
 cmd_start() {
@@ -185,11 +217,14 @@ cmd_start() {
   s_status="$(printf '%s' "$s_before" | jq -r '.fields.status.name | ascii_downcase')"
   s_already=""
   case "|$(printf '%s' "$JIRA_START_STATUS" | tr 'A-Z' 'a-z')|" in *"|$s_status|"*) s_already=1 ;; esac
-  if [ -z "$s_already" ]; then transition_to "$s_key" "$JIRA_START_STATUS" || exit 1; fi
+  s_target="$(printf '%s' "$s_before" | jq -r '.fields.status.name')"
+  if [ -z "$s_already" ]; then transition_to "$s_key" "$JIRA_START_STATUS" || exit 1; s_target="$TT_TARGET"; fi
   s_me="$(my_account)" || exit 1
   assign_to "$s_key" "$s_me" || exit 1
-  s_line="$(issue_line "$s_key")" || exit 1
-  echo "started: $s_line${s_already:+ (was already in that status)}"
+  s_json="$(issue_json "$s_key")" || exit 1
+  expect "$s_key" status "$s_target" "$s_json"
+  expect "$s_key" assignee "$s_me" "$s_json"
+  echo "started: $(printf '%s' "$s_json" | issue_line "$s_key")${s_already:+ (was already in that status)}"
 }
 
 cmd_comment() {
@@ -201,7 +236,10 @@ cmd_comment() {
   c_resp="$(req POST "/rest/api/2/issue/$c_key/comment" "$(jq -cn --arg b "$c_text" '{body: $b}')")" || exit 1
   c_id="$(printf '%s' "$c_resp" | jq -r '.id // empty')"
   [ -n "$c_id" ] || die "comment on $c_key: no id in the response"
-  echo "commented: $c_key comment $c_id ($(printf '%s' "$c_text" | wc -c | tr -d ' ') bytes)"
+  c_back="$(req GET "/rest/api/2/issue/$c_key/comment/$c_id")" || die "$c_key: comment $c_id not readable after posting"
+  c_len="$(printf '%s' "$c_back" | jq -r '.body | length')"
+  [ "$c_len" -gt 0 ] 2>/dev/null || die "$c_key: comment $c_id read back empty"
+  echo "commented: $c_key comment $c_id ($c_len chars read back)"
 }
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift

@@ -28,7 +28,12 @@ repo_key="$(printf '%s' "$repo" | cksum | cut -d' ' -f1)"
 state="${3:-${TMPDIR:-/tmp}/autopilot-watchdog-$repo_key-$safe_branch.state}"
 status_file="${4:-$repo/.claude/.autopilot-status}"
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# mtime <file>: epoch seconds; BSD stat on macOS, GNU stat elsewhere (GNU "stat -f" is the
+# filesystem mode and would print a mount point instead of failing).
+case "$(uname)" in
+  Darwin|*BSD) mtime() { stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *) mtime() { stat -c %Y "$1" 2>/dev/null || echo 0; } ;;
+esac
 
 commit="$(git -C "$repo" rev-parse --short "$branch" 2>/dev/null || echo none)"
 commit_ts="$(git -C "$repo" log -1 --format=%ct "$branch" 2>/dev/null || echo 0)"

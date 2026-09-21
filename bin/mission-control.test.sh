@@ -40,6 +40,8 @@ case "$item" in
   *) sd="docs/autopilot/sessions/2026-09-20-$(printf '%s' "$item" | tr -c 'A-Za-z0-9-' '-')" ;;
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
+[ -f .claude/.autopilot-active ] && echo "attempt $n" >>"$FAKE_RECORD/sentinel.seen"
+rm -f .claude/.autopilot-active
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
 git log --oneline -20 >"$FAKE_RECORD/claude.gitlog.$n"
 mkdir -p "$sd"
@@ -173,6 +175,7 @@ check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (P
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
 check "(a) log file written" ls "$QH"/logs/*-PAUL-1.log >/dev/null 2>&1
+check "(a) the run saw the sentinel .claude/.autopilot-active" grep -q "attempt 1" "$REC/sentinel.seen"
 
 # ---------- (a2) Status: blocked -> blocked with the reason ----------
 fresh_home a2
@@ -221,6 +224,7 @@ check "(b) run exits 0" [ "$got" -eq 0 ]
 check "(b) claude called twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
 check "(b) done with restarts=1" grep -q " PAUL-2 done .* restarts=1" "$QH/done.txt"
 check "(b) restart announced" has "hand-off found, restart 1/5" "$out"
+check "(b) the restarted run saw the sentinel again" grep -q "attempt 2" "$REC/sentinel.seen"
 
 # ---------- (c) HANDOFF.md every time -> handoff-limit ----------
 fresh_home c
