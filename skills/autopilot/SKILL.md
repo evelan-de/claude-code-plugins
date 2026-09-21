@@ -61,6 +61,12 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
   one screenshot per screen at most.
 - **Hand off, never compact.** When the context-budget hook reports the budget: hand off
   (below). Do not push on, do not wait for compaction. The runner starts the next session.
+- **Never end the turn to wait.** You are headless: when your turn ends, the process ends;
+  no notification, no background result ever reaches you. Anything you wait for runs in the
+  foreground of one Bash call (Codex review with `timeout: 600000`, `gh pr checks --watch`,
+  a review-bot poll as `sleep 60` plus the query, one call per minute). The only two ways a
+  turn may end: `REPORT.md` written, or `HANDOFF.md` written. The Stop hook blocks anything
+  else.
 
 ## Write less
 
@@ -126,7 +132,10 @@ For each package with `[ ]`: set `[~]`, then
 - **Failures:** one hypothesis, one change, re-run. After the second failed fix on the same
   failure: write observed vs expected, bisect, then fix. Never weaken an assertion.
 - **Docs** directly affected by the package (inline, the touched area's doc file).
-- **Full cheap gate once**; paste its summary line. Green → commit (Conventional Commits,
+- **Full gate once** (`.claude/autopilot.json` `gate`, the whole command, not a subset);
+  paste its summary line. The gate filter writes one line per run into
+  `.claude/autopilot-gate.log`; a package commit without a gate line for the gate command
+  is a defect the reviewer flags. Green → commit (Conventional Commits,
   ticket key). Set `[x]` with a one-line result under the package (commits, gate line), or
   `[!]` with the gap named. Append `DECISIONS.md` for every assumption you made.
 
@@ -137,7 +146,8 @@ a fresh reviewer dispatch on the updated diff;
 unresolved real gaps go to the top of `REPORT.md` and into the PR description.
 
 **Codex cross-model review, on by default.** After the Claude review is settled, run
-`evelan:codex-review` on the branch (`--base <base branch>`) unless the prompt or the
+`evelan:codex-review` on the branch (`--base <base branch>`), in the foreground (Bash
+`timeout: 600000`, never `run_in_background`), unless the prompt or the
 plan header `Options:` says "ohne Codex" / "no Codex" or `codex-cli --version` fails (then one line in `REPORT.md`:
 Codex review skipped, why). Treat Codex's findings exactly like the reviewer's (fix every
 correctness, requirement or safety gap test-first, re-gate, commit; one cycle), rebut the

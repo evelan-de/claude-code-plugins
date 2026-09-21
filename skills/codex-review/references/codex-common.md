@@ -42,9 +42,13 @@ available; a model missing from the list may mean the CLI is outdated
 
 1. Create the log file: `mktemp /tmp/codex-XXXXXX` (X's at the end; on
    macOS a suffix after the X's is not expanded). Note the printed path.
-2. Run the Codex command with `> <log> 2>&1` appended, in the background
-   (Bash `run_in_background: true`). Foreground Bash is capped at 10 minutes.
-3. Wait for the completion notification. No polling, no other work meanwhile.
+2. Run the Codex command with `> <log> 2>&1` appended.
+   - Interactive session: in the background (Bash `run_in_background: true`), then wait
+     for the completion notification. No polling, no other work meanwhile.
+   - Inside an autopilot run (`.claude/.autopilot-active` exists): in the FOREGROUND with
+     Bash `timeout: 600000`. A headless run has no notifications: ending the turn to wait
+     ends the process. If the command hits the 10-minute cap, run it once more; a second
+     cap is "Codex unavailable" (report the skip).
 
 ## Reporting
 

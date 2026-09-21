@@ -53,6 +53,11 @@ case "${FAKE_SCENARIO:-report}" in
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
     else rm -f "$sd/HANDOFF.md"; printf 'Status: done\n' >"$sd/REPORT.md"; fi ;;
   handoff-always) echo "# HANDOFF $n" >"$sd/HANDOFF.md" ;;
+  early-exit-then-report)
+    # first attempt commits work but ends its turn without REPORT.md or HANDOFF.md
+    if [ "$n" -eq 1 ]; then echo "wip" >"$sd/NOTES.md"
+    else printf 'Status: done\n' >"$sd/REPORT.md"; fi ;;
+  early-exit-always) echo "wip $n" >"$sd/NOTES.md" ;;
   handoff-then-abort)
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
     else sleep 1; printf 'Status: blocked - gate needs a database\n' >"$sd/REPORT.md"; fi ;;
@@ -231,6 +236,23 @@ out="$(sh "$TOOL" run 2>&1)"
 check "(a4) run does not report done" grep -qv " PAUL-99 done " "$QH/done.txt"
 check "(a4) status blocked, no session directory" grep -q " PAUL-99 blocked - no-plan" "$QH/done.txt"
 check "(a4) reason names the missing session directory" has "no session directory for this item" "$out"
+
+# ---------- (a2d) clean exit without REPORT.md or HANDOFF.md -> restarted like a hand-off ----------
+fresh_home a2d
+export FAKE_SCENARIO=early-exit-then-report
+printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(a2d) claude called twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
+check "(a2d) restart announced with the reason" has "ended without REPORT.md or HANDOFF.md, restart 1/5" "$out"
+check "(a2d) done with restarts=1" grep -q " PAUL-37 done .* restarts=1" "$QH/done.txt"
+fresh_home a2e
+export FAKE_SCENARIO=early-exit-always MISSION_CONTROL_MAX_RESTARTS=2
+printf '%s PAUL-38\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(a2e) claude called 1 + MAX_RESTARTS times" [ "$(count_lines "$REC/claude.args")" = 3 ]
+check "(a2e) handoff-limit with the artifact reason" grep -q " PAUL-38 handoff-limit " "$QH/done.txt"
+check "(a2e) reason on stdout" has "no REPORT.md or HANDOFF.md after 2 restarts" "$out"
+unset MISSION_CONTROL_MAX_RESTARTS
 
 # ---------- (a5) topic item: session dir found because it was created since the start ----------
 fresh_home a5

@@ -718,6 +718,18 @@ process_item() {
       if [ -f "$pi_wt/$pi_sd/REPORT.md" ]; then
         report_status "$pi_wt/$pi_sd/REPORT.md"; break
       fi
+      # A clean exit without REPORT.md or HANDOFF.md: the run ended its turn early (waited
+      # for something that never comes in headless mode). Its commits are in the worktree;
+      # start it again like a hand-off, up to MAX_RESTARTS.
+      if [ "$RUN_RESULT" = exited ] && [ "$RUN_EXIT" = 0 ] && ! tail -n 5 "$ITEM_LOG" 2>/dev/null | grep -q 'max_budget'; then
+        if [ "$pi_restarts" -lt "$MAX_RESTARTS" ]; then
+          pi_restarts=$((pi_restarts + 1))
+          say "$pi_rb $pi_item: ended without REPORT.md or HANDOFF.md, restart $pi_restarts/$MAX_RESTARTS"
+          refresh_worktree "$pi_wt"
+          continue
+        fi
+        pi_status=handoff-limit; pi_reason="no REPORT.md or HANDOFF.md after $MAX_RESTARTS restarts"; break
+      fi
       pi_status=blocked
       if [ "$RUN_RESULT" = stalled ]; then
         pi_reason="run stalled (no tool call, commit or plan change for 4 watchdog ticks), killed"

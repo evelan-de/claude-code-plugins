@@ -121,5 +121,30 @@ else
   rm -rf "$P"
 fi
 
+# --- artifacts: a session without REPORT.md or HANDOFF.md blocks the stop before the gate runs
+P="$(setup yes "true")"
+mkdir -p "$P/docs/autopilot/sessions/2026-09-21-x"; echo "# PLAN" >"$P/docs/autopilot/sessions/2026-09-21-x/PLAN.md"
+invoke "$P" false; check "no REPORT.md/HANDOFF.md: blocked although the gate is green" 2 $?
+check_err "message names the session and the rule" "2026-09-21-x has neither REPORT.md nor HANDOFF.md"
+check_err "message explains the headless rule" "ending the turn ends the process"
+invoke "$P" true; check "second consecutive block" 2 $?
+invoke "$P" true; check "third consecutive block" 2 $?
+invoke "$P" true; check "fourth: yields with the reason" 0 $?
+check_err "yield message" "still has no REPORT.md or HANDOFF.md after 3 consecutive blocks"
+echo "# HANDOFF" >"$P/docs/autopilot/sessions/2026-09-21-x/HANDOFF.md"
+invoke "$P" false; check "HANDOFF.md present: falls through to the (green) gate" 0 $?
+rm -f "$P/docs/autopilot/sessions/2026-09-21-x/HANDOFF.md"; printf 'Status: done\n' >"$P/docs/autopilot/sessions/2026-09-21-x/REPORT.md"
+invoke "$P" false; check "REPORT.md present: falls through to the (green) gate" 0 $?
+P2="$(setup yes "false")"
+mkdir -p "$P2/docs/autopilot/sessions/2026-09-21-y"; echo "# PLAN" >"$P2/docs/autopilot/sessions/2026-09-21-y/PLAN.md"; printf 'Status: done\n' >"$P2/docs/autopilot/sessions/2026-09-21-y/REPORT.md"
+invoke "$P2" false; check "REPORT.md present but gate red: still blocked by the gate" 2 $?
+check_err "gate message" "Autopilot gate is RED"
+mkdir -p "$P2/docs/autopilot/sessions/2026-09-22-newer"; sleep 1; echo "# PLAN" >"$P2/docs/autopilot/sessions/2026-09-22-newer/PLAN.md"
+invoke "$P2" false; check "the NEWEST session (by PLAN.md) is the one checked" 2 $?
+check_err "names the newer session" "2026-09-22-newer has neither"
+P3="$(setup no "false")"
+mkdir -p "$P3/docs/autopilot/sessions/2026-09-21-z"; echo "# PLAN" >"$P3/docs/autopilot/sessions/2026-09-21-z/PLAN.md"
+invoke "$P3" false; check "no sentinel: inert even without artifacts" 0 $?
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

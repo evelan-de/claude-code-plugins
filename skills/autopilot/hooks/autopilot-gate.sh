@@ -2,8 +2,10 @@
 # Autopilot Stop-hook gate (TEMPLATE).
 # Copied into a project's .claude/hooks/ by `/autopilot init`.
 #
-# Blocks turn-end while an autopilot run is active AND the project gate is red,
-# so the model cannot claim "done" on a red gate. Sentinel-guarded: inert in
+# Blocks turn-end while an autopilot run is active AND (a) the newest session has
+# neither REPORT.md nor HANDOFF.md (in a headless run, ending the turn ends the
+# process: nothing may be "waited for" across a turn) or (b) the project gate is
+# red, so the model cannot claim "done" on a red gate. Sentinel-guarded: inert in
 # normal interactive sessions.
 #
 # Yield rule: consecutive blocks are counted in .claude/.autopilot-gate-blocks
@@ -49,21 +51,46 @@ GATE="${GATE:-$DEFAULT_GATE}"
 
 cd "$PROJECT_DIR" || exit 0
 
+# count_block: consecutive-block counter shared by both checks. Sets $count; returns 1
+# when the yield limit is exceeded (caller allows the stop).
+count_block() {
+  count=0
+  if [ "$ACTIVE" = "true" ] && [ -f "$BLOCKS" ]; then
+    count="$(cat "$BLOCKS" 2>/dev/null || echo 0)"
+    case "$count" in ''|*[!0-9]*) count=0;; esac
+  fi
+  count=$((count + 1))
+  if [ "$count" -gt "$MAX_BLOCKS" ]; then rm -f "$BLOCKS"; return 1; fi
+  echo "$count" >"$BLOCKS"
+  return 0
+}
+
+# (a) The run's artifacts: the newest session folder (by PLAN.md) must hold REPORT.md
+# (done or blocked) or HANDOFF.md before the turn may end. Cheap, runs before the gate.
+SESSION_DIR=""
+if [ -d "$PROJECT_DIR/docs/autopilot/sessions" ]; then
+  SESSION_DIR="$(ls -t "$PROJECT_DIR"/docs/autopilot/sessions/*/PLAN.md 2>/dev/null | head -n 1)"
+  SESSION_DIR="${SESSION_DIR%/PLAN.md}"
+fi
+if [ -n "$SESSION_DIR" ] && [ ! -f "$SESSION_DIR/REPORT.md" ] && [ ! -f "$SESSION_DIR/HANDOFF.md" ]; then
+  if count_block; then
+    {
+      echo "Autopilot run is not finished - do not end the turn. $(basename "$SESSION_DIR") has neither REPORT.md nor HANDOFF.md. (block $count of $MAX_BLOCKS)"
+      echo "In a headless run, ending the turn ends the process: nothing runs on after it, no notification arrives. Run what you are waiting for in the foreground (a review, a CI watch, a server check), then continue with the skill's steps until REPORT.md exists; or hand off with HANDOFF.md."
+    } >&2
+    exit 2
+  fi
+  echo "Autopilot run still has no REPORT.md or HANDOFF.md after $MAX_BLOCKS consecutive blocks; allowing the stop (the runner will restart or report it)." >&2
+  exit 0
+fi
+
 if OUTPUT="$(bash -lc "$GATE" 2>&1)"; then
   rm -f "$BLOCKS"
   exit 0   # green -> allow the turn to end
 fi
 
 # Red -> count consecutive blocks. A stop not caused by a previous block starts over.
-count=0
-if [ "$ACTIVE" = "true" ] && [ -f "$BLOCKS" ]; then
-  count="$(cat "$BLOCKS" 2>/dev/null || echo 0)"
-  case "$count" in ''|*[!0-9]*) count=0;; esac
-fi
-count=$((count + 1))
-
-if [ "$count" -gt "$MAX_BLOCKS" ]; then
-  rm -f "$BLOCKS"
+if ! count_block; then
   {
     echo "Autopilot gate is still RED after $MAX_BLOCKS consecutive blocks; allowing the stop so the run can hand off or abort."
     echo "--- gate output (tail) ---"
@@ -71,7 +98,6 @@ if [ "$count" -gt "$MAX_BLOCKS" ]; then
   } >&2
   exit 0
 fi
-echo "$count" >"$BLOCKS"
 
 # Red -> block the stop. exit 2 + stderr is the documented "block" signal.
 {
