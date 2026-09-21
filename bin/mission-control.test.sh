@@ -41,6 +41,7 @@ case "$item" in
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
 [ -f .claude/.autopilot-active ] && echo "attempt $n" >>"$FAKE_RECORD/sentinel.seen"
+[ -f "$FAKE_RECORD/jira.args" ] && cp "$FAKE_RECORD/jira.args" "$FAKE_RECORD/jira-at-claude-start.$n"
 mkdir -p .claude; echo "2026-09-21T00:00:00Z ctx=1 tool=Bash" >.claude/.autopilot-status
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
 git log --oneline -20 >"$FAKE_RECORD/claude.gitlog.$n"
@@ -82,7 +83,20 @@ case "$1 $2" in
     while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$FAKE_RECORD/comment.$((n+1))"; shift; done
     exit 0 ;;
   "label list") printf '%s\n' ${FAKE_GH_LABELS-autopilot-ready autopilot-done autopilot-blocked}; exit 0 ;;
-  "pr view") grep "^$3 " "$prs"; exit 0 ;;
+  "pr view")
+    case "$*" in *"--json author"*) echo andreas; exit 0 ;; esac
+    grep "^$3 " "$prs"; exit 0 ;;
+  "repo view") echo e/r; exit 0 ;;
+  "api "*)
+    # review-bot comments: FAKE_REVIEW_INLINE / FAKE_REVIEW_TOP hold the login lists
+    apipath="$2"; jqexpr=""; while [ $# -gt 0 ]; do [ "$1" = --jq ] && jqexpr="$2"; shift; done
+    case "$apipath" in
+      */pulls/*/comments) logins="${FAKE_REVIEW_INLINE:-}" ;;
+      */issues/*/comments) logins="${FAKE_REVIEW_TOP:-}" ;;
+      *) exit 1 ;;
+    esac
+    json="["; for l in $logins; do json="$json{\"user\":{\"login\":\"$l\"}},"; done; json="${json%,}]"
+    printf '%s' "$json" | jq "$jqexpr"; exit 0 ;;
   "pr list")
     case "$*" in
       *--label*) [ -f "$prs" ] && cat "$prs"; exit 0 ;;
@@ -93,6 +107,16 @@ case "$1 $2" in
         if [ -n "$line" ]; then set -- $line; echo "$1 true $3"; else echo "7 true https://github.com/e/r/pull/7"; fi
         exit 0 ;;
     esac ;;
+esac
+exit 0
+EOF
+cat >"$tmp/fakes/jira" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_RECORD/jira.args"
+[ -n "${FAKE_JIRA_FAIL:-}" ] && { echo "jira: HTTP 401 on GET /rest/api/2/myself: Unauthorized" >&2; exit 1; }
+case "$1" in
+  start) echo "started: $2  In Arbeit  Andreas Straub  Do the thing" ;;
+  comment) n="$(ls "$FAKE_RECORD" | grep -c '^jira-comment\.')"; cat >"$FAKE_RECORD/jira-comment.$((n+1))"; echo "commented: $2 comment 9001 (12 chars read back)" ;;
 esac
 exit 0
 EOF
@@ -125,7 +149,7 @@ git -C "$proj" push -q origin main
 # PR branch with a plan
 git -C "$proj" checkout -q -b feat/PAUL-9-thing
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-19-PAUL-9-thing"
-echo "# PLAN" >"$proj/docs/autopilot/sessions/2026-09-19-PAUL-9-thing/PLAN.md"
+printf '# PLAN - PAUL-9 - 2026-09-19\nBranch: feat/PAUL-9-thing   Base: main   Ticket: PAUL-9\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-19-PAUL-9-thing/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan"
 git -C "$proj" push -q origin feat/PAUL-9-thing
 # PR branch without a plan
@@ -566,6 +590,50 @@ check "(j2) names the other checkout and the rule" has "/proj; the run works on 
 check "(j2) the worktree is on the branch, not detached" [ "$(git -C "$QH/worktrees/proj-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)" = feat/PAUL-9-thing ]
 check "(j2) blocked as the fake run reports" grep -q " docs/autopilot/sessions/2026-09-19-PAUL-9-thing blocked " "$QH/done.txt"
 git -C "$proj" checkout -q main
+
+# ---------- (j3) jira: start before the first attempt, comment at the end, failures said ----------
+fresh_home j3
+export FAKE_SCENARIO=report
+mkdir -p "$tmp/jirahome"; printf 'JIRA_SITE=x\nJIRA_EMAIL=y\nJIRA_TOKEN=z\n' >"$tmp/jirahome/env"
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+check "(j3) jira start called with the plan's ticket before the run" [ "$(sed -n 1p "$REC/jira.args")" = "start PAUL-9" ]
+check "(j3) jira start happened before claude" grep -qx "start PAUL-9" "$REC/jira-at-claude-start.1"
+check "(j3) jira comment called at the end" [ "$(sed -n 2p "$REC/jira.args")" = "comment PAUL-9 -" ]
+check "(j3) comment body: status, PR and the report head" bash -c 'grep -q "^Autopilot: done" "$1" && grep -q "^PR: https://github.com/e/r/pull/7" "$1" && grep -q "shipped" "$1"' _ "$REC/jira-comment.1"
+check "(j3) comment body has no Markdown headings" bash -c '! grep -q "^#" "$1"' _ "$REC/jira-comment.1"
+check "(j3) done.txt has no jira-failed" bash -c '! grep -q "jira-failed" "$1"' _ "$QH/done.txt"
+fresh_home j3b
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(FAKE_JIRA_FAIL=1 JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+check "(j3b) jira failure is said with jira's last line" has "jira start PAUL-9 failed: jira: HTTP 401" "$out"
+check "(j3b) the run still happened" [ "$(count_lines "$REC/claude.args")" = 1 ]
+check "(j3b) done.txt marks jira-failed" grep -q " jira-failed" "$QH/done.txt"
+fresh_home j3c
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira" sh "$TOOL" run 2>&1)"; got=$?
+check "(j3c) without a credentials file jira is not called" [ ! -e "$REC/jira.args" ]
+check "(j3c) the log says why" grep -q "PAUL-9 not updated (no jira script or no" "$QH"/logs/*-2026-09-19-PAUL-9-thing.log
+fresh_home j3d
+export FAKE_SCENARIO=report-blocked
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+check "(j3d) blocked: comment carries the status and the report head" bash -c 'grep -q "^Autopilot: blocked" "$1" && grep -q "cannot reach the API" "$1"' _ "$REC/jira-comment.1"
+
+# ---------- (j4) review-bot comments counted in done.txt when the repo has the review workflow ----------
+fresh_home j4
+export FAKE_SCENARIO=report
+mkdir -p "$proj/.github/workflows"; echo "name: review" >"$proj/.github/workflows/claude-code-review.yml"
+git -C "$proj" add -A && commit "$proj" -m "review workflow"
+git -C "$proj" push -q origin main 2>/dev/null || true
+printf '%s PAUL-70\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_REVIEW_INLINE="claude[bot] claude[bot]" FAKE_REVIEW_TOP="andreas github-actions[bot]" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) done.txt counts the comments not by the PR author" grep -q " PAUL-70 done .* review-comments=3" "$QH/done.txt"
+printf '%s PAUL-71\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) zero bot comments: said on stdout" has "PAUL-71: no review-bot comment on the PR yet, check it" "$out"
+check "(j4) zero bot comments: recorded" grep -q " PAUL-71 done .* review-comments=0" "$QH/done.txt"
+git -C "$proj" rm -q -r .github && commit "$proj" -m "remove review workflow" && git -C "$proj" push -q origin main 2>/dev/null || true
 
 # ---------- (k) timeout kills the run ----------
 fresh_home k

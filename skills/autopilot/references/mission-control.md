@@ -13,7 +13,7 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed. Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR not by its author; `0` is said on stdout). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
@@ -156,7 +156,11 @@ column and runs from the default branch.
    checkout is never touched. A worktree that cannot be prepared makes the item `blocked`; a
    PR still gets its label and comment, via the repo.
 3. Effort: the `Effort:` header of the item's `PLAN.md` when there is one, unless
-   `MISSION_CONTROL_EFFORT` is set in the environment.
+   `MISSION_CONTROL_EFFORT` is set in the environment. Ticket: the `Ticket:` header; when the
+   `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
+   (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
+   and the run goes ahead. Without the credentials file the log says the ticket was not
+   updated.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    --fallback-model <fallback> --permission-mode auto --max-budget-usd <budget> --output-format json`.
@@ -173,7 +177,8 @@ column and runs from the default branch.
    directory → `blocked` ("no session directory for this item").
    `HANDOFF.md` present → the same item is started again (up to `MAX_RESTARTS`, then
    `handoff-limit`), unless a `REPORT.md` is newer than it (an abort in a continuation):
-   then the report decides. `REPORT.md` present → its first line decides: `Status: done` → `done`;
+   then the report decides. A clean exit (code 0) with neither file, and no budget error in
+   the output, is treated the same way: restart, up to `MAX_RESTARTS`. `REPORT.md` present → its first line decides: `Status: done` → `done`;
    `Status: blocked - <reason>` → `blocked` with that reason; no `Status:` line → `blocked`
    ("report without status line"). Neither file → `blocked` (the reason names the budget
    when the claude output ends with a `max_budget` error). After every attempt the runtime
@@ -186,9 +191,12 @@ column and runs from the default branch.
    the cause. A failing `gh pr ready`, `pr edit` or `pr comment` is said on stdout and
    recorded as `labels-failed` in `done.txt` and the notification (the run itself still
    counts as `done` or `blocked`).
-7. Appends to `done.txt`, removes the line from `queue.txt`, notifies (macOS notification
-   with a sound: Glass for `done`, Sosumi with the reason for everything else; Slack when
-   `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
+7. With a ticket and credentials: `jira comment <KEY> -` with the status, the PR link and
+   the first 40 lines of `REPORT.md` as plain text (headings stripped). In a repo with
+   `.github/workflows/claude-code-review.yml`, counts the PR comments not by the PR author
+   (`review-comments=N`). Appends to `done.txt`, removes the line from `queue.txt`, notifies
+   (macOS notification with a sound: Glass for `done`, Sosumi with the reason for everything
+   else; Slack when `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead

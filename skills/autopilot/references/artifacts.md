@@ -7,8 +7,10 @@ docs/autopilot/
     PLAN.md          # from /autopilot-plan: goal, goal artifact, decisions, packages + status
     DECISIONS.md     # assumptions the run made, with reasons
     HANDOFF.md       # transient; deleted when consumed
-    REPORT.md        # first line `Status: done` or `Status: blocked - <reason>`; then shipped work,
-                     # verification, review findings, open items (mission-control reads the first line)
+    REPORT.md        # first line `Status: done` or `Status: blocked - <reason>`; then ## What shipped,
+                     # ## Verification, ## Review, ## Open items, ## Review bot (mission-control reads the
+                     # first line; the Stop hook requires ## Review bot in a done report when the project
+                     # has the Claude review workflow)
     MANUAL_TESTING.md  # only for steps impossible in this environment
 ```
 

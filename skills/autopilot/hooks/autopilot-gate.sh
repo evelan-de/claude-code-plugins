@@ -84,6 +84,23 @@ if [ -n "$SESSION_DIR" ] && [ ! -f "$SESSION_DIR/REPORT.md" ] && [ ! -f "$SESSIO
   exit 0
 fi
 
+# (b) A done report in a project with the Claude review workflow must say what the review
+# bot returned ("## Review bot" section): the loop in the skill is easy to skip, this is not.
+if [ -n "$SESSION_DIR" ] && [ -f "$SESSION_DIR/REPORT.md" ] \
+   && [ -f "$PROJECT_DIR/.github/workflows/claude-code-review.yml" ] \
+   && head -n 1 "$SESSION_DIR/REPORT.md" | grep -q '^Status: done' \
+   && ! grep -q '^## Review bot' "$SESSION_DIR/REPORT.md"; then
+  if count_block; then
+    {
+      echo "REPORT.md says done but has no '## Review bot' section, and this project runs the Claude review workflow on every PR. (block $count of $MAX_BLOCKS)"
+      echo "Wait for the review bot on the PR as the skill describes (poll in the foreground, up to 40 minutes), fix or rebut its findings, then add '## Review bot' to REPORT.md with the outcome (findings and what happened to them, 'No issues found', skipped/incomplete notice, or size notice). Commit and push before ending the turn."
+    } >&2
+    exit 2
+  fi
+  echo "REPORT.md still lacks a '## Review bot' section after $MAX_BLOCKS consecutive blocks; allowing the stop." >&2
+  exit 0
+fi
+
 if OUTPUT="$(bash -lc "$GATE" 2>&1)"; then
   rm -f "$BLOCKS"
   exit 0   # green -> allow the turn to end

@@ -153,6 +153,28 @@ url>`, log in by hand, `agent-browser state save ~/.claude/autopilot/<repo>/stat
 `.claude/.autopilot-status` in `.gitignore`, and a note that Jira updates need
 `~/.claude/jira/env` on the queue machine.
 
+### First real run (PAUL-2649, paul, 2026-09-21), folded in
+
+Run 1 ($9.99): three packages committed, reviewer fix committed, then the run started the
+Codex review in the background and ended its turn "to wait": in `claude -p` that ends the
+process. Fixes: the skill forbids ending a turn to wait (everything in the foreground, Codex
+with a 10-minute timeout); the Stop hook blocks a turn end while the newest session has
+neither `REPORT.md` nor `HANDOFF.md`; the runner restarts a clean exit without artifacts
+like a hand-off. Run 2 ($6.00, 89 turns): Codex found that the gate filter's tree hash
+started from an empty index and missed tracked-but-ignored files (fixed, seeded from HEAD;
+the same hash was also empty in paul because `git add` failed on `core.safecrlf`, fixed
+with `-c core.safecrlf=false`); PR #304, CI green, label `autopilot-done`. Two skill steps
+the run skipped: the Jira comment and the review-bot loop. Now the runner does the ticket
+bookkeeping itself (`jira start` before, `jira comment` after, `jira-failed` in
+`done.txt`), counts review-bot comments on the PR (`review-comments=N`), and the Stop hook
+refuses a done report without a `## Review bot` section when the project has the review
+workflow. Also seen: the claude.ai connectors (Jira, Slack) ARE available in `claude -p`;
+the run used the Atlassian MCP for the In Progress transition. The skill now says the run
+makes no tracker call at all.
+
+`/autopilot init` in paul: `.claude` is gitignored there, so hooks written by init existed
+in one checkout only; init now force-adds them (`git add -f`) when `.claude` is ignored.
+
 ### Divergence from the vendored `to-tasks`
 
 Upstream `to-tickets` ends with "No file paths or code snippets in tickets; they go stale

@@ -109,11 +109,9 @@ add up to one branch with one review at the end. `PLAN.md` must be on the checke
 before the first package. A continuation checks out the existing branch. Work in the current
 checkout (the runner's worktree).
 
-**Ticket.** A ticket key in the plan header and `~/.claude/jira/env` present → `jira start
-<KEY>` once before the first commit (In Progress, assigned to the token owner); a
-continuation skips it. Env file missing → one line in `REPORT.md` ("ticket not updated: no
-~/.claude/jira/env on this machine"), no other tracker call. Never transition a ticket to a
-done or merged status.
+**Ticket.** The runner sets the ticket In Progress before it starts you and posts the
+result as a comment after you end (`jira` script, `~/.claude/jira/env` on the queue
+machine). You make no tracker call: no transition, no comment, no MCP tool.
 
 ### 2. Packages, in order
 For each package with `[ ]`: set `[~]`, then
@@ -172,9 +170,12 @@ describe the touched area; `CLAUDE.md` and `.claude/rules/` when a convention, c
 gate changed; inline doc comments on changed public interfaces. A stale doc is a gap, the
 reviewer flags it. `build` once.
 Write `REPORT.md`: first line `Status: done` (or, on an abort, `Status: blocked - <reason>`;
-the runner reads this line and treats anything else as blocked), then what shipped,
-verification with commands and results (browser checks included), review findings, open
-items. Prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
+the runner reads this line and treats anything else as blocked), then `## What shipped`,
+`## Verification` (commands and results, browser checks included), `## Review` (reviewer
+and Codex findings and what happened to them), `## Open items`. After step 6 add
+`## Review bot` (the bot's findings and what happened to them, or "No issues found", or the
+skipped/size notice, or "no review workflow in this project"); the Stop hook refuses a done
+report without that section in a project with the review workflow. Prepend one line to `docs/autopilot/INDEX.md` (below the marker, never rewrite),
 delete a consumed `HANDOFF.md`, remove the sentinel, commit. Artifact layout and INDEX
 marker: `references/artifacts.md`.
 
@@ -191,10 +192,6 @@ workflows skip drafts, so this is what triggers the review); none → `gh pr cre
 key in the title). Never merge. `gh pr checks <n> --watch`; a red CI check → fix,
 re-push, until green. The review check is not CI: red there means the review pipeline is
 broken, never a finding; note it in `REPORT.md` and move on.
-
-**Ticket comment.** With `~/.claude/jira/env`: `jira comment <KEY> -` with the first lines of
-`REPORT.md` (status, what shipped, PR link, open items) as plain text, no Markdown headings.
-Feature-branch mode: the branch name and the session directory instead of a PR link.
 
 **Review bot.** Projects with a Claude review workflow (`.github/workflows/claude-code-review.yml`)
 review each PR once, asynchronously; the project's `CLAUDE.md` or its review doc names the
@@ -215,8 +212,8 @@ escalated in the PR, not implemented; (4) after a fix push add the label
 (`gh pr edit <n> --add-label claude-re-review`) and wait for round two: its result is a
 Claude comment whose `created_at` is after the fix push, or the label gone with no new
 comment (pipeline broken, note it). At most two rounds; whatever remains goes into
-`REPORT.md` and the PR description. No workflow file → no review to wait
-for; say so in `REPORT.md`.
+`REPORT.md` and the PR description. Then the `## Review bot` section in `REPORT.md`, commit,
+push. No workflow file → no review to wait for; the section says so.
 
 ## Hand-off
 

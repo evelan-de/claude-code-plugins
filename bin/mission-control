@@ -62,6 +62,9 @@ WATCHDOG="$script_dir/autopilot-watchdog"
 [ -x "$WATCHDOG" ] || WATCHDOG=autopilot-watchdog
 DEFBRANCH="$script_dir/git-default-branch"
 [ -x "$DEFBRANCH" ] || DEFBRANCH=git-default-branch
+JIRA_BIN="${JIRA_BIN:-$script_dir/jira}"
+[ -x "$JIRA_BIN" ] || JIRA_BIN=jira
+JIRA_ENV="${JIRA_HOME:-$HOME/.claude/jira}/env"
 
 ITEM_LOG=""
 RUN_PIDFILE=""
@@ -354,6 +357,60 @@ plan_effort() {
   sed -n 's/^Effort:[[:space:]]*\([A-Za-z]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
 }
 
+# plan_ticket <PLAN.md>: the ticket key of the plan header ("Ticket: PAUL-2649"), nothing for
+# "none" or a missing header.
+plan_ticket() {
+  pt="$(sed -n 's/.*Ticket:[[:space:]]*\([A-Z][A-Z0-9]*-[0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1)"
+  [ -n "$pt" ] && printf '%s\n' "$pt"
+}
+
+# jira_ready: the jira script and its credentials file exist on this machine.
+jira_ready() { command -v "$JIRA_BIN" >/dev/null 2>&1 && [ -f "$JIRA_ENV" ]; }
+
+# jira_start <KEY>: the ticket goes In Progress, assigned to the token owner, before the
+# first attempt. A failure is said and logged, the run goes ahead.
+jira_start() {
+  js_out="$("$JIRA_BIN" start "$1" 2>&1)" && { log "jira: $js_out"; return 0; }
+  say "$pi_rb $pi_item: jira start $1 failed: $(printf '%s' "$js_out" | tail -n 1)"
+  pi_jira_failed=jira-failed
+}
+
+# jira_comment <KEY> <status> <pr url> <REPORT.md or ->: the result on the ticket, plain text
+# (REST v2 renders wiki markup, so no Markdown headings), first 40 lines of the report.
+jira_comment() {
+  jc_key="$1"; jc_status="$2"; jc_pr="$3"; jc_report="$4"
+  jc_body="$(mktemp "${TMPDIR:-/tmp}/mission-control.XXXXXX")"
+  {
+    printf 'Autopilot: %s\n' "$jc_status"
+    [ "$jc_pr" != "-" ] && printf 'PR: %s\n' "$jc_pr"
+    if [ -f "$jc_report" ]; then
+      printf '\n'
+      head -n 40 "$jc_report" | sed 's/^#* *//'
+    else
+      printf 'Reason: %s\n' "${pi_reason:-see the queue log}"
+    fi
+  } >"$jc_body"
+  if jc_out="$("$JIRA_BIN" comment "$jc_key" - <"$jc_body" 2>&1)"; then
+    log "jira: $jc_out"
+  else
+    say "$pi_rb $pi_item: jira comment $jc_key failed: $(printf '%s' "$jc_out" | tail -n 1)"
+    pi_jira_failed=jira-failed
+  fi
+  rm -f "$jc_body"
+}
+
+# review_bot_comments <pr number>: how many review comments on the PR came from someone
+# other than the PR author (inline + top-level); empty when gh cannot tell.
+review_bot_comments() {
+  rb_repo="$(gh_in "$pi_gh_dir" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 0
+  [ -n "$rb_repo" ] || return 0
+  rb_author="$(gh_in "$pi_gh_dir" pr view "$1" --json author --jq .author.login 2>/dev/null)"
+  rb_inline="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
+  rb_top="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/issues/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
+  case "$rb_inline$rb_top" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' $((rb_inline + rb_top))
+}
+
 # branch_of_dir <repo> <session dir>: the branch that holds the directory: the current branch
 # when the directory exists in the checkout, else the branch at whose tip it was last touched
 # (git log --all), else the default branch.
@@ -629,7 +686,7 @@ process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
   pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""
-  pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""
+  pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
   mkdir -p "$LOGDIR"
@@ -683,6 +740,14 @@ process_item() {
       if [ -n "$pi_pe" ]; then RUN_EFFORT="$pi_pe"; log "effort $pi_pe from $pi_sd0/PLAN.md"; fi
     fi
     say "$pi_rb $pi_item: worktree ready ($pi_wt)"
+    if [ -n "$pi_sd0" ]; then
+      pi_ticket="$(plan_ticket "$pi_wt/$pi_sd0/PLAN.md")"
+      if [ -n "$pi_ticket" ] && jira_ready; then
+        jira_start "$pi_ticket"
+      elif [ -n "$pi_ticket" ]; then
+        log "jira: $pi_ticket not updated (no jira script or no $JIRA_ENV on this machine)"
+      fi
+    fi
 
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
@@ -788,10 +853,22 @@ finish_item() {
     rm -f "$pi_body"
   fi
 
+  if [ -n "$pi_ticket" ] && jira_ready; then
+    jira_comment "$pi_ticket" "$pi_status" "$pi_pr_url" "${pi_wt:+$pi_wt/${pi_sd:-}/REPORT.md}"
+  fi
+  pi_review=""
+  if [ "$pi_status" = "done" ] && [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ] \
+     && [ -f "$pi_gh_dir/.github/workflows/claude-code-review.yml" ]; then
+    pi_review="$(review_bot_comments "$pi_pr_number")"
+    [ -n "$pi_review" ] && { pi_review="review-comments=$pi_review"; [ "$pi_review" = "review-comments=0" ] && say "$pi_rb $pi_item: no review-bot comment on the PR yet, check it"; }
+  fi
+
   pi_extra=""
   [ "$pi_restarts" -gt 0 ] && pi_extra=" restarts=$pi_restarts"
   [ -n "$pi_noplan" ] && pi_extra="$pi_extra $pi_noplan"
   [ -n "$pi_gh_failed" ] && pi_extra="$pi_extra $pi_gh_failed"
+  [ -n "$pi_jira_failed" ] && pi_extra="$pi_extra $pi_jira_failed"
+  [ -n "$pi_review" ] && pi_extra="$pi_extra $pi_review"
   printf '%s %s %s %s %s%s\n' "$(now_iso)" "${pi_repo:-$pi_repo_in}" "$(quote_item "$pi_item")" "$pi_status" "$pi_pr_url" "$pi_extra" >>"$DONE"
   [ -n "$pi_line" ] && remove_queue_line "$pi_line"
 

@@ -142,6 +142,19 @@ check_err "gate message" "Autopilot gate is RED"
 mkdir -p "$P2/docs/autopilot/sessions/2026-09-22-newer"; sleep 1; echo "# PLAN" >"$P2/docs/autopilot/sessions/2026-09-22-newer/PLAN.md"
 invoke "$P2" false; check "the NEWEST session (by PLAN.md) is the one checked" 2 $?
 check_err "names the newer session" "2026-09-22-newer has neither"
+# --- review bot: a done report without "## Review bot" is blocked when the review workflow exists
+P4="$(setup yes "true")"
+mkdir -p "$P4/docs/autopilot/sessions/2026-09-21-r" "$P4/.github/workflows"; echo "# PLAN" >"$P4/docs/autopilot/sessions/2026-09-21-r/PLAN.md"
+echo "name: review" >"$P4/.github/workflows/claude-code-review.yml"
+printf 'Status: done\n\n## What shipped\nx\n' >"$P4/docs/autopilot/sessions/2026-09-21-r/REPORT.md"
+invoke "$P4" false; check "done report without Review bot section: blocked" 2 $?
+check_err "message names the section" "no '## Review bot' section"
+printf '\n## Review bot\nNo issues found.\n' >>"$P4/docs/autopilot/sessions/2026-09-21-r/REPORT.md"
+invoke "$P4" false; check "with the section: allowed (gate green)" 0 $?
+printf 'Status: blocked - x\n' >"$P4/docs/autopilot/sessions/2026-09-21-r/REPORT.md"
+invoke "$P4" false; check "a blocked report needs no Review bot section" 0 $?
+rm -f "$P4/.github/workflows/claude-code-review.yml"; printf 'Status: done\n' >"$P4/docs/autopilot/sessions/2026-09-21-r/REPORT.md"
+invoke "$P4" false; check "no review workflow: no section required" 0 $?
 P3="$(setup no "false")"
 mkdir -p "$P3/docs/autopilot/sessions/2026-09-21-z"; echo "# PLAN" >"$P3/docs/autopilot/sessions/2026-09-21-z/PLAN.md"
 invoke "$P3" false; check "no sentinel: inert even without artifacts" 0 $?
