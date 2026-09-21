@@ -63,12 +63,17 @@ detected commands are clearly better - explain what you chose. Optional second k
 the project's full gate (e.g. `npm run gate:full` with integration tests), run once before
 the push. Wire it only when the project already has such a script; never invent one.
 
-### 4. Copy the hooks
+### 4. Copy the hooks, and make sure they are tracked
 Copy `autopilot-gate.sh`, `autopilot-gate-filter.sh`, `autopilot-context-budget.sh` and
 `autopilot-session-start.sh` from `<plugin>/skills/autopilot/hooks/` to `.claude/hooks/` and
 `chmod +x` all four. (Use `${CLAUDE_PLUGIN_ROOT}` to locate the plugin source.) If a copy already exists and
 differs, show the diff and replace it only when the project copy is an older plugin version
 (no local edits); otherwise keep it and say so.
+
+Then `git check-ignore -q .claude/hooks/autopilot-gate.sh`: when it is ignored (a `.claude`
+line in `.gitignore`), stage the four hooks, `.claude/settings.json` and
+`.claude/autopilot.json` with `git add -f` and say so. An ignored hook exists only in this
+checkout: a runner worktree, another machine and every teammate would run without it.
 
 ### 5. Safe-merge the hooks into `.claude/settings.json`
 - Read the existing `.claude/settings.json` (create `{}` if absent).
