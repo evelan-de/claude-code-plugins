@@ -134,14 +134,15 @@ state, sessions that survive the UI, the diff size at a glance); the rest does n
 
 ### `bin/jira` (new)
 
-POSIX sh, curl, jq. Config `~/.claude/jira/env` (mode 600): `JIRA_SITE=https://evelan.atlassian.net`,
+Python 3 (standard library: `urllib`, `json`; Andreas, 2026-09-21: helper scripts in Python, not sh; `mission-control` and the watchdog follow). Config `~/.claude/jira/env` (mode 600): `JIRA_SITE=https://evelan.atlassian.net`,
 `JIRA_EMAIL`, `JIRA_TOKEN`. Commands: `view <KEY>` (summary, status, assignee, description),
 `start <KEY>` (transition to the status named "In Progress"/"In Arbeit", assign to the token
 owner), `comment <KEY> <text | ->` (plain text; Jira wiki markup is what REST v2 renders, so
 the run posts short factual comments, never Markdown headings), `transition <KEY> <status
 name>` (matched against the transitions' target status, case-insensitive), `assign <KEY>
-[me | <accountId>]`. Prints one line per action with the resulting status read back; exits
-1 on any failure; never prints the token. Test suite with a fake curl.
+[me | <accountId>]`. Every write reads back and compares (status name, assignee id, comment
+body); exits 1 on any failure or mismatch; never prints the token. Test suite with a fake
+transport (`bin/jira_test.py`, run by `bin/jira.test.sh`).
 
 ### `/autopilot init`
 

@@ -18,16 +18,19 @@ claude-code-plugins/
 ├── commands/                 # User-invoked slash commands (optional)
 │   └── <command-name>.md
 ├── bin/                      # Helper executables on PATH for skills
-│   ├── <tool>                # POSIX sh, no external deps
-│   └── <tool>.test.sh        # bash test suite, run: bash bin/<tool>.test.sh
+│   ├── <tool>                # Python 3 stdlib (older ones POSIX sh)
+│   ├── <tool>_test.py        # unittest suite (Python helpers)
+│   └── <tool>.test.sh        # run: bash bin/<tool>.test.sh
 ├── docs/                     # Documentation and diagrams
 └── README.md
 ```
 
 Anything in `bin/` is on PATH when the plugin is installed, so skills call the
-helper by bare name (`codex-cli`, `codex-model`) instead of hardcoding paths.
-Keep helpers POSIX `sh` and dependency-free, and ship a `.test.sh` next to
-each one - they run on teammates' machines, not just yours.
+helper by bare name (`codex-cli`, `jira`) instead of hardcoding paths.
+New helpers are Python 3, standard library only (`#!/usr/bin/env python3`, no pip), with
+a `<tool>_test.py` unittest file and a `<tool>.test.sh` wrapper that runs it; the older
+POSIX `sh` helpers keep their bash test suites until they are ported. No other
+dependencies - they run on teammates' machines, not just yours.
 
 ## Plugin Configuration
 
