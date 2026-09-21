@@ -45,7 +45,7 @@ tree_hash() {
   idx="$(mktemp)"
   rm -f "$idx"
   ( cd "$dir" \
-    && GIT_INDEX_FILE="$idx" git add -A . >/dev/null 2>&1 \
+    && GIT_INDEX_FILE="$idx" git -c core.safecrlf=false add -A . >/dev/null 2>&1 \
     && GIT_INDEX_FILE="$idx" git rm -q --cached --ignore-unmatch .claude/autopilot-gate.log >/dev/null 2>&1 \
     && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null ) | cut -c1-12
   rm -f "$idx"
