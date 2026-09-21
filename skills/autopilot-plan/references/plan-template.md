@@ -37,6 +37,8 @@ is needed (`browserState` in .claude/autopilot.json)>
 Delivers: <the end-to-end behaviour the user gets, not a layer list>
 Blocked by: none
 Files: <paths as of today, new files marked (new)>   Seams: <from the list above>
+UI: <design-system component per element on the screen, or "none">
+Copy/i18n: <catalog keys and the text in every locale, or "none">
 Implementation:
 1. `<path>:<line>` after the line `<anchor line, quoted verbatim>`: add
    `export function <name>(<params with types>): <return type>` - <flow in pseudo-code, one

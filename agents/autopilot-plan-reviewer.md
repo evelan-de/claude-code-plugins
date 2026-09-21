@@ -30,8 +30,9 @@ structure.
    steps produce it. Missing or contradicting: a finding with the spec line.
 5. **Sizing, ordering, dependencies.** At most ~6 files and ~8 steps per package;
    dependencies correct and acyclic; the first package needs nothing a later one produces.
-6. **Goal artifact.** The browser checks name routes, viewport and what must be visible;
-   a check that needs a login names the state file or a manual step.
+6. **Goal artifact and UI.** The browser checks name routes, viewport and what must be
+   visible; a check that needs a login names the state file or a manual step. A package
+   with a screen names its design-system components and its copy in every locale.
 7. **Risks the plan does not name** (build or CI constraints, framework behaviour, data
    migrations, permission and auth boundaries, flaky areas).
 8. **Decisions.** Any decision in `PLAN.md` that is unsound, contradicts the spec or the

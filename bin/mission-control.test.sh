@@ -41,7 +41,7 @@ case "$item" in
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
 [ -f .claude/.autopilot-active ] && echo "attempt $n" >>"$FAKE_RECORD/sentinel.seen"
-rm -f .claude/.autopilot-active
+mkdir -p .claude; echo "2026-09-21T00:00:00Z ctx=1 tool=Bash" >.claude/.autopilot-status
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
 git log --oneline -20 >"$FAKE_RECORD/claude.gitlog.$n"
 mkdir -p "$sd"
@@ -53,8 +53,12 @@ case "${FAKE_SCENARIO:-report}" in
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
     else rm -f "$sd/HANDOFF.md"; printf 'Status: done\n' >"$sd/REPORT.md"; fi ;;
   handoff-always) echo "# HANDOFF $n" >"$sd/HANDOFF.md" ;;
+  handoff-then-abort)
+    if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
+    else sleep 1; printf 'Status: blocked - gate needs a database\n' >"$sd/REPORT.md"; fi ;;
+  budget) echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":60.1}'; exit 1 ;;
 esac
-git add -A >/dev/null
+git add -A -- . ':!.claude' >/dev/null
 git -c user.name=t -c user.email=t@t commit -q -m "fake run $n"
 echo '{"type":"result","total_cost_usd":0.1}'
 EOF
@@ -188,6 +192,26 @@ check "(a2) reason from the Status line on stdout" has "blocked: cannot reach th
 check "(a2) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
 check "(a2) PR comment carries the reason" has "cannot reach the API" "$(cat "$REC/comment.1")"
 check "(a2) worktree kept" [ -e "$QH/worktrees/proj-PAUL-31/.git" ]
+check "(a2) sentinel removed from the kept worktree" [ ! -e "$QH/worktrees/proj-PAUL-31/.claude/.autopilot-active" ]
+check "(a2) status file removed from the kept worktree" [ ! -e "$QH/worktrees/proj-PAUL-31/.claude/.autopilot-status" ]
+
+# ---------- (a2b) budget exhausted, no REPORT.md or HANDOFF.md -> blocked with the budget named ----------
+fresh_home a2b
+export FAKE_SCENARIO=budget
+printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(a2b) blocked" grep -q " PAUL-36 blocked " "$QH/done.txt"
+check "(a2b) reason names the budget" has "budget of 60 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
+
+# ---------- (a2c) HANDOFF.md then an abort REPORT.md (HANDOFF left behind) -> blocked, no restart loop ----------
+fresh_home a2c
+export FAKE_SCENARIO=handoff-then-abort
+printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(a2c) claude called exactly twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
+check "(a2c) blocked with the report's reason" grep -q " PAUL-35 blocked " "$QH/done.txt"
+check "(a2c) reason from the newer REPORT.md" has "blocked: gate needs a database" "$out"
+check "(a2c) log says the report decided" grep -q "REPORT.md is newer than HANDOFF.md" "$QH"/logs/*-PAUL-35.log
 
 # ---------- (a3) REPORT.md without a Status line -> blocked ----------
 fresh_home a3
@@ -507,6 +531,19 @@ sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(j) diverged worktree: said, run continues" has "feat/PAUL-9-thing is not fast-forwardable to origin/feat/PAUL-9-thing, continuing on the local state" "$out"
 check "(j) diverged worktree: item still processed" [ "$(grep -c "PAUL-9-thing blocked" "$QH/done.txt")" = 3 ]
+
+# ---------- (j2) the plan branch is checked out in the user's main checkout ----------
+fresh_home j2
+export FAKE_SCENARIO=report-blocked
+git -C "$proj" checkout -q --ignore-other-worktrees feat/PAUL-9-thing
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(j2) run exits 0" [ "$got" -eq 0 ]
+check "(j2) says where else the branch is checked out" has "branch feat/PAUL-9-thing is also checked out in " "$out"
+check "(j2) names the other checkout and the rule" has "/proj; the run works on feat/PAUL-9-thing here, do not commit there until it is done" "$out"
+check "(j2) the worktree is on the branch, not detached" [ "$(git -C "$QH/worktrees/proj-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)" = feat/PAUL-9-thing ]
+check "(j2) blocked as the fake run reports" grep -q " docs/autopilot/sessions/2026-09-19-PAUL-9-thing blocked " "$QH/done.txt"
+git -C "$proj" checkout -q main
 
 # ---------- (k) timeout kills the run ----------
 fresh_home k

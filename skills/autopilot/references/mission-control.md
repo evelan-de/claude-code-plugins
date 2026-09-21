@@ -27,8 +27,8 @@ Settings in `env` (environment variables override them; defaults in brackets):
 (medium; a plan's `Effort:` header wins over this default, an `MISSION_CONTROL_EFFORT` set in
 the environment wins over the plan), `MISSION_CONTROL_ADVISOR` (fable),
 `MISSION_CONTROL_FALLBACK_MODEL` (opus), `MISSION_CONTROL_BUDGET_USD` (60 per run),
-`MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per item, restarts
-included), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
+`MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per attempt, a
+restart gets a fresh 240), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
 ## Not on this machine?
 
@@ -144,7 +144,9 @@ column and runs from the default branch.
 
 1. Resolves the repo and, for a PR, its branch (`gh pr view`).
 2. Creates a worktree under `worktrees/`: on the PR branch or the recorded branch (fetched
-   first; a branch checked out in another worktree gets a detached worktree at its tip), or
+   first; a branch checked out elsewhere, e.g. in the user's own checkout, is checked out here
+   anyway with `--ignore-other-worktrees`, and the queue says where else it is: do not commit
+   there until the item is done), or
    detached from the repo's default branch (`git-default-branch`) for items without a branch.
    An existing worktree for the same item is reused: it is fetched and fast-forwarded first
    (a developer may have pushed a fix); when it cannot be fast-forwarded the queue says so and
@@ -168,9 +170,13 @@ column and runs from the default branch.
    directory: an old session with a `REPORT.md` does not make a new item `done`. No
    directory → `blocked` ("no session directory for this item").
    `HANDOFF.md` present → the same item is started again (up to `MAX_RESTARTS`, then
-   `handoff-limit`). `REPORT.md` present → its first line decides: `Status: done` → `done`;
+   `handoff-limit`), unless a `REPORT.md` is newer than it (an abort in a continuation):
+   then the report decides. `REPORT.md` present → its first line decides: `Status: done` → `done`;
    `Status: blocked - <reason>` → `blocked` with that reason; no `Status:` line → `blocked`
-   ("report without status line"). Neither file → `blocked`.
+   ("report without status line"). Neither file → `blocked` (the reason names the budget
+   when the claude output ends with a `max_budget` error). After every attempt the runtime
+   files `.claude/.autopilot-active`, `.autopilot-status` and `.autopilot-gate-blocks` are
+   removed from the worktree; the sentinel is created again before the next attempt.
 6. Finds the PR the run pushed (`gh pr list --head <branch>`). `done`: draft → ready, label
    `autopilot-ready` swapped for `autopilot-done`, comment "Autopilot report" with the first
    60 lines of `REPORT.md`. Otherwise: label swapped for `autopilot-blocked`, comment with the

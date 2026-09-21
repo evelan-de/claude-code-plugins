@@ -527,8 +527,10 @@ prepare_worktree() {
     git -C "$pw_repo" show-ref --verify --quiet "refs/remotes/origin/$pw_branch" && pw_remote=1
     if [ -z "$pw_local" ] && [ -z "$pw_remote" ]; then log "branch $pw_branch exists neither locally nor on origin"; return 1; fi
     if [ -n "$pw_local" ] && git -C "$pw_repo" worktree list --porcelain | grep -qx "branch refs/heads/$pw_branch"; then
-      say "branch $pw_branch is checked out in another worktree, using a detached worktree at its tip"
+      pw_other="$(git -C "$pw_repo" worktree list --porcelain | awk -v b="branch refs/heads/$pw_branch" '/^worktree /{w=$2} $0==b{print w; exit}')"
+      say "branch $pw_branch is also checked out in $pw_other; the run works on $pw_branch here, do not commit there until it is done"
       git -C "$pw_repo" worktree add --detach "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
+      git -C "$pw_wt" checkout --ignore-other-worktrees "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
     elif [ -n "$pw_local" ]; then
       git -C "$pw_repo" worktree add "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
       if [ -n "$pw_remote" ]; then
@@ -675,18 +677,27 @@ process_item() {
     fi
     say "$pi_rb $pi_item: worktree ready ($pi_wt)"
 
-    pi_start="$(date +%s)"
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
+    [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
+      || say "$pi_rb $pi_item: no context-budget hook in this project (run /autopilot init there); the watchdog sees commits and plan changes only"
     while :; do
       note_current $((pi_restarts + 1))
       say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $MODEL, effort $RUN_EFFORT)"
-      run_attempt "$pi_wt" "$pi_item" "$pi_start" "$pi_state"
+      run_attempt "$pi_wt" "$pi_item" "$(date +%s)" "$pi_state"
+      rm -f "$pi_wt/.claude/.autopilot-active" "$pi_wt/.claude/.autopilot-status" "$pi_wt/.claude/.autopilot-gate-blocks"
       if [ "$RUN_RESULT" = timeout ]; then
-        pi_status=timeout; pi_reason="wall-clock timeout of $TIMEOUT_MIN min"; break
+        pi_status=timeout; pi_reason="wall-clock timeout of $TIMEOUT_MIN min for one attempt"; break
       fi
       pi_sd="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" || true)"
       if [ -z "$pi_sd" ]; then
         pi_status=blocked; pi_reason="no session directory for this item under $SESSIONS/ (claude exit $RUN_EXIT)"; break
+      fi
+      # A REPORT.md written after the HANDOFF.md (an abort in a continuation) ends the item;
+      # a HANDOFF.md alone, or a newer one, restarts it.
+      if [ -f "$pi_wt/$pi_sd/REPORT.md" ] && [ -f "$pi_wt/$pi_sd/HANDOFF.md" ] \
+         && [ "$pi_wt/$pi_sd/REPORT.md" -nt "$pi_wt/$pi_sd/HANDOFF.md" ]; then
+        log "REPORT.md is newer than HANDOFF.md, the report decides"
+        report_status "$pi_wt/$pi_sd/REPORT.md"; break
       fi
       if [ -f "$pi_wt/$pi_sd/HANDOFF.md" ]; then
         if [ "$pi_restarts" -ge "$MAX_RESTARTS" ]; then
@@ -702,7 +713,9 @@ process_item() {
       fi
       pi_status=blocked
       if [ "$RUN_RESULT" = stalled ]; then
-        pi_reason="run stalled (no commit or plan change for 4 watchdog ticks), killed"
+        pi_reason="run stalled (no tool call, commit or plan change for 4 watchdog ticks), killed"
+      elif tail -n 5 "$ITEM_LOG" 2>/dev/null | grep -q 'max_budget'; then
+        pi_reason="budget of $BUDGET USD exhausted before REPORT.md or HANDOFF.md was written in $pi_sd"
       else
         pi_reason="no REPORT.md or HANDOFF.md in $pi_sd (claude exit $RUN_EXIT)"
       fi
@@ -1128,6 +1141,10 @@ cmd_start() {
     die "a run is active (pid $sta_pid, ${sta_item:-no item yet}), stop it first"
   fi
   [ -f "$PLIST" ] || cmd_install_schedule
+  sta_bin="$(sed -n 's/.*<string>\(.*mission-control\)<\/string><string>run<\/string>.*/\1/p' "$PLIST" | head -n 1)"
+  if [ -n "$sta_bin" ] && [ "$sta_bin" != "$script_dir/mission-control" ] && ! cmp -s "$sta_bin" "$script_dir/mission-control"; then
+    echo "warning: the LaunchAgent runs $sta_bin, which differs from $script_dir/mission-control (plugin not updated yet?)"
+  fi
   # The agent runs "run --scheduled"; force-once makes that run ignore a pause, once.
   : >"$FORCE" || die "cannot write $FORCE"
   launchctl kickstart "gui/$(id -u)/de.evelan.mission-control" || { rm -f "$FORCE"; die "launchctl kickstart failed"; }

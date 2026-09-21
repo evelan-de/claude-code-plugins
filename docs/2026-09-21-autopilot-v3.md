@@ -161,6 +161,22 @@ itself. An autopilot plan is consumed within hours by a cheaper model on the sam
 it carries anchors, signatures, pseudo-code and assertions; the run corrects a moved anchor
 and records it in `DECISIONS.md`. `to-tasks` itself keeps the upstream rule.
 
+### Review round 2 (Fable, 2026-09-21), folded in
+
+Blockers: the run got a detached worktree when the plan branch was checked out in the
+user's checkout (now: `checkout --ignore-other-worktrees` in the worktree, and the
+interactive route switches the user's checkout to the base first); a continuation that
+aborted left `HANDOFF.md` next to `REPORT.md` and the runner restarted it five times (now:
+a newer `REPORT.md` wins, the abort path deletes `HANDOFF.md`). Important: the timeout was
+wall clock over all restarts (now per attempt); no warning without the context-budget hook
+(now a line at the start and a stall reason that names tool calls); `start` from a dev
+checkout silently ran the marketplace copy (now a warning when the two differ); runtime
+files stayed in a kept worktree (now removed after every attempt); a crash without
+`HANDOFF.md` had no rule (now: reset the `[~]` package, restart it); `~` in `browserState`
+was expanded by nobody (now `$HOME`, `--state` before the subcommand). Minor: the plan
+template gets `UI:` and `Copy/i18n:` lines per package; a stale sentinel in an interactive
+checkout is deleted.
+
 ### Removed
 
 The interactive launch line (`claude --model sonnet --effort medium --advisor fable ...`) from

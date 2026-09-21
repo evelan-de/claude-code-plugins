@@ -26,17 +26,23 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
   runner, which creates it before it starts you): do not implement here.
   `~/.claude/mission-control` exists on this machine → options in the prompt ("defer PR",
   "no Codex") go into the plan header line `Options:` (replace the line, commit
-  `docs(autopilot): options for <slug>`); then `mission-control add <repo path> <session
-  dir>` (one Bash call), then `mission-control start` (one Bash call); print the `added:`
+  `docs(autopilot): options for <slug>`); a clean checkout on the plan branch is switched
+  to the base branch (`git switch <base>`, so the run owns the branch); then
+  `mission-control add <repo path> <session dir>` (one Bash call), then `mission-control
+  start` (one Bash call); print the `added:`
   line, the `start` line and "progress: `/mission-control status`, log:
   `/mission-control log <session dir>`, macOS notification and Slack when it finishes";
-  stop. No directory → say that runs are started by the runner only, and point to the two
-  hand-over ways in `/autopilot-plan` step 7 (hand to the queue on the Mini via draft PR, or
-  `mission-control add` over SSH). Stop. The rest of this skill is for the run.
+  stop. No directory → say that runs are started by the runner only, and point to the
+  hand-over in `/autopilot-plan` step 7 (draft PR labelled `autopilot-ready`). Stop. A
+  sentinel that exists although a user is typing to you (an interactive session in a
+  checkout, not a runner worktree under `~/.claude/mission-control/worktrees/`) is stale:
+  delete it and take this interactive route. The rest of this skill is for the run.
 - A session directory, or a ticket key whose plan exists under `docs/autopilot/sessions/` →
   run it. Options come from the prompt and from the plan header `Options:` ("defer PR",
   "no Codex"). `HANDOFF.md` present → continuation: read it first, trust its "Verified", start at
-  its "Next step", never redo.
+  its "Next step", never redo. A package `[~]` with uncommitted changes and no `HANDOFF.md`
+  (the previous session died) → `git checkout -- .` and `git clean -fd` inside the touched
+  paths, restart that package from its first step, one line in `DECISIONS.md`.
 - No plan → write one yourself from the ticket, spec or prompt in the `/autopilot-plan`
   format, all shape questions answered conservatively under "Decisions" (nobody will answer
   them), then run it. Say in `REPORT.md` that the plan was written by the run.
@@ -213,7 +219,7 @@ turn end (the fresh session recreates the sentinel); (7) end the turn with one l
 up to five times per item (`references/mission-control.md`). HANDOFF.md format:
 `references/handoff.md`.
 
-## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, artifacts committed, sentinel removed, browser session closed)
+## Stop conditions (abort: `REPORT.md` with `Status: blocked - <reason>` as its first line, `HANDOFF.md` deleted, artifacts committed, sentinel removed, browser session closed)
 - The gate cannot go green without a destructive action or human input.
 - The task needs anything on the never-list: force-push, `migrations/`, secrets, env files,
   production config, CI credentials, other people's branches.

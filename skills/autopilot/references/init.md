@@ -102,7 +102,7 @@ agent-browser close
 ```
 
 Then write `"browserState": "~/.claude/autopilot/<repo basename>/state.json"` into
-`.claude/autopilot.json` (the run expands `~`). Print this recipe when the project has a
+`.claude/autopilot.json` (the run replaces the leading `~` with `$HOME`). Print this recipe when the project has a
 login route (`grep -rl -m 1 "signIn\|/login\|/sign-in" app src 2>/dev/null` finds one) and
 no `browserState` yet; do not create the file yourself. The state file must exist on every
 machine that runs the queue for this project.

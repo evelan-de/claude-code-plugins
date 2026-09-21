@@ -16,10 +16,16 @@ agent-browser --session autopilot close          # at the end, always
 ```
 
 Pass `--session autopilot` on every command (one command per Bash call, no environment
-carries over). Login projects:
-`.claude/autopilot.json` has `browserState` (path outside the repo);
-launch with `--state <path>` on the `open` command. Without it, a check that needs a login
-is a manual step in `MANUAL_TESTING.md`, and `REPORT.md` names the missing state file.
+carries over); global flags (`--session`, `--state`, `--headed`) go before the subcommand.
+Login projects: `.claude/autopilot.json` has `browserState` (a path outside the repo, may
+start with `~`); replace a leading `~` with `$HOME` and pass it on the first `open`:
+
+```
+agent-browser --session autopilot --state "$HOME/.claude/autopilot/<repo>/state.json" open http://localhost:3000/dashboard
+```
+
+Without a state file, a check that needs a login is a manual step in `MANUAL_TESTING.md`,
+and `REPORT.md` names the missing state file.
 
 ## Commands the run uses
 
