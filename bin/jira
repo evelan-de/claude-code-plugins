@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """jira - the ticket operations an autopilot run needs, without an MCP server.
 
-usage: jira doctor
+usage: jira setup                        # asks for site, email and token (hidden), writes the env file, runs doctor
+       jira doctor
        jira view <KEY>
        jira start <KEY>                 # transition to the start status, assign to the token owner
        jira comment <KEY> <text | ->    # plain text; "-" reads the body from stdin
@@ -20,6 +21,7 @@ The token never appears on a command line, in output or on disk beyond the env f
 on any failure, 2 on usage errors. Tests (jira_test.py) pass a fake transport to main().
 """
 import base64
+import getpass
 import json
 import os
 import stat
@@ -28,6 +30,9 @@ import urllib.error
 import urllib.request
 
 USAGE = __doc__.split("\n\n")[1]
+ask = input                      # module-level so tests can replace them
+ask_hidden = getpass.getpass
+is_tty = lambda: sys.stdin.isatty()  # noqa: E731
 VARS = ("JIRA_SITE", "JIRA_EMAIL", "JIRA_TOKEN", "JIRA_START_STATUS")
 
 
@@ -177,6 +182,30 @@ def key_arg(arg):
 
 
 # ---- commands
+def cmd_setup(_args, transport):
+    """Interactive: writes $JIRA_HOME/env (mode 600) and runs doctor. The token is read with
+    getpass, so it is neither echoed nor kept in the shell history."""
+    if not is_tty():
+        die("setup needs a terminal (the token is asked for interactively)", 2)
+    path = env_file()
+    current = load_env()
+    site = ask(f"Jira site [{current.get('JIRA_SITE') or 'https://evelan.atlassian.net'}]: ").strip() or current.get("JIRA_SITE") or "https://evelan.atlassian.net"
+    email = ask(f"Atlassian account email [{current.get('JIRA_EMAIL') or ''}]: ").strip() or current.get("JIRA_EMAIL") or ""
+    print("API token: create one at https://id.atlassian.com/manage-profile/security/api-tokens")
+    token = ask_hidden("API token (hidden): ").strip()
+    if not (site and email and token):
+        die("site, email and token are all required")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"JIRA_SITE={site.rstrip('/')}\nJIRA_EMAIL={email}\nJIRA_TOKEN={token}\n")
+        if current.get("JIRA_START_STATUS") and current["JIRA_START_STATUS"] != "In Progress|In Arbeit":
+            f.write(f"JIRA_START_STATUS={current['JIRA_START_STATUS']}\n")
+    os.chmod(path, 0o600)
+    print(f"written: {path} (mode 600)")
+    return cmd_doctor([], transport)
+
+
 def cmd_doctor(_args, transport):
     cfg = load_env()
     fails = []
@@ -283,6 +312,7 @@ def cmd_comment(args, transport):
 
 
 COMMANDS = {
+    "setup": cmd_setup,
     "doctor": cmd_doctor,
     "view": cmd_view,
     "start": cmd_start,

@@ -267,6 +267,31 @@ class JiraCli(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("unknown command", err)
 
+    def test_setup_needs_a_tty(self):
+        rc, _, err = self.run_cli("setup")
+        self.assertEqual(rc, 2)
+        self.assertIn("needs a terminal", err)
+
+    def test_setup_writes_env_file_mode_600(self):
+        os.environ["JIRA_HOME"] = os.path.join(self.tmp.name, "fresh")
+        answers = iter(["https://jira.test/", "a@b.c"])
+        orig = (jira.ask, jira.ask_hidden, jira.is_tty)
+        jira.ask = lambda _prompt="": next(answers)
+        jira.ask_hidden = lambda _prompt="": "TOK-1"
+        jira.is_tty = lambda: True
+        try:
+            rc, out, _ = self.run_cli("setup")
+        finally:
+            jira.ask, jira.ask_hidden, jira.is_tty = orig
+        self.assertEqual(rc, 0, out)
+        path = os.path.join(self.tmp.name, "fresh", "env")
+        self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+        with open(path) as f:
+            self.assertEqual(f.read(), "JIRA_SITE=https://jira.test\nJIRA_EMAIL=a@b.c\nJIRA_TOKEN=TOK-1\n")
+        self.assertIn("written: ", out)
+        self.assertIn("ok   - login: Andreas Straub (acc-1)", out)
+        self.assertNotIn("TOK-1", out)
+
     def test_auth_header_is_basic_of_email_and_token(self):
         self.run_cli("view", "WEB-1")
         import base64

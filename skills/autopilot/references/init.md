@@ -110,9 +110,10 @@ machine that runs the queue for this project.
 ### 6c. Ticket updates: `jira`
 A run sets the ticket In Progress and comments the result through the `jira` script (plugin
 `bin/`), which reads `~/.claude/jira/env` (mode 600: `JIRA_SITE`, `JIRA_EMAIL`,
-`JIRA_TOKEN`). The file must exist on every machine that runs the queue (the office Mini,
-the MacBook), not only here. Run `jira doctor`; when it fails, print its output (it names
-the file and the three variables) and continue: a run without the file skips the ticket
+`JIRA_TOKEN`; created with `jira setup` in a Terminal, token input hidden). The file must
+exist on every machine that runs the queue (the office Mini, the MacBook), not only here.
+Run `jira doctor`; when it fails, print its output (it names the file and the three
+variables) and continue: a run without the file skips the ticket
 update and says so in `REPORT.md`.
 
 ### 7. Verify and report
