@@ -95,7 +95,17 @@ case "$1 $2" in
       */issues/*/comments) logins="${FAKE_REVIEW_TOP:-}" ;;
       *) exit 1 ;;
     esac
-    json="["; for l in $logins; do json="$json{\"user\":{\"login\":\"$l\"}},"; done; json="${json%,}]"
+    # each login may carry a thread spec: "bot:1" = comment id 1 starting a thread,
+    # "andreas>1" = the author's reply to comment 1; a bare login is a thread start with a fresh id
+    json="["; i=100
+    for spec in $logins; do
+      i=$((i+1))
+      case "$spec" in
+        *'>'*) l="${spec%%>*}"; json="$json{\"id\":$i,\"user\":{\"login\":\"$l\"},\"in_reply_to_id\":${spec#*>}}," ;;
+        *:*) l="${spec%%:*}"; json="$json{\"id\":${spec#*:},\"user\":{\"login\":\"$l\"},\"in_reply_to_id\":null}," ;;
+        *) json="$json{\"id\":$i,\"user\":{\"login\":\"$spec\"},\"in_reply_to_id\":null}," ;;
+      esac
+    done; json="${json%,}]"
     printf '%s' "$json" | jq "$jqexpr"; exit 0 ;;
   "pr list")
     case "$*" in
@@ -629,6 +639,15 @@ git -C "$proj" push -q origin main 2>/dev/null || true
 printf '%s PAUL-70\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_REVIEW_INLINE="claude[bot] claude[bot]" FAKE_REVIEW_TOP="andreas github-actions[bot]" sh "$TOOL" run 2>&1)"; got=$?
 check "(j4) done.txt counts the comments not by the PR author" grep -q " PAUL-70 done .* review-comments=3" "$QH/done.txt"
+check "(j4) both bot threads unanswered" grep -q " PAUL-70 done .* unanswered-review-comments=2" "$QH/done.txt"
+check "(j4) unanswered comments are said" has "PAUL-70: 2 review-bot comment(s) on the PR have no reply from the run" "$out"
+printf '%s PAUL-72\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_REVIEW_INLINE="claude[bot]:1 claude[bot]:2 andreas>1 claude[bot]>1" FAKE_REVIEW_TOP="" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) a thread with an author reply counts as answered; a bot follow-up does not" grep -q " PAUL-72 done .* review-comments=3 unanswered-review-comments=1" "$QH/done.txt"
+printf '%s PAUL-73\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) all answered: no unanswered field" grep -q " PAUL-73 done .* review-comments=1$" "$QH/done.txt"
+check "(j4) all answered: nothing said" lacks "PAUL-73: " "$(printf '%s' "$out" | grep 'no reply')"
 printf '%s PAUL-71\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
 check "(j4) zero bot comments: said on stdout" has "PAUL-71: no review-bot comment on the PR yet, check it" "$out"

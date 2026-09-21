@@ -399,16 +399,22 @@ jira_comment() {
   rm -f "$jc_body"
 }
 
-# review_bot_comments <pr number>: how many review comments on the PR came from someone
-# other than the PR author (inline + top-level); empty when gh cannot tell.
+# review_bot_comments <pr number>: prints "<comments> <unanswered>": how many review comments
+# on the PR came from someone other than the PR author (inline + top-level), and how many of
+# the inline ones have no reply from the author in their thread. Empty when gh cannot tell.
 review_bot_comments() {
   rb_repo="$(gh_in "$pi_gh_dir" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 0
   [ -n "$rb_repo" ] || return 0
   rb_author="$(gh_in "$pi_gh_dir" pr view "$1" --json author --jq .author.login 2>/dev/null)"
   rb_inline="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
   rb_top="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/issues/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
-  case "$rb_inline$rb_top" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s\n' $((rb_inline + rb_top))
+  # a bot comment that starts a thread (no in_reply_to_id) is answered when the author
+  # replied to it (a comment whose in_reply_to_id is that comment's id)
+  rb_open="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "
+    [.[] | select(.user.login == \"$rb_author\" and .in_reply_to_id != null) | .in_reply_to_id] as \$answered
+    | [.[] | select(.user.login != \"$rb_author\" and .in_reply_to_id == null and (.id as \$i | \$answered | index(\$i) | not))] | length" 2>/dev/null)"
+  case "$rb_inline$rb_top$rb_open" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s %s\n' $((rb_inline + rb_top)) "$rb_open"
 }
 
 # branch_of_dir <repo> <session dir>: the branch that holds the directory: the current branch
@@ -859,8 +865,16 @@ finish_item() {
   pi_review=""
   if [ "$pi_status" = "done" ] && [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ] \
      && [ -f "$pi_gh_dir/.github/workflows/claude-code-review.yml" ]; then
-    pi_review="$(review_bot_comments "$pi_pr_number")"
-    [ -n "$pi_review" ] && { pi_review="review-comments=$pi_review"; [ "$pi_review" = "review-comments=0" ] && say "$pi_rb $pi_item: no review-bot comment on the PR yet, check it"; }
+    pi_counts="$(review_bot_comments "$pi_pr_number")"
+    if [ -n "$pi_counts" ]; then
+      pi_review="review-comments=${pi_counts%% *}"
+      pi_open="${pi_counts#* }"
+      [ "${pi_counts%% *}" = 0 ] && say "$pi_rb $pi_item: no review-bot comment on the PR yet, check it"
+      if [ "$pi_open" != 0 ]; then
+        pi_review="$pi_review unanswered-review-comments=$pi_open"
+        say "$pi_rb $pi_item: $pi_open review-bot comment(s) on the PR have no reply from the run (fixed or not changed), check them"
+      fi
+    fi
   fi
 
   pi_extra=""

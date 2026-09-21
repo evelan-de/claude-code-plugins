@@ -13,7 +13,7 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR not by its author; `0` is said on stdout). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR not by its author; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
@@ -194,7 +194,8 @@ column and runs from the default branch.
 7. With a ticket and credentials: `jira comment <KEY> -` with the status, the PR link and
    the first 40 lines of `REPORT.md` as plain text (headings stripped). In a repo with
    `.github/workflows/claude-code-review.yml`, counts the PR comments not by the PR author
-   (`review-comments=N`). Appends to `done.txt`, removes the line from `queue.txt`, notifies
+   (`review-comments=N`) and the inline bot threads the run left without a reply
+   (`unanswered-review-comments=N`, said on stdout). Appends to `done.txt`, removes the line from `queue.txt`, notifies
    (macOS notification with a sound: Glass for `done`, Sosumi with the reason for everything
    else; Slack when `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
 

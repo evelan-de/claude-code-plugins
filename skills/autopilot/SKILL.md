@@ -211,9 +211,14 @@ the workflow removes the label when its run ends. Loop: (1) wait for the review:
 surfaces every minute, up to 40 minutes, all authors; a round ends with the first inline
 comment batch, "No issues found", a skipped/incomplete notice or the size notice (the size
 notice ends the whole loop: the label would force a review that cannot finish); (2) verify
-each finding in the code, fix real ones test-first, re-gate, commit, push; (3) rebut the
-rest with evidence in a PR comment; a finding that contradicts a recorded decision is
-escalated in the PR, not implemented; (4) after a fix push add the label
+each finding in the code, fix real ones test-first, re-gate, commit, push; (3) answer
+EVERY bot comment in its own thread, one reply per comment, before anything else happens on
+the PR: `Fixed in <sha>: <one line what changed>` or `Not changed: <reason with evidence
+(file:line, test, decision id)>`; an inline comment gets a reply via
+`gh api repos/{owner}/{repo}/pulls/<n>/comments/<id>/replies -f body=...`, a top-level
+comment a top-level reply that quotes its first line. A finding that contradicts a
+recorded decision is escalated in that reply, not implemented. A bot comment without a
+reply is a gap the runner reports (`unanswered-review-comments=N`); (4) after a fix push add the label
 (`gh pr edit <n> --add-label claude-re-review`) and wait for round two: its result is a
 Claude comment whose `created_at` is after the fix push, or the label gone with no new
 comment (pipeline broken, note it). At most two rounds; whatever remains goes into
