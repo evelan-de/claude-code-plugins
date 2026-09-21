@@ -44,7 +44,11 @@ tree_hash() {
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || { echo nogit; return; }
   idx="$(mktemp)"
   rm -f "$idx"
+  # Seed from HEAD first: an empty index plus "add -A" skips tracked-but-gitignored files
+  # (hooks and settings force-added under an ignored .claude/), so two different trees
+  # would hash the same. A repo without a commit has no HEAD; then the seed is skipped.
   ( cd "$dir" \
+    && { GIT_INDEX_FILE="$idx" git read-tree HEAD >/dev/null 2>&1 || true; } \
     && GIT_INDEX_FILE="$idx" git -c core.safecrlf=false add -A . >/dev/null 2>&1 \
     && GIT_INDEX_FILE="$idx" git rm -q --cached --ignore-unmatch .claude/autopilot-gate.log >/dev/null 2>&1 \
     && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null ) | cut -c1-12
