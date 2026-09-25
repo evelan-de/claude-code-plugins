@@ -131,6 +131,8 @@ Measured on real sessions (see `docs/2026-09-19-token-efficiency-review.md` and 
 
 ### autopilot
 
+**Developer guide with overview diagrams:** [`docs/autopilot-developer-guide.md`](docs/autopilot-developer-guide.md) (plan, hand-over to the queue, what a run does, PR labels, reviewing the result, blocked runs).
+
 **Quickstart (once per project, then per ticket):**
 
 ```bash
