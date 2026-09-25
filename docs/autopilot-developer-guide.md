@@ -12,16 +12,17 @@ overnight and returns a ready PR with a report, which you review and merge.
 ## Contents
 
 1. [The big picture](#1-the-big-picture)
-2. [Who does what](#2-who-does-what)
-3. [Before your first run](#3-before-your-first-run)
-4. [Step by step](#4-step-by-step)
-5. [What happens inside a run](#5-what-happens-inside-a-run)
-6. [PR labels and their meaning](#6-pr-labels-and-their-meaning)
-7. [Reviewing the result](#7-reviewing-the-result)
-8. [When a run is blocked](#8-when-a-run-is-blocked)
-9. [Feature branches: several sessions, one PR](#9-feature-branches-several-sessions-one-pr)
-10. [Rules and limits](#10-rules-and-limits)
-11. [Cheat sheet](#11-cheat-sheet)
+2. [Why this works better than 1.x](#2-why-this-works-better-than-1x)
+3. [Who does what](#3-who-does-what)
+4. [Before your first run](#4-before-your-first-run)
+5. [Step by step](#5-step-by-step)
+6. [What happens inside a run](#6-what-happens-inside-a-run)
+7. [PR labels and their meaning](#7-pr-labels-and-their-meaning)
+8. [Reviewing the result](#8-reviewing-the-result)
+9. [When a run is blocked](#9-when-a-run-is-blocked)
+10. [Feature branches: several sessions, one PR](#10-feature-branches-several-sessions-one-pr)
+11. [Rules and limits](#11-rules-and-limits)
+12. [Cheat sheet](#12-cheat-sheet)
 
 ## 1. The big picture
 
@@ -63,7 +64,80 @@ flowchart TB
     RUN -- "push, mark ready" --> RPR
 ```
 
-## 2. Who does what
+## 2. Why this works better than 1.x
+
+Plugin 1.x put a **model in charge**: in a session, a coordinating model ("mission control" at
+the time) explored, planned, dispatched one lead agent per package, a reviewer per package, a
+verifier, and read their results back. That looked like a team, and it behaved like one that
+spends most of its day in meetings. We measured it on real sessions
+(`docs/2026-09-19-token-efficiency-review.md`) and rebuilt it in two steps: 2.0 removed the
+coordinator, 3.0 made every run headless and moved the design work into the plan
+(`docs/2026-09-20-autopilot-v2.md`, `docs/2026-09-21-autopilot-v3.md`).
+
+**1.x: a model coordinates models**
+
+```mermaid
+flowchart TB
+    U1["You: /autopilot or mission control<br/>in your session, kept open"] --> C["Coordinator model<br/>explores, plans, dispatches, reads results back<br/>context 300k to 1M"]
+    C --> E1["Explore"]
+    C --> PL["Planner +<br/>plan reviewer"]
+    C --> L1["Lead P1"]
+    C --> L2["Lead P2"]
+    C --> L3["Lead Pn"]
+    C --> VF["Verifier"]
+    L1 --> R1["Reviewer P1"]
+    L2 --> R2["Reviewer P2"]
+    L3 --> R3["Reviewer Pn"]
+```
+
+**3.x: you plan, a script runs, one context works**
+
+```mermaid
+flowchart LR
+    U3["You + Claude<br/>/autopilot-plan<br/>decisions, code-level plan"] --> PR0["Draft PR<br/>autopilot-ready"]
+    PR0 --> Q["mission-control<br/>script, zero tokens"]
+    Q --> RUN["One headless run<br/>Sonnet + Fable advisor"]
+    RUN -- "HANDOFF.md" --> Q
+    RUN --> REV["One reviewer<br/>whole branch"]
+    REV --> OUT["PR + REPORT.md"]
+```
+
+| | 1.x | 3.x (now) |
+| --- | --- | --- |
+| Who coordinates | a model; 28% of the session cost on its own, context grew to 1.06M and was re-written after idle gaps | a shell script (`mission-control`); costs no tokens |
+| Agents per ticket | 33 agents, 1,795 requests for one ticket (WEB-1095) | one run context, one reviewer, plus hand-off sessions when the context fills up |
+| Cost per ticket (list price) | about $220 for WEB-1095; up to $100+ even for a standalone run | PAUL-2649, three packages: $9.99 + $6.00 across two runs, PR with green CI |
+| Cache reads per package | ~45M with lead agents | ~9M in 2.x; 3.x lower by design, measured per run with `autopilot-usage` |
+| Who designs the code | the run, while running: plans listed files, not insertion points, so the implementer invented signatures and flows | you and the planner, before the run: `path:line` anchors, signatures, pseudo-code, test cases; the run executes |
+| Decisions | made by the coordinator, mid-run, invisible until the end | asked once while planning, written into `PLAN.md`; the rest in `DECISIONS.md` |
+| Reviews | one per package (15 for WEB-1095) | one adversarial review on the whole branch, Codex, then the Claude review bot with every comment answered |
+| Running out of context | auto-compaction (drops history and skill bodies), later a budget hook that measured the wrong transcript | deterministic hand-off at 500k tokens, the runner restarts a fresh session up to 5 times |
+| Stranded work | a standalone run that handed off waited for someone to restart it (still so in 2.x) | every run is started and chained by the runner; nothing waits for a person |
+| Browser check | desktop-app browser tools only, so no UI check without an open desktop session (UI tickets ended blocked in the first headless runs) | `agent-browser` headless, with a saved login where needed |
+| Jira | desktop-app connectors, used by the model when it remembered to | the runner sets In Progress and comments the result, every time |
+| Your time | start a session and keep it running, often for hours, in one case five days | three short moments of questions while planning, then review the PR |
+| Who can use it | whoever runs the session on their own machine | every developer: plan, label the draft PR, results arrive on the PR and in Slack |
+
+Why it adds up:
+
+1. **Cost is context size times number of requests.** A coordinator carries everything it has
+   seen into every request. A script has no context at all, and one run with a bounded
+   context and a hand-off makes far fewer, smaller requests.
+2. **Multi-agent pays off for parallel research, not for coding.** Anthropic's own write-up
+   says so, and the 1.x numbers agree: most coding work is sequential, so extra agents mostly
+   add base loads and hand-over reading.
+3. **Deciding is expensive, executing is cheap.** Design questions now happen once, with you,
+   on a strong model; the run on Sonnet follows steps instead of inventing them. That is
+   also why the result matches what you asked for more often: the decisions are yours and
+   written down, not guessed at 3 a.m.
+4. **Nothing depends on a session staying open.** The queue, the restarts, the ticket
+   updates and the notifications are code, not a model's good intentions.
+
+Honest caveats: the $220 and $16 figures come from different tickets, so they show the order
+of magnitude, not an exact ratio. Each run prints its own `autopilot-usage` table, so every
+ticket adds a real data point.
+
+## 3. Who does what
 
 | Step | Who | Where | Output |
 | --- | --- | --- | --- |
@@ -116,7 +190,7 @@ sequenceDiagram
     Dev->>GH: review, merge
 ```
 
-## 3. Before your first run
+## 4. Before your first run
 
 Once per **project** (skip what is already there; `.claude/autopilot.json` in the repo means
 it was done):
@@ -147,16 +221,16 @@ On **your machine** you need only the plugin (`/plugin install evelan@evelan-plu
 `mission-control` refuse on a machine without a queue and point you back here; that is
 expected.
 
-## 4. Step by step
+## 5. Step by step
 
-### 4.1 Start from a ticket (or create one)
+### 5.1 Start from a ticket (or create one)
 
 `/autopilot-plan` accepts a ticket key (`WEB-1095`, `#42`), a spec file, or a plain topic.
 A topic without a ticket gets its ticket created through the project's tracker once the
 shape is settled. If the topic still has open decisions ("should we even do X?"), settle
 them first with `/evelan:question-me`; the plan skill stops on open decision tickets.
 
-### 4.2 Write the plan
+### 5.2 Write the plan
 
 ```
 claude            # Fable is the intended planner, Opus is fine
@@ -193,14 +267,14 @@ Good answers to the shape questions name:
   in a real browser. "Gate green" is not a goal artifact.
 - **what is out of scope**, so the run does not build it.
 - **the branch mode**: one branch and PR per session (default) or a shared feature branch
-  (section 9).
+  (section 10).
 
 The plan lands in `docs/autopilot/sessions/<date>-<KEY>-<slug>/PLAN.md`. Read it before you
 hand it over. Worth a glance: `Effort:` (runner effort, `medium` by default), `Options:`
 (`defer PR`, `no Codex`), the Goal artifact, the Decisions, and whether the package list
 matches what you had in mind.
 
-### 4.3 Hand it to the queue
+### 5.3 Hand it to the queue
 
 At the end of `/autopilot-plan` answer **"hand to the queue"**. The skill pushes the branch
 and opens a draft PR against the base:
@@ -215,7 +289,7 @@ run marks the PR ready.
 To hand over an existing plan by hand: push the branch, open a draft PR and add the label
 `autopilot-ready`. That is all the queue looks for.
 
-### 4.4 Wait for the result
+### 5.4 Wait for the result
 
 The queue on the office Mini runs **nightly at 22:00**, one item at a time. Andreas can also
 start it on demand. You do not need to keep your machine or session open.
@@ -234,7 +308,7 @@ When it ends you get:
   with the head of `REPORT.md`;
 - a comment on the Jira ticket with status, PR link and report summary.
 
-## 5. What happens inside a run
+## 6. What happens inside a run
 
 You do not steer the run, but knowing its steps tells you what the report means and where
 to look when something is off.
@@ -287,7 +361,7 @@ Details that matter for you as a reviewer:
   and the runner starts a fresh session that continues at the next step. You see
   `restarts=N` in the queue log; the result is still one branch.
 
-## 6. PR labels and their meaning
+## 7. PR labels and their meaning
 
 ```mermaid
 stateDiagram-v2
@@ -308,11 +382,11 @@ stateDiagram-v2
 | Label | Meaning | Your move |
 | --- | --- | --- |
 | `autopilot-ready` | waiting for the queue (or running) | nothing; do not push to the branch |
-| `autopilot-done` | run finished, PR is ready, report posted | review (section 7) |
-| `autopilot-blocked` | run stopped, reason in the PR comment and in Slack | fix the cause, relabel (section 8) |
+| `autopilot-done` | run finished, PR is ready, report posted | review (section 8) |
+| `autopilot-blocked` | run stopped, reason in the PR comment and in Slack | fix the cause, relabel (section 9) |
 | `claude-re-review` | asks the Claude review bot for one more full review | add after your own changes if you want a second bot pass; the workflow removes it |
 
-## 7. Reviewing the result
+## 8. Reviewing the result
 
 Treat the PR like a colleague's PR, with better paperwork. Everything the run did is in the
 session folder on the branch, `docs/autopilot/sessions/<date>-<KEY>-<slug>/`:
@@ -339,7 +413,7 @@ Found something? Two options:
   with `/autopilot-plan` (a new ticket, its own branch and PR). The done branch is not
   re-planned in place.
 
-## 8. When a run is blocked
+## 9. When a run is blocked
 
 The PR comment and the Slack message carry the reason; `REPORT.md` (if written) starts with
 `Status: blocked - <reason>`.
@@ -357,7 +431,7 @@ The PR comment and the Slack message carry the reason; `REPORT.md` (if written) 
 After the fix: push to the branch, then swap `autopilot-blocked` back to `autopilot-ready`.
 The next queue run continues from the kept worktree, not from scratch.
 
-## 9. Feature branches: several sessions, one PR
+## 10. Feature branches: several sessions, one PR
 
 For a feature too large for one plan, choose **feature branch** as branch mode in
 `/autopilot-plan`. Each session commits straight onto the shared feature branch, no PR per
@@ -376,7 +450,7 @@ There is no PR label to hand over a feature-branch session. The hand-over is pus
 feature branch and adding the item to the queue with `mission-control add <repo> <session
 dir>` on the Mini; ask Andreas (or anyone with SSH access through `/mission-control`).
 
-## 10. Rules and limits
+## 11. Rules and limits
 
 - **The plan is the whole spec.** The run sees `PLAN.md`, not the ticket history or your
   Slack thread. Put everything that matters into the plan.
@@ -394,7 +468,7 @@ dir>` on the Mini; ask Andreas (or anyone with SSH access through `/mission-cont
 - **Model setup:** planning on Fable (Opus is fine) in your session; the run on Sonnet with
   Fable as advisor and Opus as fallback; the final reviewer on Opus.
 
-## 11. Cheat sheet
+## 12. Cheat sheet
 
 ```
 # once per project
