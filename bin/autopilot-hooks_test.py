@@ -59,22 +59,77 @@ class AutopilotHooks(unittest.TestCase):
         commands = [h["command"] for b in s["hooks"]["PreToolUse"] for h in b["hooks"]]
         self.assertEqual(commands, ["my-lint.sh", "$CLAUDE_PROJECT_DIR/.claude/hooks/autopilot-gate-filter.sh"])
 
-    def test_outdated_copy_is_reported_and_replaced(self):
+    def test_old_copy_without_version_is_reported_and_replaced(self):
         self.run_cli("install", str(self.p))
-        (self.p / ".claude/hooks/autopilot-gate.sh").write_text("#!/bin/sh\n# old version\n")
+        (self.p / ".claude/hooks/autopilot-gate.sh").write_text("#!/bin/sh\n# a copy from before the version line\n")
         rc, out, _ = self.run_cli("check", str(self.p))
         self.assertEqual(rc, 1)
-        self.assertIn("outdated .claude/hooks/autopilot-gate.sh", out)
+        self.assertIn("old .claude/hooks/autopilot-gate.sh", out)
         rc, out, _ = self.run_cli("install", str(self.p))
         self.assertIn("updated .claude/hooks/autopilot-gate.sh", out)
         self.assertEqual((self.p / ".claude/hooks/autopilot-gate.sh").read_bytes(),
                          (hooks.HOOKS_SRC / "autopilot-gate.sh").read_bytes())
+
+    def test_local_change_at_the_same_version_is_kept(self):
+        self.run_cli("install", str(self.p))
+        dst = self.p / ".claude/hooks/autopilot-gate.sh"
+        dst.write_text(dst.read_text() + "\n# a local tweak\n")
+        self.assertEqual(self.run_cli("check", str(self.p))[0], 0)
+        rc, out, _ = self.run_cli("install", str(self.p))
+        self.assertIn("kept the local .claude/hooks/autopilot-gate.sh", out)
+        self.assertIn("# a local tweak", dst.read_text())
+
+    def test_newer_copy_is_kept(self):
+        self.run_cli("install", str(self.p))
+        dst = self.p / ".claude/hooks/autopilot-gate-filter.sh"
+        dst.write_text("#!/bin/sh\n# autopilot-hook-version: 999\n")
+        self.assertEqual(self.run_cli("check", str(self.p))[0], 0)
+        self.run_cli("install", str(self.p))
+        self.assertIn("999", dst.read_text())
+
+    def test_every_plugin_hook_has_a_version(self):
+        for name in hooks.HOOKS:
+            self.assertGreater(hooks.hook_version(hooks.HOOKS_SRC / name), 0, name)
+
+    def test_broken_settings_stop_before_anything_is_written(self):
+        (self.p / ".claude").mkdir()
+        (self.p / ".claude/settings.json").write_text("{not json")
+        rc, _, err = self.run_cli("install", str(self.p))
+        self.assertEqual(rc, 1)
+        self.assertFalse((self.p / ".claude/hooks").exists())
+        self.assertFalse((self.p / ".gitignore").exists())
+
+    def test_hooks_that_are_not_an_object_fail_cleanly(self):
+        (self.p / ".claude").mkdir()
+        (self.p / ".claude/settings.json").write_text('{"hooks": []}')
+        rc, _, err = self.run_cli("check", str(self.p))
+        self.assertEqual(rc, 1)
+        self.assertIn('does not hold a JSON object with a "hooks" object', err)
 
     def test_registered_hook_is_not_duplicated(self):
         self.run_cli("install", str(self.p))
         self.run_cli("install", str(self.p))
         s = json.loads((self.p / ".claude/settings.json").read_text())
         self.assertEqual(len(s["hooks"]["Stop"]), 1)
+
+    def test_wrong_matcher_is_not_current_and_gets_the_right_block(self):
+        self.run_cli("install", str(self.p))
+        s = json.loads((self.p / ".claude/settings.json").read_text())
+        s["hooks"]["PreToolUse"][0]["matcher"] = "Edit"
+        (self.p / ".claude/settings.json").write_text(json.dumps(s))
+        rc, out, _ = self.run_cli("check", str(self.p))
+        self.assertEqual(rc, 1)
+        self.assertIn("not registered autopilot-gate-filter.sh (PreToolUse)", out)
+        self.run_cli("install", str(self.p))
+        s = json.loads((self.p / ".claude/settings.json").read_text())
+        self.assertIn("Bash", [b.get("matcher") for b in s["hooks"]["PreToolUse"]])
+        self.assertEqual(self.run_cli("check", str(self.p))[0], 0)
+
+    def test_command_for_another_script_does_not_count(self):
+        (self.p / ".claude").mkdir()
+        other = {"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "old/autopilot-gate.sh.bak"}]}]}}
+        (self.p / ".claude/settings.json").write_text(json.dumps(other))
+        self.assertFalse(hooks.registered(json.loads((self.p / ".claude/settings.json").read_text()), "Stop", "autopilot-gate.sh"))
 
     def test_gitignore_keeps_existing_lines(self):
         (self.p / ".gitignore").write_text("node_modules/\n.claude/autopilot-gate.log")

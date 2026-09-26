@@ -66,8 +66,8 @@ the push. Wire it only when the project already has such a script; never invent 
 ### 4. Install the hooks: `autopilot-hooks install .`
 
 One Bash call from the project root: `autopilot-hooks install .` (plugin `bin/`). It copies
-the four hooks from the plugin into `.claude/hooks/` (executable; a differing copy is
-replaced by the plugin's), registers each one in `.claude/settings.json` (appends the block
+the four hooks from the plugin into `.claude/hooks/` (executable; an older copy, or one without a version line, is
+replaced, a locally changed copy of the same or a newer version is kept), registers each one in `.claude/settings.json` (appends the block
 from `references/settings-snippet.json`, keeps every other key and hook, never registers one
 twice) and adds the runtime files to `.gitignore` (`.claude/.autopilot-active`,
 `.claude/.autopilot-gate-blocks`, `.claude/.autopilot-status`, `.claude/autopilot-gate.log`).

@@ -714,10 +714,12 @@ prepare_worktree() {
   fi
 }
 
-# ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or differ
-# from the plugin's copies, installs them (autopilot-hooks) and commits the change on the
-# checked-out branch, so the run has them and the PR carries them into the project. A
-# failure is said and the run goes ahead.
+# ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or old
+# (autopilot-hooks check), installs them and, on a branch, commits only the hook files,
+# .claude/settings.json and .gitignore (no git hooks of the project run) and pushes the
+# commit when the branch is on origin, so the run has the hooks, a later fast-forward still
+# works and the PR carries them into the project. Without a branch (a detached worktree)
+# they stay uncommitted for this run. A failure is said and the run goes ahead.
 ensure_hooks() {
   eh_wt="$1"
   command -v "$HOOKS_BIN" >/dev/null 2>&1 || { log "autopilot-hooks not found, hooks not checked"; return 0; }
@@ -725,22 +727,50 @@ ensure_hooks() {
   if ! eh_out="$("$HOOKS_BIN" install "$eh_wt" 2>&1)"; then
     say "$pi_rb $pi_item: autopilot hooks could not be installed: $eh_out"; return 0
   fi
-  git -C "$eh_wt" add -f .claude/hooks .claude/settings.json .gitignore >>"$ITEM_LOG" 2>&1
-  if git -C "$eh_wt" commit -q -m "chore(autopilot): install or update the autopilot hooks" -m "$eh_why" >>"$ITEM_LOG" 2>&1; then
-    say "$pi_rb $pi_item: autopilot hooks installed or updated and committed ($eh_out)"
-  else
-    say "$pi_rb $pi_item: autopilot hooks installed for this run, but the commit failed (see $ITEM_LOG)"
+  case "$eh_out" in "nothing to do"*) say "$pi_rb $pi_item: autopilot hooks: $eh_why (nothing to install)"; return 0 ;; esac
+  eh_branch="$(current_branch "$eh_wt")"
+  if [ -z "$eh_branch" ]; then
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (no branch yet): $eh_out"; return 0
   fi
+  set -- .claude/hooks/autopilot-gate.sh .claude/hooks/autopilot-gate-filter.sh .claude/hooks/autopilot-context-budget.sh \
+    .claude/hooks/autopilot-session-start.sh .claude/settings.json .gitignore
+  git -C "$eh_wt" add -f -- "$@" >>"$ITEM_LOG" 2>&1
+  if git -C "$eh_wt" diff --cached --quiet -- "$@"; then log "autopilot hooks: nothing to commit"; return 0; fi
+  if ! git -C "$eh_wt" commit -q --no-verify -m "chore(autopilot): install or update the autopilot hooks" -m "$eh_why" -- "$@" >>"$ITEM_LOG" 2>&1; then
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, but the commit failed (see $ITEM_LOG)"; return 0
+  fi
+  say "$pi_rb $pi_item: autopilot hooks installed or updated and committed on $eh_branch ($eh_out)"
+  git -C "$eh_wt" show-ref --verify --quiet "refs/remotes/origin/$eh_branch" || return 0
+  if git -C "$eh_wt" push -q origin "HEAD:refs/heads/$eh_branch" >>"$ITEM_LOG" 2>&1; then
+    log "autopilot hooks commit pushed to origin/$eh_branch"
+  else
+    say "$pi_rb $pi_item: the autopilot hooks commit could not be pushed to origin/$eh_branch (see $ITEM_LOG)"
+  fi
+}
+
+# node_path <worktree>: the bin directory of the installed nvm Node version the project's
+# .nvmrc names (the highest matching one), else of nvm's default alias; nothing without nvm
+# or without a numeric version. The runner's schedule has no nvm on its PATH.
+node_path() {
+  np_nvm="${NVM_DIR:-$HOME/.nvm}"
+  [ -d "$np_nvm/versions/node" ] || return 0
+  np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$1/.nvmrc" 2>/dev/null)"
+  [ -n "$np_want" ] || np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$np_nvm/alias/default" 2>/dev/null)"
+  [ -n "$np_want" ] || return 0
+  np_hit="$(ls "$np_nvm/versions/node" 2>/dev/null | grep -E "^v$(printf '%s' "$np_want" | sed 's/\./\\./g')(\.|$)" \
+    | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)"
+  [ -n "$np_hit" ] && [ -d "$np_nvm/versions/node/$np_hit/bin" ] && printf '%s\n' "$np_nvm/versions/node/$np_hit/bin"
 }
 
 # stop_compose <worktree>: stops the Docker Compose projects whose working directory lies in
 # the worktree (a run's dev stack); containers and networks go, volumes stay.
 stop_compose() {
   command -v "$DOCKER_BIN" >/dev/null 2>&1 || return 0
-  sc_projects="$("$DOCKER_BIN" ps -a --format '{{.Label "com.docker.compose.project"}} {{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
-    | awk -v wt="$1" '$1 != "" && ($2 == wt || index($2, wt "/") == 1) { print $1 }' | sort -u)"
+  sc_projects="$("$DOCKER_BIN" ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+    | awk -F '|' -v wt="$1" '$1 != "" && ($2 == wt || index($2, wt "/") == 1) { print $1 }' | sort -u)"
   for sc_p in $sc_projects; do
-    if "$DOCKER_BIN" compose -p "$sc_p" down >>"$ITEM_LOG" 2>&1; then
+    # from / so that no compose file in the current directory is read
+    if (cd / && "$DOCKER_BIN" compose -p "$sc_p" down --remove-orphans) >>"$ITEM_LOG" 2>&1; then
       log "docker compose project $sc_p stopped"
     else
       say "$pi_rb $pi_item: docker compose project $sc_p could not be stopped (see $ITEM_LOG)"
@@ -757,8 +787,11 @@ run_attempt() {
   # The sentinel tells the autopilot skill it is the run (an interactive /autopilot
   # enqueues instead); the run removes it at its end and on a hand-off.
   mkdir -p "$ra_wt/.claude" && : >"$ra_wt/.claude/.autopilot-active"
+  ra_node="$(node_path "$ra_wt")"
+  [ -n "$ra_node" ] && log "node for the run: $ra_node"
   (
     cd "$ra_wt" || exit 1
+    [ -n "$ra_node" ] && PATH="$ra_node:$PATH" && export PATH
     set -- -p "/autopilot $ra_item" --model "$RUN_MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR"
     [ -n "$RUN_FALLBACK" ] && set -- "$@" --fallback-model "$RUN_FALLBACK"
     "$CLAUDE_BIN" "$@" --permission-mode auto --max-budget-usd "$RUN_BUDGET" --output-format json \

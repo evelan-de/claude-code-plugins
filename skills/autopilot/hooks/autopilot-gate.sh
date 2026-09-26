@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot Stop-hook gate (TEMPLATE).
-# Copied into a project's .claude/hooks/ by `/autopilot init`.
+# Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
+# autopilot-hook-version: 2   (raise it with every change to this file)
 #
 # Blocks turn-end while an autopilot run is active AND (a) the newest session has
 # neither REPORT.md nor HANDOFF.md (in a headless run, ending the turn ends the

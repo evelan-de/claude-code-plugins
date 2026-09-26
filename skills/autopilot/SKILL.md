@@ -115,7 +115,8 @@ set one up minimally, project-consistent, before implementing. Create
 Branch per the plan header: **session mode** checks out `<prefix>/<KEY>-<slug>` (prefix per
 the project's branch convention in `CLAUDE.md`, else `feat`), which `/autopilot-plan`
 created with the plan on it (create it from the base only when you wrote the plan yourself,
-and commit the plan there first); **feature-branch mode** checks out the named feature
+and commit the plan there first, together with uncommitted changes the runner made to
+`.claude/hooks/`, `.claude/settings.json` and `.gitignore`); **feature-branch mode** checks out the named feature
 branch (create it from the base if missing) and commits straight onto it; several sessions
 add up to one branch with one review at the end. `PLAN.md` must be on the checked-out branch
 before the first package. A continuation checks out the existing branch. Work in the current

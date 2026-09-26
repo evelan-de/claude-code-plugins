@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot context-budget hook (TEMPLATE). PostToolUse, matcher "" (every tool).
-# Copied into a project's .claude/hooks/ by `/autopilot init`.
+# Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
+# autopilot-hook-version: 2   (raise it with every change to this file)
 #
 # Replaces auto-compaction with an explicit hand-off. After every tool call it reads the
 # transcript of the agent it runs in, takes the context size of the last assistant turns

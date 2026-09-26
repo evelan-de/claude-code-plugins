@@ -171,10 +171,14 @@ column and runs from the default branch.
    and the run goes ahead. Without the credentials file the log says the ticket was not
    updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
    Please do not push to this branch until the result comment arrives." Hooks:
-   `autopilot-hooks check` on the worktree; missing or outdated hooks are installed
-   (`autopilot-hooks install`) and committed on the checked-out branch ("chore(autopilot):
-   install or update the autopilot hooks"), so the run has them and the PR brings them into
-   the project. A failure is said and the run goes ahead.
+   `autopilot-hooks check` on the worktree; missing or older hooks are installed
+   (`autopilot-hooks install`; a locally changed copy of the same or a newer version is
+   kept). On a branch the runner commits only the four hook files, `.claude/settings.json`
+   and `.gitignore` ("chore(autopilot): install or update the autopilot hooks", without the
+   project's git hooks) and pushes the commit when the branch is on origin, so a later
+   fast-forward still works and the PR brings the hooks into the project. On a detached
+   worktree (an item without a branch) they stay uncommitted for this run. A failure is said
+   and the run goes ahead.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
