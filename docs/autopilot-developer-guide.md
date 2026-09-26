@@ -270,9 +270,12 @@ Good answers to the shape questions name:
   (section 10).
 
 The plan lands in `docs/autopilot/sessions/<date>-<KEY>-<slug>/PLAN.md`. Read it before you
-hand it over. Worth a glance: `Model:` (`sonnet` by default, `opus` when you asked for it;
-say "opus" while planning, or run `/autopilot <session dir> opus` later), `Effort:` (Sonnet
-always runs at `xhigh` or `max`; Opus uses the header, `medium` by default), `Options:`
+hand it over. Worth a glance: `Model:` (`sonnet` by default, `opus` when you asked for it)
+and `Effort:` (how hard the run thinks: `low`, `medium`, `high`, `xhigh`, `max`; Sonnet
+always runs at `xhigh` or `max`, Opus at any level, `medium` by default). Say both while
+planning ("opus, high"), or change them later with `/autopilot <session dir> opus high`
+(either word alone works too); for a PR already handed to the queue, edit the two header
+lines on the branch. Then `Options:`
 (`defer PR`, `no Codex`), the Goal artifact, the Decisions, and whether the package list
 matches what you had in mind.
 

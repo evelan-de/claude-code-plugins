@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Started by the runner (mission-control); in an interactive session it enqueues and starts the runner. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um".
-argument-hint: "[init | <session dir> | <ticket>] [opus | sonnet] [defer PR] [no Codex]"
+argument-hint: "[init | <session dir> | <ticket>] [opus | sonnet] [low | medium | high | xhigh | max] [defer PR] [no Codex]"
 ---
 
 # Autopilot
@@ -27,8 +27,12 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
   `~/.claude/mission-control` exists on this machine → options in the prompt ("defer PR",
   "no Codex") go into the plan header line `Options:` (replace the line), a model in the
   prompt ("opus", "sonnet", "mit Opus") into the header line `Model:` (replace it, or insert
-  it above `Effort:`; `Model: sonnet` also sets `Effort: xhigh` unless it says `max`); one
-  commit `docs(autopilot): options for <slug>`; a clean checkout on the plan branch is switched
+  it above `Effort:`), an effort level in the prompt (`low`, `medium`, `high`, `xhigh`, `max`;
+  "niedrig", "mittel", "hoch", "extra hoch", "maximal") into the header line `Effort:`
+  (replace it, or insert it below `Model:`). `Model: sonnet` without an effort level in the
+  prompt sets `Effort: xhigh` unless the plan says `max`; a Sonnet plan with an effort below
+  `xhigh` gets `xhigh` and one line saying so. One commit
+  `docs(autopilot): options for <slug>`; a clean checkout on the plan branch is switched
   to the base branch (`git switch <base>`, so the run owns the branch); then
   `mission-control add <repo path> <session dir>` (one Bash call), then `mission-control
   start` (one Bash call); print the `added:`

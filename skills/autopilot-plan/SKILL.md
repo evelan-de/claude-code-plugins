@@ -1,7 +1,7 @@
 ---
 name: autopilot-plan
 description: Write the plan an autopilot run executes. Interactive, in your own session, for one topic (ticket, spec, or idea). Triggers on "/autopilot-plan", "autopilot plan", "Plan für den Autopiloten", "bereite eine Autopilot-Session vor", "prepare an autopilot session".
-argument-hint: "<ticket key | spec file | topic>   (a topic without a ticket gets its ticket created; add 'feature branch <name>' when several sessions share one branch; add 'opus' to run it on Opus instead of Sonnet)"
+argument-hint: "<ticket key | spec file | topic>   (a topic without a ticket gets its ticket created; add 'feature branch <name>' when several sessions share one branch; add 'opus' to run it on Opus instead of Sonnet, and an effort level such as 'high' or 'max' to set how hard it thinks)"
 ---
 
 # Autopilot plan
@@ -66,10 +66,13 @@ in batches → contract, each batch a package blocked by the expand.
 Size: a package touches at most ~6 files and ~300 diff lines and has at most ~8
 implementation steps. Larger → split.
 
-Show the packages as a numbered list (title, blocked by, what it delivers) and the **run
-model** (Sonnet at effort xhigh by default; Opus when the user asks for it or named it in the
-prompt), and ask the user once: granularity right, edges right, merge or split anything, run
-model right? Iterate until approved.
+Show the packages as a numbered list (title, blocked by, what it delivers), the **run
+model** and its **effort** (default Sonnet at `xhigh`; Opus at `medium` when the user asks for
+Opus or named it in the prompt; a level the user named wins: `low`, `medium`, `high`,
+`xhigh`, `max`, or "niedrig", "mittel", "hoch", "extra hoch", "maximal"; Sonnet takes only
+`xhigh` or `max`, a lower level for Sonnet becomes `xhigh` and you say so), and ask the user
+once: granularity right, edges right, merge or split anything, run model and effort right?
+Iterate until approved.
 
 ## 5. Write `PLAN.md`
 
@@ -101,9 +104,9 @@ Commit `PLAN.md` on the branch the plan header names, so the run finds it: sessi
 create `<prefix>/<KEY>-<slug>` from the base (prefix per the project's branch convention in
 `CLAUDE.md`, else `feat`) and commit there; feature-branch mode → check out the feature
 branch (create it from the base if missing) and commit there. Commit message
-`docs(autopilot): plan for <key or slug>`. Write the approved run model and its effort into
-the plan header so the runner reads them: `Model: sonnet` with `Effort: xhigh` (or `max`), or
-`Model: opus` with `Effort: medium` (or higher when the user asks).
+`docs(autopilot): plan for <key or slug>`. Write the approved run model and effort into the
+plan header so the runner reads them (`Model: sonnet` with `Effort: xhigh` or `max`;
+`Model: opus` with any level).
 
 Then tell the user the path and the two ways to run it (every run is started and chained
 by the runner, `mission-control`):
