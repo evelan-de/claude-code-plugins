@@ -130,6 +130,7 @@ The scripts in `bin/` are on the PATH once the plugin is installed.
 | --- | --- |
 | `mission-control` | the queue runner: starts, watches and restarts autopilot runs one after another |
 | `jira` | ticket start, comment and view for the runner; `jira setup` once per queue machine |
+| `autopilot-hooks` | checks or installs the autopilot hooks in a project; the runner calls it before every run |
 | `autopilot-usage` | where the tokens of one session went, per agent |
 | `autopilot-watchdog` | the progress check the runner uses to spot a stalled run |
 | `codex-cli`, `codex-model` | finds the local Codex CLI; turns a model name into a valid Codex model id |

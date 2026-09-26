@@ -65,6 +65,9 @@ CONFIG_VARS="SLACK_WEBHOOK_URL MISSION_CONTROL_MODEL MISSION_CONTROL_EFFORT MISS
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$script_dir/autopilot-watchdog"
 [ -x "$WATCHDOG" ] || WATCHDOG=autopilot-watchdog
+HOOKS_BIN="$script_dir/autopilot-hooks"
+[ -x "$HOOKS_BIN" ] || HOOKS_BIN=autopilot-hooks
+DOCKER_BIN="${DOCKER_BIN:-docker}"
 DEFBRANCH="$script_dir/git-default-branch"
 [ -x "$DEFBRANCH" ] || DEFBRANCH=git-default-branch
 JIRA_BIN="${JIRA_BIN:-$script_dir/jira}"
@@ -711,6 +714,40 @@ prepare_worktree() {
   fi
 }
 
+# ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or differ
+# from the plugin's copies, installs them (autopilot-hooks) and commits the change on the
+# checked-out branch, so the run has them and the PR carries them into the project. A
+# failure is said and the run goes ahead.
+ensure_hooks() {
+  eh_wt="$1"
+  command -v "$HOOKS_BIN" >/dev/null 2>&1 || { log "autopilot-hooks not found, hooks not checked"; return 0; }
+  eh_why="$("$HOOKS_BIN" check "$eh_wt" 2>&1)" && { log "autopilot hooks current"; return 0; }
+  if ! eh_out="$("$HOOKS_BIN" install "$eh_wt" 2>&1)"; then
+    say "$pi_rb $pi_item: autopilot hooks could not be installed: $eh_out"; return 0
+  fi
+  git -C "$eh_wt" add -f .claude/hooks .claude/settings.json .gitignore >>"$ITEM_LOG" 2>&1
+  if git -C "$eh_wt" commit -q -m "chore(autopilot): install or update the autopilot hooks" -m "$eh_why" >>"$ITEM_LOG" 2>&1; then
+    say "$pi_rb $pi_item: autopilot hooks installed or updated and committed ($eh_out)"
+  else
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, but the commit failed (see $ITEM_LOG)"
+  fi
+}
+
+# stop_compose <worktree>: stops the Docker Compose projects whose working directory lies in
+# the worktree (a run's dev stack); containers and networks go, volumes stay.
+stop_compose() {
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || return 0
+  sc_projects="$("$DOCKER_BIN" ps -a --format '{{.Label "com.docker.compose.project"}} {{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+    | awk -v wt="$1" '$1 != "" && ($2 == wt || index($2, wt "/") == 1) { print $1 }' | sort -u)"
+  for sc_p in $sc_projects; do
+    if "$DOCKER_BIN" compose -p "$sc_p" down >>"$ITEM_LOG" 2>&1; then
+      log "docker compose project $sc_p stopped"
+    else
+      say "$pi_rb $pi_item: docker compose project $sc_p could not be stopped (see $ITEM_LOG)"
+    fi
+  done
+}
+
 # run_attempt <worktree> <item> <item start epoch> <watchdog state>: sets RUN_RESULT to
 # exited|stalled|timeout and RUN_EXIT to the claude exit code.
 run_attempt() {
@@ -863,9 +900,10 @@ process_item() {
       log "start comment on PR #$pi_pr_number"
     fi
 
+    ensure_hooks "$pi_wt"
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
-      || say "$pi_rb $pi_item: no context-budget hook in this project (run /autopilot init there); the watchdog sees commits and plan changes only"
+      || say "$pi_rb $pi_item: no context-budget hook in the worktree; the watchdog sees commits and plan changes only"
     while :; do
       note_current $((pi_restarts + 1))
       say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $RUN_MODEL, effort $RUN_EFFORT)"
@@ -1006,6 +1044,7 @@ finish_item() {
     notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi
   fi
 
+  [ -n "${pi_wt:-}" ] && stop_compose "$pi_wt"
   if [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
     if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
       say "$pi_rb $pi_item: worktree removed"

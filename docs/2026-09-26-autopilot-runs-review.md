@@ -134,5 +134,8 @@ operator-set fallback of another family (e.g. `fable`) applies to Opus runs; a
 2. Existing plans without `Model:` run on Sonnet at `xhigh`: accepted.
 3. Finding 1 fixed (3.1.1).
 4. Sonnet with `Effort: max` stays at `max`.
-5. Next change: before each run the runner installs or updates the autopilot hooks in the
-   worktree (committed on the PR branch).
+5. Before each run the runner installs or updates the autopilot hooks in the worktree and
+   commits them on the PR branch (`autopilot-hooks`, plugin 3.2.0); it stops a run's Docker
+   Compose stack when the item ends.
+6. Jira: the runner keeps the ticket's assignee; only a ticket without one gets the token
+   owner (plugin 3.2.0).

@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""autopilot-hooks - check or install the four autopilot hooks in a project.
+
+usage: autopilot-hooks check <project dir>     # exit 0 when current, 1 when missing or outdated
+       autopilot-hooks install <project dir>   # copy, register, gitignore; prints what changed
+
+The hooks are the plugin's copies in skills/autopilot/hooks/ (next to this bin/ directory):
+autopilot-gate.sh (Stop), autopilot-gate-filter.sh (PreToolUse on Bash),
+autopilot-context-budget.sh (PostToolUse) and autopilot-session-start.sh (SessionStart,
+matcher compact). "Current" means: each file in .claude/hooks/ is byte-identical to the
+plugin's copy and executable, each is registered in .claude/settings.json, and the runtime
+files are in .gitignore. install replaces a differing copy with the plugin's, registers a
+missing hook by appending the plugin's block (every other key and hook stays), and appends
+the missing .gitignore lines. It never touches .claude/autopilot.json.
+
+Python 3 standard library only. Exit 2 on usage errors.
+"""
+import json
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+PLUGIN = Path(__file__).resolve().parent.parent
+HOOKS_SRC = PLUGIN / "skills" / "autopilot" / "hooks"
+SNIPPET = PLUGIN / "skills" / "autopilot" / "references" / "settings-snippet.json"
+HOOKS = {  # file -> settings event
+    "autopilot-gate.sh": "Stop",
+    "autopilot-gate-filter.sh": "PreToolUse",
+    "autopilot-context-budget.sh": "PostToolUse",
+    "autopilot-session-start.sh": "SessionStart",
+}
+IGNORED = (".claude/.autopilot-active", ".claude/.autopilot-gate-blocks",
+           ".claude/.autopilot-status", ".claude/autopilot-gate.log")
+
+
+def registered(settings, event, name):
+    for block in settings.get("hooks", {}).get(event, []) or []:
+        for hook in block.get("hooks", []) or []:
+            if name in str(hook.get("command", "")):
+                return True
+    return False
+
+
+def load_settings(project):
+    path = project / ".claude" / "settings.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text() or "{}")
+
+
+def gitignore_lines(project):
+    path = project / ".gitignore"
+    return set(path.read_text().splitlines()) if path.exists() else set()
+
+
+def problems(project):
+    """Every reason the project's hooks are not current, empty when they are."""
+    out = []
+    settings = load_settings(project)
+    for name, event in HOOKS.items():
+        dst = project / ".claude" / "hooks" / name
+        if not dst.exists():
+            out.append(f"missing {dst.relative_to(project)}")
+        elif dst.read_bytes() != (HOOKS_SRC / name).read_bytes():
+            out.append(f"outdated {dst.relative_to(project)}")
+        elif not os.access(dst, os.X_OK):
+            out.append(f"not executable {dst.relative_to(project)}")
+        if not registered(settings, event, name):
+            out.append(f"not registered {name} ({event})")
+    missing = [line for line in IGNORED if line not in gitignore_lines(project)]
+    if missing:
+        out.append(f"not gitignored {', '.join(missing)}")
+    return out
+
+
+def install(project):
+    changed = []
+    hooks_dir = project / ".claude" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    for name in HOOKS:
+        src, dst = HOOKS_SRC / name, hooks_dir / name
+        if not dst.exists() or dst.read_bytes() != src.read_bytes():
+            changed.append(f"{'updated' if dst.exists() else 'added'} .claude/hooks/{name}")
+            shutil.copyfile(src, dst)
+        mode = dst.stat().st_mode
+        wanted = mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        if mode != wanted:
+            dst.chmod(wanted)
+    settings = load_settings(project)
+    snippet = json.loads(SNIPPET.read_text())["hooks"]
+    for name, event in HOOKS.items():
+        if not registered(settings, event, name):
+            settings.setdefault("hooks", {}).setdefault(event, []).extend(snippet[event])
+            changed.append(f"registered {name} ({event}) in .claude/settings.json")
+    if any(c.startswith("registered") for c in changed):
+        (project / ".claude" / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+    missing = [line for line in IGNORED if line not in gitignore_lines(project)]
+    if missing:
+        gi = project / ".gitignore"
+        text = gi.read_text() if gi.exists() else ""
+        if text and not text.endswith("\n"):
+            text += "\n"
+        gi.write_text(text + "\n".join(missing) + "\n")
+        changed.append(f"gitignored {', '.join(missing)}")
+    return changed
+
+
+def main(argv):
+    if len(argv) != 2 or argv[0] not in ("check", "install"):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    project = Path(argv[1]).resolve()
+    if not project.is_dir():
+        print(f"autopilot-hooks: {project} is not a directory", file=sys.stderr)
+        return 2
+    try:
+        if argv[0] == "check":
+            found = problems(project)
+            print("current" if not found else "; ".join(found))
+            return 0 if not found else 1
+        changed = install(project)
+        print("; ".join(changed) if changed else "nothing to do")
+        return 0
+    except (OSError, ValueError) as e:
+        print(f"autopilot-hooks: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

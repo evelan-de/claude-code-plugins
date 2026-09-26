@@ -170,7 +170,11 @@ column and runs from the default branch.
    (In Progress; the assignee stays, the token owner only when nobody is assigned); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
    updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
-   Please do not push to this branch until the result comment arrives."
+   Please do not push to this branch until the result comment arrives." Hooks:
+   `autopilot-hooks check` on the worktree; missing or outdated hooks are installed
+   (`autopilot-hooks install`) and committed on the checked-out branch ("chore(autopilot):
+   install or update the autopilot hooks"), so the run has them and the PR brings them into
+   the project. A failure is said and the run goes ahead.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
@@ -209,7 +213,7 @@ column and runs from the default branch.
    (`review-comments=N`) and the inline bot threads the run left without a reply
    (`unanswered-review-comments=N`, said on stdout). Appends to `done.txt`, removes the line from `queue.txt`, notifies
    (macOS notification with a sound: Glass for `done`, Sosumi with the reason for everything
-   else; Slack when `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
+   else; Slack when `SLACK_WEBHOOK_URL` is set), stops the Docker Compose projects whose working directory lies in the worktree (containers and networks; volumes stay), removes the worktree after `done`.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead

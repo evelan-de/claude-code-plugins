@@ -127,6 +127,10 @@ hooks into `.claude/hooks/` and `.claude/settings.json`, and creates the labels
 `autopilot-ready`, `autopilot-done` and `autopilot-blocked` (plus `claude-re-review` when the
 project has the Claude review workflow). Commit and merge this like any other change.
 
+The hooks keep themselves current: before every run the runner checks them and, when they
+are missing or older than the plugin's, installs them on your branch. You then see a commit
+"chore(autopilot): install or update the autopilot hooks" in your PR.
+
 The run works in a fresh copy of the repo on the Mini: it installs the dependencies itself,
 but there is no `.env` from your machine. The gate and the dev server must run without it;
 otherwise the run ends blocked with a missing precondition.

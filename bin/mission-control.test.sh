@@ -41,6 +41,8 @@ case "$item" in
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
 [ -f .claude/.autopilot-active ] && echo "attempt $n" >>"$FAKE_RECORD/sentinel.seen"
+[ -x .claude/hooks/autopilot-context-budget.sh ] && grep -q autopilot-context-budget .claude/settings.json 2>/dev/null \
+  && echo "attempt $n" >>"$FAKE_RECORD/hooks.seen"
 [ -f "$FAKE_RECORD/jira.args" ] && cp "$FAKE_RECORD/jira.args" "$FAKE_RECORD/jira-at-claude-start.$n"
 mkdir -p .claude; echo "2026-09-21T00:00:00Z ctx=1 tool=Bash" >.claude/.autopilot-status
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
@@ -121,6 +123,13 @@ case "$1 $2" in
         exit 0 ;;
     esac ;;
 esac
+exit 0
+EOF
+cat >"$tmp/fakes/docker" <<'EOF'
+#!/usr/bin/env bash
+# FAKE_DOCKER_PS: the "ps" output, one "<compose project> <working dir>" per line
+printf '%s\n' "$*" >>"$FAKE_RECORD/docker.args"
+[ "$1" = ps ] && [ -n "${FAKE_DOCKER_PS:-}" ] && printf '%s\n' "$FAKE_DOCKER_PS"
 exit 0
 EOF
 cat >"$tmp/fakes/jira" <<'EOF'
@@ -243,6 +252,7 @@ export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
 # points it at $tmp/jirahome. Without this the runner used bin/jira with the machine's real
 # ~/.claude/jira/env and changed the real ticket PAUL-9 on every test run.
 export JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira"
+export DOCKER_BIN="$tmp/fakes/docker"
 export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
 unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS FAKE_GH_AUTH_FAIL MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
@@ -1252,6 +1262,34 @@ check "(v) PR 19 runs its own plan, not the older one with the ticket key" has "
 check "(v) the older plan with the ticket key is never run" lacks "2026-09-01-PAUL-190-old" "$cl"
 check "(v) PR 20 (Branch: header with backticks and a comma) runs, not blocked" has "/autopilot docs/autopilot/sessions/2026-09-24-tick " "$cl"
 unset FAKE_GH_PRS
+
+# ---------- (w) hooks installed before the run; a run's Docker stack stopped afterwards ----------
+fresh_home w
+export FAKE_SCENARIO=report
+printf '%s PAUL-200\n' "$proj" >"$QH/queue.txt"
+wt200="$QH/worktrees/proj-PAUL-200"
+out="$(FAKE_DOCKER_PS="$(printf 'proj-paul-200 %s\nproj-paul-200 %s/docker/dev\nother-stack /somewhere/else\n' "$wt200" "$wt200")" sh "$TOOL" run 2>&1)"
+check "(w) the run saw the hooks installed and registered" grep -q "attempt 1" "$REC/hooks.seen"
+check "(w) the hooks were committed before the run" grep -q "chore(autopilot): install or update the autopilot hooks" "$REC/claude.gitlog.1"
+check "(w) the install is said" has "PAUL-200: autopilot hooks installed or updated and committed" "$out"
+check "(w) the run's compose project was stopped once" [ "$(grep -c "^compose -p proj-paul-200 down$" "$REC/docker.args")" = 1 ]
+check "(w) another compose project was left alone" lacks "compose -p other-stack" "$(cat "$REC/docker.args")"
+check "(w) the main checkout got no hooks" [ ! -e "$proj/.claude/hooks/autopilot-gate.sh" ]
+# a branch whose hooks are already current gets no second commit
+git -C "$proj" checkout -q -b feat/PAUL-201-hooked main
+AUTOPILOT_HOOKS_OUT="$(sh -c "$BIN/autopilot-hooks install $proj")"
+git -C "$proj" add -A; commit "$proj" -m "hooks already there"
+git -C "$proj" push -q origin feat/PAUL-201-hooked
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked"
+printf '# PLAN\nBranch: feat/PAUL-201-hooked   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan"; git -C "$proj" push -q origin feat/PAUL-201-hooked
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-201-hooked feat/PAUL-201-hooked >/dev/null
+out="$(sh "$TOOL" run 2>&1)"
+check "(w) current hooks: the install step was for the first item only" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.2")" = 0 ]
+check "(w) current hooks: logged as current" grep -q "autopilot hooks current" "$(ls "$QH"/logs/*-2026-09-26-PAUL-201-hooked.log)"
+check "(w) current hooks: the run saw them" grep -q "attempt 2" "$REC/hooks.seen"
+check "(w) the setup helper reported its work" has "added .claude/hooks/autopilot-gate.sh" "$AUTOPILOT_HOOKS_OUT"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
