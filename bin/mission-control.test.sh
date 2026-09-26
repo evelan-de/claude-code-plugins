@@ -217,6 +217,10 @@ git -C "$proj" push -q origin feat/big
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
+# Never the real Jira: the fake jira, and a JIRA_HOME without credentials unless a test
+# points it at $tmp/jirahome. Without this the runner used bin/jira with the machine's real
+# ~/.claude/jira/env and changed the real ticket PAUL-9 on every test run.
+export JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira"
 export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
 unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS FAKE_GH_AUTH_FAIL MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
