@@ -227,11 +227,16 @@ Andreas can also start it right away. Your machine and session can be closed.
   an assignee gets Andreas (the Jira account the Mini uses).
 - **Commits.** The run's commits on your branch are made on the Mini under Andreas' Git name.
 
+In Slack `#mission-control` you see the start: the PR's title, what the plan is about (its
+Destination paragraph), model and effort, and the PR link.
+
 When it ends you get:
 
 - the PR label `autopilot-done` or `autopilot-blocked` and a comment "Autopilot report" with
   the start of `REPORT.md`;
-- a Slack message in `#mission-control` and a comment on the Jira ticket.
+- a Slack message in `#mission-control`: status, title, PR link, duration and cost, what
+  shipped and the open items from the report (when blocked: the reason);
+- a comment on the Jira ticket.
 
 ## 6. What happens inside a run
 

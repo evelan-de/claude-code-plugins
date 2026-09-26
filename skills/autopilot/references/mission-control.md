@@ -314,7 +314,21 @@ and `chmod 600` the file. Never paste the URL into a chat, a ticket or a commit;
 never prints it either (curl's stderr is dropped, only the exit code is logged). Without it,
 notifications are macOS-only plus the PR comment.
 
+Two messages per item:
+
+- **Start** (first attempt): `*Autopilot started* on <host>: <repo> - <title>`, the first
+  paragraph of the plan's `## Destination` (at most 300 characters), model and effort, the
+  PR link. The title is the PR's title, else the topic in the plan's first line, else the
+  item.
+- **End**: `*Autopilot <status>*: <repo> - <title>`, the PR link (or the log), minutes, cost
+  of all attempts and restarts; when blocked the reason; from `REPORT.md` the `## What
+  shipped` lines (done only) and the `## Open items` lines, at most eight each, the rest
+  counted.
+
+The macOS notification is sent at the end only, as one short line.
+
 ## Test hooks
 
-`CLAUDE_BIN`, `GH_BIN` (fake binaries), `MISSION_CONTROL_WATCH_MIN=0` (no stall check),
-`MISSION_CONTROL_NO_NOTIFY=1` (no osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.
+`CLAUDE_BIN`, `GH_BIN`, `JIRA_BIN`, `DOCKER_BIN`, `JQ_BIN` (fake binaries), `JIRA_HOME`,
+`NVM_DIR`, `MISSION_CONTROL_WATCH_MIN=0` (no stall check), `MISSION_CONTROL_NO_NOTIFY=1` (no
+osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.

@@ -52,6 +52,13 @@ mkdir -p "$sd"
 case "${FAKE_SCENARIO:-report}" in
   report) rm -f "$sd/HANDOFF.md"; printf 'Status: done\n\n# REPORT\n\nshipped %s\n' "$item" >"$sd/REPORT.md" ;;
   report-blocked) printf 'Status: blocked - cannot reach the API\n\n# REPORT\n' >"$sd/REPORT.md" ;;
+  report-full)
+    rm -f "$sd/HANDOFF.md"
+    { printf 'Status: done\n\n## What shipped\n- **greet** helper with "quotes" and a back\\slash\n'
+      for i in 2 3 4 5 6 7 8 9 10; do printf -- '- shipped line %s\n' "$i"; done
+      printf '\n## Verification\n- gate green\n\n## Open items\n- ask Markus about the copy\n'; } >"$sd/REPORT.md" ;;
+  report-blocked-open)
+    printf 'Status: blocked - gate needs a database\n\n## Open items\n- start Postgres on the Mini\n' >"$sd/REPORT.md" ;;
   report-nostatus) printf '# REPORT\n\nno status here\n' >"$sd/REPORT.md" ;;
   handoff-then-report)
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
@@ -89,6 +96,7 @@ case "$1 $2" in
   "pr view")
     # prs.txt lines: <number> <head branch> <url> [<base branch, default main>]
     case "$*" in *"--json author"*) echo "${FAKE_PR_AUTHOR:-andreas}"; exit 0 ;; esac
+    case "$*" in *"--json title"*) echo "${FAKE_PR_TITLE:-Fake PR title}"; exit 0 ;; esac
     grep "^$3 " "$prs" | awk '{ print $1, $2, ($4 != "" ? $4 : "main"), $3 }'; exit 0 ;;
   "repo view") echo e/r; exit 0 ;;
   "api "*)
@@ -640,6 +648,56 @@ check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/lo
 printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
 check "(i) curl failure logged with its exit code" grep -q "Slack webhook failed (curl exit 22)" "$QH"/logs/*-PAUL-8.log
+# Slack at the start and a detailed message at the end
+: >"$REC/curl.args"
+printf '%s PAUL-7c\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-full PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) Slack at the start: title, model and effort" has "*Autopilot started* on $(hostname -s): proj - PAUL-7c" "$slack"
+check "(i) Slack at the start: model and effort" has "Model sonnet, effort xhigh" "$slack"
+check "(i) Slack at the end: status and title" has "*Autopilot done*: proj - PAUL-7c" "$slack"
+check "(i) Slack at the end: PR link, minutes and cost" has "https://github.com/e/r/pull/7 · 0 min · \$0.10" "$slack"
+check "(i) Slack at the end: what shipped, Markdown bold as Slack bold" has "- *greet* helper with" "$slack"
+check "(i) Slack at the end: at most 8 shipped lines, the rest counted" has "(2 more in REPORT.md)" "$slack"
+check "(i) Slack at the end: the ninth shipped line is not listed" lacks "shipped line 9" "$slack"
+check "(i) Slack at the end: open items" has "- ask Markus about the copy" "$slack"
+check "(i) Slack at the end: other report sections stay out" lacks "gate green" "$slack"
+: >"$REC/curl.args"
+printf '%s PAUL-7d\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-blocked-open PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) Slack when blocked: status, reason and open items" \
+  bash -c 'printf "%s" "$1" | grep -qF "*Autopilot blocked*: proj - PAUL-7d" && printf "%s" "$1" | grep -qF "Reason: gate needs a database" && printf "%s" "$1" | grep -qF -- "- start Postgres on the Mini"' _ "$slack"
+check "(i) Slack when blocked: no what-shipped section" lacks "*What shipped*" "$slack"
+# a PR item: the PR's title and, from the plan, what it is about
+git -C "$proj" checkout -q -b feat/PAUL-220-export main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-220-export"
+printf '# PLAN - Export button - 2026-09-26\nBranch: feat/PAUL-220-export   Base: main   Ticket: none\n\n## Destination\nUsers export the report as CSV\nfrom /reports.\n\n## Goal artifact\nx\n' \
+  >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-220-export/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "export plan"; git -C "$proj" push -q origin feat/PAUL-220-export
+git -C "$proj" checkout -q main
+printf '21 feat/PAUL-220-export https://github.com/e/r/pull/21\n' >"$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+: >"$REC/curl.args"
+out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) PR item: Slack start with the PR's title" has "*Autopilot started* on $(hostname -s): proj - WEB-9: CSV export on /reports" "$slack"
+check "(i) PR item: what it is about, from the plan's Destination" has "Users export the report as CSV from /reports." "$slack"
+check "(i) PR item: the PR link at the start" has "effort xhigh · https://github.com/e/r/pull/21" "$slack"
+: >"$REC/repos.txt"; rm -f "$QH/repos.txt"
+# the plan's topic when there is no PR title, and valid JSON without jq
+git -C "$proj" checkout -q -b feat/PAUL-221-topic main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic"
+printf '# PLAN - Quote "fix" - 2026-09-26\nBranch: feat/PAUL-221-topic   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "topic plan"; git -C "$proj" push -q origin feat/PAUL-221-topic
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-221-topic feat/PAUL-221-topic >/dev/null
+: >"$REC/curl.args"
+out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 JQ_BIN=/nonexistent/jq PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+payload="$(grep -o -- '--data {.*} https://hooks' "$REC/curl.args" | tail -n 1 | sed 's/^--data //; s/ https:\/\/hooks$//')"
+check "(i) plan topic as the title when there is no PR" has "proj - Quote \\\"fix\\\"" "$(grep -F 'Autopilot started' "$REC/curl.args")"
+check "(i) without jq the Slack payload is valid JSON with newlines, quotes and a backslash" \
+  python3 -c 'import json, sys; t = json.loads(sys.argv[1])["text"]; assert "\n*What shipped*\n" in t and "\"quotes\"" in t and "back\\slash" in t, t' "$payload"
 export MISSION_CONTROL_NO_NOTIFY=1
 
 # ---------- (j) reused worktree: fetch and fast-forward before the retry ----------

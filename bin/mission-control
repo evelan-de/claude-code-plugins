@@ -37,8 +37,8 @@
 # interrupts it at once instead of after the watch step.
 #
 # Dependencies: git, gh, curl (Slack), osascript (macOS notification). jq is optional.
-# Test hooks: CLAUDE_BIN, GH_BIN, MISSION_CONTROL_WATCH_MIN=0 (no stall check),
-# MISSION_CONTROL_NO_NOTIFY=1.
+# Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, JQ_BIN, NVM_DIR,
+# MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
 # POSIX sh. Never prints a secret: the Slack webhook URL is only ever read into a variable.
 set -u
 
@@ -605,22 +605,96 @@ ensure_labels() {
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
-# notify <text> [sound]: macOS notification (with the named sound: Glass for done, Sosumi
-# for anything that needs a look) and the Slack message.
+# item_title: a short title of the current item: the PR's title, else the topic in the first
+# line of its PLAN.md ("# PLAN - <topic> - <date>"), else the item itself.
+item_title() {
+  it_t=""
+  if [ -n "$pi_pr_number" ] && [ -n "${pi_gh_dir:-}" ]; then
+    it_t="$(gh_in "$pi_gh_dir" pr view "$pi_pr_number" --json title --jq .title 2>/dev/null)"
+  fi
+  if [ -z "$it_t" ] && [ -n "${pi_sd0:-}" ] && [ -f "$pi_wt/$pi_sd0/PLAN.md" ]; then
+    it_t="$(sed -n '1{s/^#[[:space:]]*//; s/^PLAN[[:space:]]*-[[:space:]]*//; s/[[:space:]]*-[[:space:]]*[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][[:space:]]*$//; p;}' "$pi_wt/$pi_sd0/PLAN.md")"
+  fi
+  printf '%s\n' "${it_t:-$pi_item}"
+}
+
+# plan_destination <PLAN.md>: the first paragraph under "## Destination", at most 300 characters.
+plan_destination() {
+  awk '/^## Destination/ { f = 1; next } f && /^## / { exit }
+       f && NF { printf "%s%s", (n++ ? " " : ""), $0; next } f && n { exit }' "$1" 2>/dev/null \
+    | awk '{ print (length($0) > 300 ? substr($0, 1, 297) "..." : $0) }'
+}
+
+# report_section <REPORT.md> <heading> [max lines]: the non-empty lines under "## <heading>",
+# at most max (default 8), Markdown bold turned into Slack bold, long lines cut, and a note
+# when there are more.
+report_section() {
+  awk -v h="## $2" -v max="${3:-8}" '
+    $0 == h { f = 1; next }
+    f && /^## / { exit }
+    f && NF { if (++n <= max) { l = $0; gsub(/\*\*/, "*", l); print (length(l) > 220 ? substr(l, 1, 217) "..." : l) } }
+    END { if (n > max) print "(" n - max " more in REPORT.md)" }' "$1" 2>/dev/null
+}
+
+# item_cost: the summed total_cost_usd of every attempt in the item log, as "$N.NN", or nothing.
+item_cost() {
+  grep -o '"total_cost_usd":[0-9.]*' "$ITEM_LOG" 2>/dev/null | awk -F: '{ s += $2 } END { if (NR) printf "$%.2f", s }'
+}
+
+# notify_start: the Slack message when an item's first attempt starts: title, what it is
+# about, model and effort, PR link.
+notify_start() {
+  ns_what=""
+  [ -n "${pi_sd0:-}" ] && ns_what="$(plan_destination "$pi_wt/$pi_sd0/PLAN.md")"
+  ns_link="$pi_pr_url"; [ "$ns_link" != "-" ] || ns_link="$pi_item"
+  notify "" "" "$(printf '*Autopilot started* on %s: %s - %s\n%s%sModel %s, effort %s · %s' \
+    "$(hostname -s)" "$pi_rb" "$pi_title" "$ns_what" "${ns_what:+
+}" "$RUN_MODEL" "$RUN_EFFORT" "$ns_link")"
+}
+
+# slack_end: the Slack message when an item ends: status, title, PR link, minutes, cost,
+# restarts; for done "What shipped" and "Open items" from REPORT.md, otherwise the reason and
+# the open items when there is a report.
+slack_end() {
+  [ -n "$pi_title" ] || pi_title="$(item_title)"
+  se_report=""; [ -n "${pi_wt:-}" ] && [ -n "${pi_sd:-}" ] && se_report="$pi_wt/$pi_sd/REPORT.md"
+  se_cost="$(item_cost)"
+  se_facts="$(( ($(date +%s) - pi_began) / 60 )) min${se_cost:+ · $se_cost}"
+  [ "$pi_restarts" -gt 0 ] && se_facts="$se_facts · $pi_restarts restart(s)"
+  se_link="$pi_pr_url"; [ "$se_link" != "-" ] || se_link="log $ITEM_LOG"
+  printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$pi_title" "$se_link" "$se_facts"
+  [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$pi_reason"
+  if [ -n "$se_report" ] && [ -f "$se_report" ]; then
+    se_shipped="$(report_section "$se_report" "What shipped")"
+    se_open="$(report_section "$se_report" "Open items")"
+    [ "$pi_status" = "done" ] && printf '*What shipped*\n%s\n' "${se_shipped:-(see REPORT.md)}"
+    printf '*Open items*\n%s\n' "${se_open:-none}"
+  fi
+}
+
+# slack_json <text>: {"text": <text>} as JSON, newlines kept (jq when present).
+slack_json() {
+  if command -v "${JQ_BIN:-jq}" >/dev/null 2>&1; then
+    "${JQ_BIN:-jq}" -cn --arg t "$1" '{text: $t}'
+  else
+    printf '{"text":"%s"}' "$(printf '%s' "$1" | awk 'BEGIN { ORS = "" }
+      { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); if (NR > 1) printf "\\n"; print }')"
+  fi
+}
+
+# notify <text> [sound] [slack text]: macOS notification with <text> (and the named sound:
+# Glass for done, Sosumi for anything that needs a look) and the Slack message (<slack text>,
+# else <text>).
 notify() {
   [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
-  n_text="$1"; n_sound="${2:-}"
-  n_esc="$(json_escape "$n_text")"
-  if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$n_esc\" with title \"mission-control\"${n_sound:+ sound name \"$n_sound\"}" >/dev/null 2>&1 \
+  n_text="$1"; n_sound="${2:-}"; n_slack="${3:-$1}"
+  if [ -n "$n_sound" ] && command -v osascript >/dev/null 2>&1; then
+    n_esc="$(json_escape "$n_text")"
+    osascript -e "display notification \"$n_esc\" with title \"mission-control\" sound name \"$n_sound\"" >/dev/null 2>&1 \
       || log "notification: osascript failed"
   fi
   if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-    if command -v jq >/dev/null 2>&1; then
-      n_json="$(jq -cn --arg t "$n_text" '{text: $t}')"
-    else
-      n_json="{\"text\":\"$n_esc\"}"
-    fi
+    n_json="$(slack_json "$n_slack")"
     # stderr is dropped on purpose: curl error messages can quote the URL.
     curl -sS --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
       "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
@@ -856,7 +930,7 @@ rename_item_log() {
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
@@ -934,6 +1008,8 @@ process_item() {
     fi
 
     ensure_hooks "$pi_wt"
+    pi_title="$(item_title)"
+    notify_start
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
       || say "$pi_rb $pi_item: no context-budget hook in the worktree; the watchdog sees commits and plan changes only"
@@ -1071,10 +1147,11 @@ finish_item() {
   else
     say "$pi_rb $pi_item: $pi_shown: $pi_reason (log $ITEM_LOG)"
   fi
+  pi_slack="$(slack_end)"
   if [ "$pi_status" = "done" ]; then
-    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass
+    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass "$pi_slack"
   else
-    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi
+    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi "$pi_slack"
   fi
 
   [ -n "${pi_wt:-}" ] && stop_compose "$pi_wt"

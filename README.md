@@ -58,10 +58,11 @@ unattended and hands you a reviewed pull request.
    model and effort. It writes `PLAN.md` on a new branch.
 3. **Hand over:** Claude pushes the branch and opens a draft PR with the label
    `autopilot-ready`.
-4. **Run:** the office Mini picks it up at 22:00 and says so in a PR comment. It implements
-   the plan test-first, reviews the whole branch, checks the result in a browser and marks
-   the PR ready for review. You get a PR comment, a Slack message and a comment on the Jira
-   ticket.
+4. **Run:** the office Mini picks it up at 22:00 and says so on the PR and in Slack
+   `#mission-control` (title and what it is about). It implements the plan test-first,
+   reviews the whole branch, checks the result in a browser and marks the PR ready for
+   review. At the end Slack shows what shipped and what is still open; the report is also a
+   PR comment and a comment on the Jira ticket.
 5. **Review and merge** like any other PR. The run never merges.
 
 **Model and effort** are two lines in the plan. `Model: sonnet` is the default and always
