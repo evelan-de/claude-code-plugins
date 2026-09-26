@@ -41,6 +41,9 @@ case "$item" in
 esac
 n="$(grep -c . "$FAKE_RECORD/claude.args")"
 [ -f .claude/.autopilot-active ] && echo "attempt $n" >>"$FAKE_RECORD/sentinel.seen"
+printf '%s\n' "${PATH%%:*}" >"$FAKE_RECORD/claude.path.$n"
+[ -x .claude/hooks/autopilot-context-budget.sh ] && grep -q autopilot-context-budget .claude/settings.json 2>/dev/null \
+  && echo "attempt $n" >>"$FAKE_RECORD/hooks.seen"
 [ -f "$FAKE_RECORD/jira.args" ] && cp "$FAKE_RECORD/jira.args" "$FAKE_RECORD/jira-at-claude-start.$n"
 mkdir -p .claude; echo "2026-09-21T00:00:00Z ctx=1 tool=Bash" >.claude/.autopilot-status
 if ! git symbolic-ref -q HEAD >/dev/null; then git checkout -q -B "feat/$(basename "$sd")"; fi
@@ -49,6 +52,17 @@ mkdir -p "$sd"
 case "${FAKE_SCENARIO:-report}" in
   report) rm -f "$sd/HANDOFF.md"; printf 'Status: done\n\n# REPORT\n\nshipped %s\n' "$item" >"$sd/REPORT.md" ;;
   report-blocked) printf 'Status: blocked - cannot reach the API\n\n# REPORT\n' >"$sd/REPORT.md" ;;
+  report-full)
+    rm -f "$sd/HANDOFF.md"
+    { printf 'Status: done\n\n## What shipped\n- **greet** helper with "quotes" and a back\\slash\n'
+      for i in 2 3 4 5 6 7 8 9 10; do printf -- '- shipped line %s\n' "$i"; done
+      printf '\n## Verification\n- gate green\n\n## Open items\n- ask Markus about the copy\n'; } >"$sd/REPORT.md" ;;
+  report-edge)
+    rm -f "$sd/HANDOFF.md"
+    long="$(printf 'ä%.0s' $(seq 1 300))"
+    printf 'Status: done\r\n\r\n## What shipped\r\n- ping <!channel> & see [docs](https://x.y/z?a=1&b=2)\r\n- esc \033[31mred\033[0m end\r\n- %s\r\n\r\n## Open Items:\r\n- none left\r\n' "$long" >"$sd/REPORT.md" ;;
+  report-blocked-open)
+    printf 'Status: blocked - gate needs a database\n\n## Open items\n- start Postgres on the Mini\n' >"$sd/REPORT.md" ;;
   report-nostatus) printf '# REPORT\n\nno status here\n' >"$sd/REPORT.md" ;;
   handoff-then-report)
     if [ "$n" -eq 1 ]; then echo "# HANDOFF" >"$sd/HANDOFF.md"
@@ -86,6 +100,7 @@ case "$1 $2" in
   "pr view")
     # prs.txt lines: <number> <head branch> <url> [<base branch, default main>]
     case "$*" in *"--json author"*) echo "${FAKE_PR_AUTHOR:-andreas}"; exit 0 ;; esac
+    case "$*" in *"--json title"*) echo "${FAKE_PR_TITLE:-Fake PR title}"; exit 0 ;; esac
     grep "^$3 " "$prs" | awk '{ print $1, $2, ($4 != "" ? $4 : "main"), $3 }'; exit 0 ;;
   "repo view") echo e/r; exit 0 ;;
   "api "*)
@@ -121,6 +136,13 @@ case "$1 $2" in
         exit 0 ;;
     esac ;;
 esac
+exit 0
+EOF
+cat >"$tmp/fakes/docker" <<'EOF'
+#!/usr/bin/env bash
+# FAKE_DOCKER_PS: the "ps" output, one "<compose project> <working dir>" per line
+printf '%s\n' "$*" >>"$FAKE_RECORD/docker.args"
+[ "$1" = ps ] && [ -n "${FAKE_DOCKER_PS:-}" ] && printf '%s\n' "$FAKE_DOCKER_PS"
 exit 0
 EOF
 cat >"$tmp/fakes/jira" <<'EOF'
@@ -243,6 +265,7 @@ export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
 # points it at $tmp/jirahome. Without this the runner used bin/jira with the machine's real
 # ~/.claude/jira/env and changed the real ticket PAUL-9 on every test run.
 export JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira"
+export DOCKER_BIN="$tmp/fakes/docker" NVM_DIR="$tmp/nvm"
 export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
 unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS FAKE_GH_AUTH_FAIL MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
@@ -629,6 +652,94 @@ check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/lo
 printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
 check "(i) curl failure logged with its exit code" grep -q "Slack webhook failed (curl exit 22)" "$QH"/logs/*-PAUL-8.log
+# Slack at the start and a detailed message at the end
+: >"$REC/curl.args"
+printf '%s PAUL-7c\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-full PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) Slack at the start: title, model and effort" has "*Autopilot started* on $(hostname -s): proj - PAUL-7c" "$slack"
+check "(i) Slack at the start: model and effort" has "Model sonnet, effort xhigh" "$slack"
+check "(i) Slack at the end: status and title" has "*Autopilot done*: proj - PAUL-7c" "$slack"
+check "(i) Slack at the end: PR link, minutes and cost" has "https://github.com/e/r/pull/7 · 0 min · \$0.10" "$slack"
+check "(i) Slack at the end: what shipped, Markdown bold as Slack bold" has "- *greet* helper with" "$slack"
+check "(i) Slack at the end: at most 8 shipped lines, the rest counted" has "(2 more in REPORT.md)" "$slack"
+check "(i) Slack at the end: the ninth shipped line is not listed" lacks "shipped line 9" "$slack"
+check "(i) Slack at the end: open items" has "- ask Markus about the copy" "$slack"
+check "(i) Slack at the end: other report sections stay out" lacks "gate green" "$slack"
+: >"$REC/curl.args"
+printf '%s PAUL-7d\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-blocked-open PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) Slack when blocked: status, reason and open items" \
+  bash -c 'printf "%s" "$1" | grep -qF "*Autopilot blocked*: proj - PAUL-7d" && printf "%s" "$1" | grep -qF "Reason: gate needs a database" && printf "%s" "$1" | grep -qF -- "- start Postgres on the Mini"' _ "$slack"
+check "(i) Slack when blocked: no what-shipped section" lacks "*What shipped*" "$slack"
+# a PR item: the PR's title and, from the plan, what it is about
+git -C "$proj" checkout -q -b feat/PAUL-220-export main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-220-export"
+printf '# PLAN - Export button - 2026-09-26\nBranch: feat/PAUL-220-export   Base: main   Ticket: none\n\n## Destination\nUsers export the report as CSV\nfrom /reports.\n\n## Goal artifact\nx\n' \
+  >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-220-export/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "export plan"; git -C "$proj" push -q origin feat/PAUL-220-export
+git -C "$proj" checkout -q main
+printf '21 feat/PAUL-220-export https://github.com/e/r/pull/21\n' >"$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+: >"$REC/curl.args"
+out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports <Select> & co" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) PR item: Slack start with the PR's title, escaped" has "*Autopilot started* on $(hostname -s): proj - WEB-9: CSV export on /reports &lt;Select&gt; &amp; co" "$slack"
+check "(i) PR item: what it is about, from the plan's Destination" has "Users export the report as CSV from /reports." "$slack"
+check "(i) PR item: the PR link at the start" has "effort xhigh · https://github.com/e/r/pull/21" "$slack"
+: >"$REC/repos.txt"; rm -f "$QH/repos.txt"
+# the plan's topic when there is no PR title, and valid JSON without jq
+git -C "$proj" checkout -q -b feat/PAUL-221-topic main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic"
+printf '# PLAN - Quote "fix" - 2026-09-26\nBranch: feat/PAUL-221-topic   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "topic plan"; git -C "$proj" push -q origin feat/PAUL-221-topic
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-221-topic feat/PAUL-221-topic >/dev/null
+: >"$REC/curl.args"
+out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 JQ_BIN=/nonexistent/jq PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+payload="$(grep -o -- '--data {.*} https://hooks' "$REC/curl.args" | tail -n 1 | sed 's/^--data //; s/ https:\/\/hooks$//')"
+check "(i) plan topic as the title when there is no PR" has "proj - Quote \\\"fix\\\"" "$(grep -F 'Autopilot started' "$REC/curl.args")"
+check "(i) without jq the Slack payload is valid JSON with newlines, quotes and a backslash" \
+  python3 -c 'import json, sys; t = json.loads(sys.argv[1])["text"]; assert "\n*What shipped*\n" in t and "\"quotes\"" in t and "back\\slash" in t, t' "$payload"
+# Slack-safe text: escaping, links, umlauts cut by characters, control characters, heading variants
+cat >"$tmp/slack_payload.py" <<'PYEOF'
+import json, re, sys
+# argv[1]: the curl.args file, argv[2]: a text the message must contain; prints the message text
+for line in open(sys.argv[1], encoding="utf-8"):
+    m = re.search(r"--data (\{.*\}) https://hooks", line)
+    if m and sys.argv[2] in line:
+        text = json.loads(m.group(1))["text"]
+        print(text)
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+for jqmode in with without; do
+  : >"$REC/curl.args"
+  printf '%s PAUL-7e-%s\n' "$proj" "$jqmode" >"$QH/queue.txt"
+  jqbin=jq; [ "$jqmode" = without ] && jqbin=/nonexistent/jq
+  out="$(FAKE_SCENARIO=report-edge JQ_BIN="$jqbin" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+  msg="$(python3 "$tmp/slack_payload.py" "$REC/curl.args" "Autopilot done")"; got=$?
+  check "(i) $jqmode jq: the end message is valid JSON and UTF-8" [ "$got" -eq 0 ]
+  check "(i) $jqmode jq: <, > and & escaped, a Markdown link in Slack form" has "ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>" "$msg"
+  check "(i) $jqmode jq: the umlaut line cut to 220 characters, not inside a character" \
+    python3 -c 'import sys; l = [x for x in sys.argv[1].splitlines() if x.startswith("- ää")][0]; assert len(l) == 220, len(l)' "$msg"
+  check "(i) $jqmode jq: \"## Open Items:\" with CRLF found" has "*Open items*
+- none left" "$msg"
+done
+check "(i) without jq: the escape character is dropped" has "- esc [31mred[0m end" "$msg"
+: >"$REC/curl.args"
+printf '%s PAUL-7f\n' "$proj" >"$QH/queue.txt"
+out="$(LC_ALL=de_DE.UTF-8 FAKE_SCENARIO=report PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+check "(i) a German locale still writes the cost with a point" has "· \$0.10" "$(cat "$REC/curl.args")"
+: >"$REC/curl.args"
+printf '%s PAUL-7g\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=sleep FAKE_GH_NO_PR=1 MISSION_CONTROL_TIMEOUT_MIN=0.02 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) timeout: status, reason and the stopped attempt in Slack" \
+  bash -c 'printf "%s" "$1" | grep -qF "*Autopilot timeout*: proj - PAUL-7g" && printf "%s" "$1" | grep -qF "Reason: wall-clock timeout" && printf "%s" "$1" | grep -qF "+ a stopped attempt"' _ "$slack"
+check "(i) no PR: the log instead of a PR link" has "log $QH/logs/" "$slack"
+kill -9 "$(cat "$REC/claude.pid" 2>/dev/null)" 2>/dev/null
 export MISSION_CONTROL_NO_NOTIFY=1
 
 # ---------- (j) reused worktree: fetch and fast-forward before the retry ----------
@@ -1252,6 +1363,69 @@ check "(v) PR 19 runs its own plan, not the older one with the ticket key" has "
 check "(v) the older plan with the ticket key is never run" lacks "2026-09-01-PAUL-190-old" "$cl"
 check "(v) PR 20 (Branch: header with backticks and a comma) runs, not blocked" has "/autopilot docs/autopilot/sessions/2026-09-24-tick " "$cl"
 unset FAKE_GH_PRS
+
+# ---------- (w) hooks installed before the run; a run's Docker stack stopped afterwards ----------
+fresh_home w
+export FAKE_SCENARIO=report
+printf '%s PAUL-200\n' "$proj" >"$QH/queue.txt"
+wt200="$QH/worktrees/proj-PAUL-200"
+out="$(FAKE_DOCKER_PS="$(printf 'proj-paul-200|%s\nproj-paul-200|%s/docker/dev\nother-stack|/somewhere/else\nprefix-trap|%s-other\n' "$wt200" "$wt200" "$wt200")" sh "$TOOL" run 2>&1)"
+check "(w) the run saw the hooks installed and registered" grep -q "attempt 1" "$REC/hooks.seen"
+check "(w) without a branch the hooks are not committed" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.1")" = 0 ]
+check "(w) without a branch: said" has "PAUL-200: autopilot hooks installed for this run, not committed (no branch yet)" "$out"
+check "(w) the run's compose project was stopped once, from /, with orphans" [ "$(grep -c "^compose -p proj-paul-200 down --remove-orphans$" "$REC/docker.args")" = 1 ]
+check "(w) another compose project was left alone" lacks "compose -p other-stack" "$(cat "$REC/docker.args")"
+check "(w) a worktree path that is only a prefix does not count" lacks "compose -p prefix-trap" "$(cat "$REC/docker.args")"
+check "(w) the main checkout got no hooks" [ ! -e "$proj/.claude/hooks/autopilot-gate.sh" ]
+# a branch on origin without hooks: one commit with only the hook files, pushed
+git -C "$proj" checkout -q -b feat/PAUL-202-nohooks main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks"
+printf '# PLAN\nBranch: feat/PAUL-202-nohooks   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan without hooks"; git -C "$proj" push -q origin feat/PAUL-202-nohooks
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks feat/PAUL-202-nohooks >/dev/null
+out="$(sh "$TOOL" run 2>&1)"
+check "(w) on a branch the hooks are committed before the run" grep -q "chore(autopilot): install or update the autopilot hooks" "$REC/claude.gitlog.2"
+check "(w) on a branch: said with the branch" has "autopilot hooks installed or updated and committed on feat/PAUL-202-nohooks" "$out"
+hooks_commit="$(git -C "$tmp/origin.git" log --format=%H --grep "install or update the autopilot hooks" feat/PAUL-202-nohooks)"
+check "(w) the hooks commit was pushed to origin" [ -n "$hooks_commit" ]
+check "(w) the hooks commit holds only the hook files, settings and .gitignore" \
+  [ "$(git -C "$tmp/origin.git" show --name-only --format= "$hooks_commit" | sort | tr '\n' ' ')" = ".claude/hooks/autopilot-context-budget.sh .claude/hooks/autopilot-gate-filter.sh .claude/hooks/autopilot-gate.sh .claude/hooks/autopilot-session-start.sh .claude/settings.json .gitignore " ]
+# a branch whose hooks are already current gets no commit
+git -C "$proj" checkout -q -b feat/PAUL-201-hooked main
+AUTOPILOT_HOOKS_OUT="$(sh -c "$BIN/autopilot-hooks install $proj")"
+git -C "$proj" add -A; commit "$proj" -m "hooks already there"
+git -C "$proj" push -q origin feat/PAUL-201-hooked
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked"
+printf '# PLAN\nBranch: feat/PAUL-201-hooked   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan"; git -C "$proj" push -q origin feat/PAUL-201-hooked
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-201-hooked feat/PAUL-201-hooked >/dev/null
+out="$(sh "$TOOL" run 2>&1)"
+check "(w) current hooks: no hooks commit" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.3")" = 0 ]
+check "(w) current hooks: logged as current" grep -q "autopilot hooks current" "$(ls "$QH"/logs/*-2026-09-26-PAUL-201-hooked.log)"
+check "(w) current hooks: the run saw them" grep -q "attempt 3" "$REC/hooks.seen"
+check "(w) the setup helper reported its work" has "added .claude/hooks/autopilot-gate.sh" "$AUTOPILOT_HOOKS_OUT"
+
+# ---------- (x) the run gets the project's nvm Node on its PATH ----------
+fresh_home x
+export FAKE_SCENARIO=report
+for v in v20.1.0 v22.2.0 v22.10.1 v24.0.0; do mkdir -p "$NVM_DIR/versions/node/$v/bin"; done
+mkdir -p "$NVM_DIR/alias"; echo 24 >"$NVM_DIR/alias/default"
+printf '%s PAUL-210\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(x) without .nvmrc: nvm's default alias (24)" [ "$(cat "$REC/claude.path.1")" = "$NVM_DIR/versions/node/v24.0.0/bin" ]
+git -C "$proj" checkout -q -b feat/PAUL-211-node main
+echo "v22" >"$proj/.nvmrc"
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-211-node"
+printf '# PLAN\nBranch: feat/PAUL-211-node   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-211-node/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "node 22 plan"; git -C "$proj" push -q origin feat/PAUL-211-node
+git -C "$proj" checkout -q main
+sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-211-node feat/PAUL-211-node >/dev/null
+sh "$TOOL" run >/dev/null 2>&1
+check "(x) .nvmrc v22: the highest installed 22.x (v22.10.1, not v22.2.0)" [ "$(cat "$REC/claude.path.2")" = "$NVM_DIR/versions/node/v22.10.1/bin" ]
+check "(x) the Node choice is logged" grep -q "node for the run: $NVM_DIR/versions/node/v22.10.1/bin" "$(ls "$QH"/logs/*-2026-09-26-PAUL-211-node.log)"
+rm -rf "$NVM_DIR"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

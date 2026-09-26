@@ -37,8 +37,8 @@
 # interrupts it at once instead of after the watch step.
 #
 # Dependencies: git, gh, curl (Slack), osascript (macOS notification). jq is optional.
-# Test hooks: CLAUDE_BIN, GH_BIN, MISSION_CONTROL_WATCH_MIN=0 (no stall check),
-# MISSION_CONTROL_NO_NOTIFY=1.
+# Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, JQ_BIN, NVM_DIR,
+# MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
 # POSIX sh. Never prints a secret: the Slack webhook URL is only ever read into a variable.
 set -u
 
@@ -65,6 +65,9 @@ CONFIG_VARS="SLACK_WEBHOOK_URL MISSION_CONTROL_MODEL MISSION_CONTROL_EFFORT MISS
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 WATCHDOG="$script_dir/autopilot-watchdog"
 [ -x "$WATCHDOG" ] || WATCHDOG=autopilot-watchdog
+HOOKS_BIN="$script_dir/autopilot-hooks"
+[ -x "$HOOKS_BIN" ] || HOOKS_BIN=autopilot-hooks
+DOCKER_BIN="${DOCKER_BIN:-docker}"
 DEFBRANCH="$script_dir/git-default-branch"
 [ -x "$DEFBRANCH" ] || DEFBRANCH=git-default-branch
 JIRA_BIN="${JIRA_BIN:-$script_dir/jira}"
@@ -458,7 +461,7 @@ plan_ticket() {
 # jira_ready: the jira script and its credentials file exist on this machine.
 jira_ready() { command -v "$JIRA_BIN" >/dev/null 2>&1 && [ -f "$JIRA_ENV" ]; }
 
-# jira_start <KEY>: the ticket goes In Progress, assigned to the token owner, before the
+# jira_start <KEY>: the ticket goes In Progress (assignee kept, the token owner if none) before the
 # first attempt. A failure is said and logged, the run goes ahead.
 jira_start() {
   js_out="$("$JIRA_BIN" start "$1" 2>&1)" && { log "jira: $js_out"; return 0; }
@@ -602,24 +605,113 @@ ensure_labels() {
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
-# notify <text> [sound]: macOS notification (with the named sound: Glass for done, Sosumi
-# for anything that needs a look) and the Slack message.
+# item_title: a short title of the current item: the PR's title, else the topic in the first
+# line of its PLAN.md ("# PLAN - <topic> - <date>"), else the item itself.
+item_title() {
+  it_t=""
+  if [ -n "$pi_pr_number" ] && [ -n "${pi_gh_dir:-}" ]; then
+    it_t="$(gh_in "$pi_gh_dir" pr view "$pi_pr_number" --json title --jq .title 2>/dev/null)"
+  fi
+  if [ -z "$it_t" ] && [ -n "${pi_sd0:-}" ] && [ -f "$pi_wt/$pi_sd0/PLAN.md" ]; then
+    it_t="$(sed -n '1{s/^#[[:space:]]*//; s/^PLAN[[:space:]]*-[[:space:]]*//; s/[[:space:]]*-[[:space:]]*[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][[:space:]]*$//; p;}' "$pi_wt/$pi_sd0/PLAN.md")"
+  fi
+  printf '%s\n' "${it_t:-$pi_item}"
+}
+
+# slack_escape: stdin to stdout with &, < and > escaped for Slack (no mentions, no broken text).
+slack_escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+# slack_md: slack_escape, then Markdown bold and links in Slack's form.
+slack_md() { slack_escape | sed 's/\*\*/*/g; s/\[\([^]]*\)\](\([^)]*\))/<\2|\1>/g'; }
+
+# cut_chars <n>: each stdin line cut to n characters (not bytes, so an umlaut stays whole).
+cut_chars() { LC_ALL=en_US.UTF-8 cut -c "1-$1"; }
+
+# plan_destination <PLAN.md>: the first paragraph under "## Destination", at most 300
+# characters, ready for Slack.
+plan_destination() {
+  awk '{ sub(/\r$/, "") } /^## Destination/ { f = 1; next } f && /^## / { exit }
+       f && NF { printf "%s%s", (n++ ? " " : ""), $0; next } f && n { exit }
+       END { if (n) printf "\n" }' "$1" 2>/dev/null | cut_chars 300 | slack_md
+}
+
+# report_section <REPORT.md> <heading> [max lines]: the non-empty lines under the heading
+# ("## <heading>", any case, a trailing colon allowed), at most max (default 8), each cut to
+# 220 characters and ready for Slack, a note when there are more, a note when the report has
+# no such section.
+report_section() {
+  awk -v h="$2" -v max="${3:-8}" '
+    { sub(/\r$/, "") }
+    f && /^## / { exit }
+    !f && tolower($0) ~ ("^## +" tolower(h) "[[:space:]:]*$") { f = 1; next }
+    f && NF { if (++n <= max) print }
+    END { if (n > max) print "(" n - max " more in REPORT.md)"; if (!f) print "(no \"" h "\" section in REPORT.md)" }' "$1" 2>/dev/null \
+    | cut_chars 220 | slack_md
+}
+
+# item_cost: the summed total_cost_usd of every attempt in the item log, as "$N.NN", or nothing.
+item_cost() {
+  grep -o '"total_cost_usd":[0-9.]*' "$ITEM_LOG" 2>/dev/null | LC_ALL=C awk -F: '{ s += $2 } END { if (NR) printf "$%.2f", s }'
+}
+
+# notify_start: the Slack message when an item's first attempt starts: title, what it is
+# about, model and effort, PR link.
+notify_start() {
+  ns_what=""
+  [ -n "${pi_sd0:-}" ] && ns_what="$(plan_destination "$pi_wt/$pi_sd0/PLAN.md")"
+  ns_link="$pi_pr_url"; [ "$ns_link" != "-" ] || ns_link="$(printf '%s' "$pi_item" | slack_escape)"
+  notify "" "" "$(printf '*Autopilot started* on %s: %s - %s\n%s%sModel %s, effort %s · %s' \
+    "$(hostname -s)" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$ns_what" "${ns_what:+
+}" "$RUN_MODEL" "$RUN_EFFORT" "$ns_link")"
+}
+
+# slack_end: the Slack message when an item ends: status, title, PR link, minutes, cost,
+# restarts; for done "What shipped" and "Open items" from REPORT.md, otherwise the reason and
+# the open items when there is a report.
+slack_end() {
+  [ -n "$pi_title" ] || pi_title="$(item_title)"
+  se_report=""; [ -n "${pi_wt:-}" ] && [ -n "${pi_sd:-}" ] && se_report="$pi_wt/$pi_sd/REPORT.md"
+  se_cost="$(item_cost)"
+  case "$pi_status:${RUN_RESULT:-}" in timeout:*|*:stalled) se_cost="${se_cost:-\$0.00} + a stopped attempt" ;; esac
+  se_facts="$(( ($(date +%s) - pi_began) / 60 )) min${se_cost:+ · $se_cost}"
+  [ "$pi_restarts" -gt 0 ] && se_facts="$se_facts · $pi_restarts restart(s)"
+  se_link="$pi_pr_url"; [ "$se_link" != "-" ] || se_link="log $ITEM_LOG"
+  printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$se_link" "$se_facts"
+  [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$(printf '%s' "$pi_reason" | slack_escape)"
+  if [ -n "$se_report" ] && [ -f "$se_report" ]; then
+    se_shipped="$(report_section "$se_report" "What shipped")"
+    se_open="$(report_section "$se_report" "Open items")"
+    [ "$pi_status" = "done" ] && printf '*What shipped*\n%s\n' "${se_shipped:-none}"
+    printf '*Open items*\n%s\n' "${se_open:-none}"
+  fi
+}
+
+# slack_json <text>: {"text": <text>} as JSON, newlines kept (jq when present; without it
+# control characters other than tab and newline are dropped).
+slack_json() {
+  if command -v "${JQ_BIN:-jq}" >/dev/null 2>&1; then
+    "${JQ_BIN:-jq}" -cn --arg t "$1" '{text: $t}'
+  else
+    printf '{"text":"%s"}' "$(printf '%s' "$1" | tr -d '\001-\010\013\014\016-\037' | awk 'BEGIN { ORS = "" }
+      { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); if (NR > 1) printf "\\n"; print }')"
+  fi
+}
+
+# notify <text> [sound] [slack text]: macOS notification with <text> (and the named sound:
+# Glass for done, Sosumi for anything that needs a look) and the Slack message (<slack text>,
+# else <text>). A Slack error status (for example a rejected payload) is logged.
 notify() {
   [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
-  n_text="$1"; n_sound="${2:-}"
-  n_esc="$(json_escape "$n_text")"
-  if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$n_esc\" with title \"mission-control\"${n_sound:+ sound name \"$n_sound\"}" >/dev/null 2>&1 \
+  n_text="$1"; n_sound="${2:-}"; n_slack="${3:-$1}"
+  if [ -n "$n_sound" ] && command -v osascript >/dev/null 2>&1; then
+    n_esc="$(json_escape "$n_text")"
+    osascript -e "display notification \"$n_esc\" with title \"mission-control\" sound name \"$n_sound\"" >/dev/null 2>&1 \
       || log "notification: osascript failed"
   fi
   if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-    if command -v jq >/dev/null 2>&1; then
-      n_json="$(jq -cn --arg t "$n_text" '{text: $t}')"
-    else
-      n_json="{\"text\":\"$n_esc\"}"
-    fi
+    n_json="$(slack_json "$n_slack")"
     # stderr is dropped on purpose: curl error messages can quote the URL.
-    curl -sS --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
+    curl -sS --fail --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
       "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
     n_rc=$?
     [ "$n_rc" -eq 0 ] || log "notification: Slack webhook failed (curl exit $n_rc)"
@@ -711,6 +803,70 @@ prepare_worktree() {
   fi
 }
 
+# ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or old
+# (autopilot-hooks check), installs them and, on a branch, commits only the hook files,
+# .claude/settings.json and .gitignore (no git hooks of the project run) and pushes the
+# commit when the branch is on origin, so the run has the hooks, a later fast-forward still
+# works and the PR carries them into the project. Without a branch (a detached worktree)
+# they stay uncommitted for this run. A failure is said and the run goes ahead.
+ensure_hooks() {
+  eh_wt="$1"
+  command -v "$HOOKS_BIN" >/dev/null 2>&1 || { log "autopilot-hooks not found, hooks not checked"; return 0; }
+  eh_why="$("$HOOKS_BIN" check "$eh_wt" 2>&1)" && { log "autopilot hooks current"; return 0; }
+  if ! eh_out="$("$HOOKS_BIN" install "$eh_wt" 2>&1)"; then
+    say "$pi_rb $pi_item: autopilot hooks could not be installed: $eh_out"; return 0
+  fi
+  case "$eh_out" in "nothing to do"*) say "$pi_rb $pi_item: autopilot hooks: $eh_why (nothing to install)"; return 0 ;; esac
+  eh_branch="$(current_branch "$eh_wt")"
+  if [ -z "$eh_branch" ]; then
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (no branch yet): $eh_out"; return 0
+  fi
+  set -- .claude/hooks/autopilot-gate.sh .claude/hooks/autopilot-gate-filter.sh .claude/hooks/autopilot-context-budget.sh \
+    .claude/hooks/autopilot-session-start.sh .claude/settings.json .gitignore
+  git -C "$eh_wt" add -f -- "$@" >>"$ITEM_LOG" 2>&1
+  if git -C "$eh_wt" diff --cached --quiet -- "$@"; then log "autopilot hooks: nothing to commit"; return 0; fi
+  if ! git -C "$eh_wt" commit -q --no-verify -m "chore(autopilot): install or update the autopilot hooks" -m "$eh_why" -- "$@" >>"$ITEM_LOG" 2>&1; then
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, but the commit failed (see $ITEM_LOG)"; return 0
+  fi
+  say "$pi_rb $pi_item: autopilot hooks installed or updated and committed on $eh_branch ($eh_out)"
+  git -C "$eh_wt" show-ref --verify --quiet "refs/remotes/origin/$eh_branch" || return 0
+  if git -C "$eh_wt" push -q origin "HEAD:refs/heads/$eh_branch" >>"$ITEM_LOG" 2>&1; then
+    log "autopilot hooks commit pushed to origin/$eh_branch"
+  else
+    say "$pi_rb $pi_item: the autopilot hooks commit could not be pushed to origin/$eh_branch (see $ITEM_LOG)"
+  fi
+}
+
+# node_path <worktree>: the bin directory of the installed nvm Node version the project's
+# .nvmrc names (the highest matching one), else of nvm's default alias; nothing without nvm
+# or without a numeric version. The runner's schedule has no nvm on its PATH.
+node_path() {
+  np_nvm="${NVM_DIR:-$HOME/.nvm}"
+  [ -d "$np_nvm/versions/node" ] || return 0
+  np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$1/.nvmrc" 2>/dev/null)"
+  [ -n "$np_want" ] || np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$np_nvm/alias/default" 2>/dev/null)"
+  [ -n "$np_want" ] || return 0
+  np_hit="$(ls "$np_nvm/versions/node" 2>/dev/null | grep -E "^v$(printf '%s' "$np_want" | sed 's/\./\\./g')(\.|$)" \
+    | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)"
+  [ -n "$np_hit" ] && [ -d "$np_nvm/versions/node/$np_hit/bin" ] && printf '%s\n' "$np_nvm/versions/node/$np_hit/bin"
+}
+
+# stop_compose <worktree>: stops the Docker Compose projects whose working directory lies in
+# the worktree (a run's dev stack); containers and networks go, volumes stay.
+stop_compose() {
+  command -v "$DOCKER_BIN" >/dev/null 2>&1 || return 0
+  sc_projects="$("$DOCKER_BIN" ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+    | awk -F '|' -v wt="$1" '$1 != "" && ($2 == wt || index($2, wt "/") == 1) { print $1 }' | sort -u)"
+  for sc_p in $sc_projects; do
+    # from / so that no compose file in the current directory is read
+    if (cd / && "$DOCKER_BIN" compose -p "$sc_p" down --remove-orphans) >>"$ITEM_LOG" 2>&1; then
+      log "docker compose project $sc_p stopped"
+    else
+      say "$pi_rb $pi_item: docker compose project $sc_p could not be stopped (see $ITEM_LOG)"
+    fi
+  done
+}
+
 # run_attempt <worktree> <item> <item start epoch> <watchdog state>: sets RUN_RESULT to
 # exited|stalled|timeout and RUN_EXIT to the claude exit code.
 run_attempt() {
@@ -720,8 +876,11 @@ run_attempt() {
   # The sentinel tells the autopilot skill it is the run (an interactive /autopilot
   # enqueues instead); the run removes it at its end and on a hand-off.
   mkdir -p "$ra_wt/.claude" && : >"$ra_wt/.claude/.autopilot-active"
+  ra_node="$(node_path "$ra_wt")"
+  [ -n "$ra_node" ] && log "node for the run: $ra_node"
   (
     cd "$ra_wt" || exit 1
+    [ -n "$ra_node" ] && PATH="$ra_node:$PATH" && export PATH
     set -- -p "/autopilot $ra_item" --model "$RUN_MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR"
     [ -n "$RUN_FALLBACK" ] && set -- "$@" --fallback-model "$RUN_FALLBACK"
     "$CLAUDE_BIN" "$@" --permission-mode auto --max-budget-usd "$RUN_BUDGET" --output-format json \
@@ -786,7 +945,7 @@ rename_item_log() {
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""; pi_sd0=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
@@ -863,9 +1022,12 @@ process_item() {
       log "start comment on PR #$pi_pr_number"
     fi
 
+    ensure_hooks "$pi_wt"
+    pi_title="$(item_title)"
+    notify_start
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
     [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
-      || say "$pi_rb $pi_item: no context-budget hook in this project (run /autopilot init there); the watchdog sees commits and plan changes only"
+      || say "$pi_rb $pi_item: no context-budget hook in the worktree; the watchdog sees commits and plan changes only"
     while :; do
       note_current $((pi_restarts + 1))
       say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $RUN_MODEL, effort $RUN_EFFORT)"
@@ -1000,12 +1162,14 @@ finish_item() {
   else
     say "$pi_rb $pi_item: $pi_shown: $pi_reason (log $ITEM_LOG)"
   fi
+  pi_slack="$(slack_end)"
   if [ "$pi_status" = "done" ]; then
-    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass
+    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass "$pi_slack"
   else
-    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi
+    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi "$pi_slack"
   fi
 
+  [ -n "${pi_wt:-}" ] && stop_compose "$pi_wt"
   if [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
     if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
       say "$pi_rb $pi_item: worktree removed"

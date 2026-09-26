@@ -63,34 +63,26 @@ detected commands are clearly better - explain what you chose. Optional second k
 the project's full gate (e.g. `npm run gate:full` with integration tests), run once before
 the push. Wire it only when the project already has such a script; never invent one.
 
-### 4. Copy the hooks, and make sure they are tracked
-Copy `autopilot-gate.sh`, `autopilot-gate-filter.sh`, `autopilot-context-budget.sh` and
-`autopilot-session-start.sh` from `<plugin>/skills/autopilot/hooks/` to `.claude/hooks/` and
-`chmod +x` all four. (Use `${CLAUDE_PLUGIN_ROOT}` to locate the plugin source.) If a copy already exists and
-differs, show the diff and replace it only when the project copy is an older plugin version
-(no local edits); otherwise keep it and say so.
+### 4. Install the hooks: `autopilot-hooks install .`
+
+One Bash call from the project root: `autopilot-hooks install .` (plugin `bin/`). It copies
+the four hooks from the plugin into `.claude/hooks/` (executable; an older copy, or one without a version line, is
+replaced, a locally changed copy of the same or a newer version is kept), registers each one in `.claude/settings.json` (appends the block
+from `references/settings-snippet.json`, keeps every other key and hook, never registers one
+twice) and adds the runtime files to `.gitignore` (`.claude/.autopilot-active`,
+`.claude/.autopilot-gate-blocks`, `.claude/.autopilot-status`, `.claude/autopilot-gate.log`).
+It prints what it changed, or "nothing to do". `autopilot-hooks check .` says whether the
+project is current. The runner runs the same check before every run and installs and commits
+the hooks on the run's branch when they are missing or outdated.
 
 Then `git check-ignore -q .claude/hooks/autopilot-gate.sh`: when it is ignored (a `.claude`
 line in `.gitignore`), stage the four hooks, `.claude/settings.json` and
-`.claude/autopilot.json` with `git add -f` and say so. An ignored hook exists only in this
-checkout: a runner worktree, another machine and every teammate would run without it.
+`.claude/autopilot.json` with `git add -f` and say so.
 
-### 5. Safe-merge the hooks into `.claude/settings.json`
-- Read the existing `.claude/settings.json` (create `{}` if absent).
-- Merge ONLY the `Stop`, `PreToolUse`, `PostToolUse` and `SessionStart` blocks from
-  `references/settings-snippet.json`.
-  Preserve every other key and any existing hooks (append, do not replace). If a block is
-  already present, change nothing for it (idempotent).
-- The filter and context-budget hooks need `jq` on the machine; without it they are no-ops
-  (`{}`). Say so in the report when `jq` is missing.
-- Use `jq` for the merge when available; otherwise edit carefully and re-validate with `jq .`.
+The filter and context-budget hooks need `jq` on the machine; without it they are no-ops.
+Say so in the report when `jq` is missing.
 
-### 6. Add the runtime files to `.gitignore`
-Ensure `.claude/.autopilot-active` (transient sentinel), `.claude/.autopilot-gate-blocks`
-(block counter), `.claude/.autopilot-status` (the run's status line) and
-`.claude/autopilot-gate.log` (machine-local evidence log) are gitignored.
-
-### 6b. Browser: `agent-browser`
+### 5. Browser: `agent-browser`
 Run `agent-browser --version`. Missing → print the two install lines and continue:
 `npm install -g agent-browser` then `agent-browser install` (downloads Chrome for Testing).
 Every headless run needs it for the goal-artifact check (`references/browser.md`); the
@@ -112,7 +104,7 @@ login route (`grep -rl -m 1 "signIn\|/login\|/sign-in" app src 2>/dev/null` find
 no `browserState` yet; do not create the file yourself. The state file must exist on every
 machine that runs the queue for this project.
 
-### 6c. Ticket updates: `jira`
+### 6. Ticket updates: `jira`
 The runner (`mission-control`) sets the ticket In Progress before a run and comments the
 result after it, through the `jira` script (plugin `bin/`), which reads `~/.claude/jira/env`
 (mode 600: `JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`; created with `jira setup` in a Terminal,

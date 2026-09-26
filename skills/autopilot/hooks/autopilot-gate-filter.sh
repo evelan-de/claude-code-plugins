@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot gate-output filter (TEMPLATE).
-# Copied into a project's .claude/hooks/ by `/autopilot init`.
+# Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
+# autopilot-hook-version: 2   (raise it with every change to this file)
 #
 # Entry points:
 #

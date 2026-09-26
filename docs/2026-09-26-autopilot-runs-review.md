@@ -128,11 +128,25 @@ branch", doc wording. Kept as is: `/autopilot <dir> opus` keeps the plan's `Effo
 operator-set fallback of another family (e.g. `fable`) applies to Opus runs; a
 `fallbackModel` in the machine's settings cannot be overridden by the runner.
 
+## Smoke test on the office Mini (26.09., 22:00, plugin 3.1.4)
+
+A private repo `evelan-de/autopilot-smoke-test` (Node, no dependencies) with a one-package
+plan, handed over the developer way: branch with `PLAN.md`, draft PR labelled
+`autopilot-ready` (#1), queue started with `mission-control start`. Result: the right plan,
+the start comment with model and effort, the package test-first, reviewer and Codex without
+findings, PR marked ready, `autopilot-done`, report comment; 15 minutes, $2.87. The goal
+artifact and the tests checked again on the MacBook: green. Found: the scheduled runner has
+no nvm Node on its PATH, so the run searched for Node itself; fixed in 3.2.0 (the runner puts
+the `.nvmrc` version, else nvm's default, first on the run's PATH).
+
 ## Decisions (26.09.)
 
 1. Budget per attempt: Opus 120 USD, Sonnet 100 USD.
 2. Existing plans without `Model:` run on Sonnet at `xhigh`: accepted.
 3. Finding 1 fixed (3.1.1).
 4. Sonnet with `Effort: max` stays at `max`.
-5. Next change: before each run the runner installs or updates the autopilot hooks in the
-   worktree (committed on the PR branch).
+5. Before each run the runner installs or updates the autopilot hooks in the worktree and
+   commits them on the PR branch (`autopilot-hooks`, plugin 3.2.0); it stops a run's Docker
+   Compose stack when the item ends.
+6. Jira: the runner keeps the ticket's assignee; only a ticket without one gets the token
+   owner (plugin 3.2.0).

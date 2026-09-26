@@ -4,7 +4,7 @@
 usage: jira setup                        # asks for site, email and token (hidden), writes the env file, runs doctor
        jira doctor
        jira view <KEY>
-       jira start <KEY>                 # transition to the start status, assign to the token owner
+       jira start <KEY>                 # start status; the assignee stays, the token owner only when nobody is assigned
        jira comment <KEY> <text | ->    # plain text; "-" reads the body from stdin
        jira transition <KEY> <status>   # by the target status name, case-insensitive
        jira assign <KEY> [me | <accountId>]
@@ -253,16 +253,22 @@ def cmd_view(args, transport):
 def cmd_start(args, transport):
     key = key_arg(args[0] if args else None)
     j = Jira(need_env(), transport)
-    before = j.req("GET", f"/rest/api/2/issue/{key}?fields=status")
+    before = j.req("GET", f"/rest/api/2/issue/{key}?fields=status,assignee")
     current = before["fields"]["status"]["name"]
     already = current.lower() in [n.strip().lower() for n in j.start_status.split("|")]
     target = current if already else j.transition_to(key, j.start_status)
-    me = j.myself()["accountId"]
-    j.assign_to(key, me)
+    owner = (before["fields"].get("assignee") or {}).get("accountId")
+    if not owner:
+        owner = j.myself()["accountId"]
+        j.assign_to(key, owner)
+        kept = False
+    else:
+        kept = True
     issue = j.issue(key)
     expect(key, "status", target, issue)
-    expect(key, "assignee", me, issue)
-    print(f"started: {issue_line(key, issue)}{' (was already in that status)' if already else ''}")
+    expect(key, "assignee", owner, issue)
+    notes = (" (was already in that status)" if already else "") + (" (assignee kept)" if kept else "")
+    print(f"started: {issue_line(key, issue)}{notes}")
     return 0
 
 
