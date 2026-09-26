@@ -84,12 +84,15 @@ case "$1 $2" in
     exit 0 ;;
   "label list") printf '%s\n' ${FAKE_GH_LABELS-autopilot-ready autopilot-done autopilot-blocked}; exit 0 ;;
   "pr view")
-    case "$*" in *"--json author"*) echo andreas; exit 0 ;; esac
-    grep "^$3 " "$prs"; exit 0 ;;
+    # prs.txt lines: <number> <head branch> <url> [<base branch, default main>]
+    case "$*" in *"--json author"*) echo "${FAKE_PR_AUTHOR:-andreas}"; exit 0 ;; esac
+    grep "^$3 " "$prs" | awk '{ print $1, $2, ($4 != "" ? $4 : "main"), $3 }'; exit 0 ;;
   "repo view") echo e/r; exit 0 ;;
   "api "*)
     # review-bot comments: FAKE_REVIEW_INLINE / FAKE_REVIEW_TOP hold the login lists
     apipath="$2"; jqexpr=""; while [ $# -gt 0 ]; do [ "$1" = --jq ] && jqexpr="$2"; shift; done
+    # the gh account of the queue machine (FAKE_GH_ME, default andreas)
+    [ "$apipath" = user ] && { printf '{"login":"%s"}' "${FAKE_GH_ME:-andreas}" | jq -r "$jqexpr"; exit 0; }
     case "$apipath" in
       */pulls/*/comments) logins="${FAKE_REVIEW_INLINE:-}" ;;
       */issues/*/comments) logins="${FAKE_REVIEW_TOP:-}" ;;
@@ -109,7 +112,7 @@ case "$1 $2" in
     printf '%s' "$json" | jq "$jqexpr"; exit 0 ;;
   "pr list")
     case "$*" in
-      *--label*) [ -f "$prs" ] && cat "$prs"; exit 0 ;;
+      *--label*) [ -f "$prs" ] && awk '{ print $1, $2, $3 }' "$prs"; exit 0 ;;
       *--head*)
         [ -n "${FAKE_GH_NO_PR:-}" ] && exit 0
         b=""; while [ $# -gt 0 ]; do [ "$1" = --head ] && b="$2"; shift; done
@@ -152,6 +155,14 @@ printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-01-01-OLD-1-unrelat
 # a planned session on main with an Effort header
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort"
 printf '# PLAN\n\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort/PLAN.md"
+# planned sessions on main with a Model header
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus" "$proj/docs/autopilot/sessions/2026-09-25-PAUL-161-sonnet" \
+  "$proj/docs/autopilot/sessions/2026-09-25-PAUL-162-sonnetmax"
+printf '# PLAN\nModel: opus\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus/PLAN.md"
+printf '# PLAN\nModel: sonnet   (sonnet | opus)\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-161-sonnet/PLAN.md"
+printf '# PLAN\nModel: Sonnet\nEffort: max\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-162-sonnetmax/PLAN.md"
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-164-bold"
+printf '# PLAN\n- **Model:** `Opus`\n**Effort:** High.\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-164-bold/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "sessions on main"
 git init -q --bare "$tmp/origin.git"
 git -C "$proj" remote add origin "$tmp/origin.git"
@@ -171,12 +182,67 @@ git -C "$proj" push -q origin feat/PAUL-10-noplan
 git -C "$proj" checkout -q main
 git -C "$proj" checkout -q -b feat/PAUL-21-branchy
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy"
-printf '# PLAN\n\nEffort: low\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy/PLAN.md"
+printf '# PLAN\n\nModel: opus\nEffort: low\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan on branch"
 git -C "$proj" push -q origin feat/PAUL-21-branchy
+# PR branch whose plan names an unknown model
+git -C "$proj" checkout -q main
+git -C "$proj" checkout -q -b feat/PAUL-163-bogus
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus"
+printf '# PLAN\nModel: gpt-5\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan with an unknown model"
+git -C "$proj" push -q origin feat/PAUL-163-bogus
+# PRs that target preview, as in jexity-chatbot #276/#277: preview holds a finished session
+# that main does not have yet; PR branches start from preview and add their own plan
+git -C "$proj" checkout -q main
+git -C "$proj" checkout -q -b preview
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth"
+printf '# PLAN\nBranch: feat/two-factor-auth   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/PLAN.md"
+printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/REPORT.md"
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old"
+printf '# PLAN\nBranch: feat/PAUL-190-old   Base: preview   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old/PLAN.md"
+printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old/REPORT.md"
+git -C "$proj" add -A; commit "$proj" -m "finished sessions merged into preview"
+git -C "$proj" push -q origin preview
+git -C "$proj" checkout -q -b feat/default-org-redirect
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-default-org-redirect"
+printf '# PLAN\nBranch: feat/default-org-redirect   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-23-default-org-redirect/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan for default-org-redirect"
+git -C "$proj" push -q origin feat/default-org-redirect
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/borrowed-plan
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-borrowed"
+printf '# PLAN\nBranch: feat/somewhere-else   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-24-borrowed/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan that names another branch"
+git -C "$proj" push -q origin feat/borrowed-plan
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/big
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-big-s2"
+printf '# PLAN\nBranch: feat/big-s2   Base: preview   Ticket: none\nBranch mode: feature-branch feat/big     PR: none\n' >"$proj/docs/autopilot/sessions/2026-09-24-big-s2/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "feature-branch session plan"
+git -C "$proj" push -q origin feat/big
+# a branch holding a ticket key whose own plan sits in a directory without the key, while an
+# older finished directory with that key is on preview
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/PAUL-190-new
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-new-work"
+printf '# PLAN\nBranch: feat/PAUL-190-new   Base: preview   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-24-new-work/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan without the key in its directory name"
+git -C "$proj" push -q origin feat/PAUL-190-new
+# a plan whose Branch: header has backticks and a comma
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/tick
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-tick"
+printf '# PLAN\nBranch: `feat/tick`, Base: preview\n' >"$proj/docs/autopilot/sessions/2026-09-24-tick/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan with a markdown Branch header"
+git -C "$proj" push -q origin feat/tick
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
+# Never the real Jira: the fake jira, and a JIRA_HOME without credentials unless a test
+# points it at $tmp/jirahome. Without this the runner used bin/jira with the machine's real
+# ~/.claude/jira/env and changed the real ticket PAUL-9 on every test run.
+export JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira"
 export MISSION_CONTROL_WATCH_MIN=0 MISSION_CONTROL_NO_NOTIFY=1 MISSION_CONTROL_TIMEOUT_MIN=5
 unset FAKE_GH_PRS FAKE_GH_NO_PR FAKE_GH_FAIL FAKE_GH_LABELS FAKE_GH_AUTH_FAIL MISSION_CONTROL_EFFORT MISSION_CONTROL_MODEL
 
@@ -213,7 +279,7 @@ check "(a) gh pr edit swaps labels to autopilot-done" has "pr edit 7 --remove-la
 check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
 check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
-check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
+check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
@@ -240,7 +306,7 @@ export FAKE_SCENARIO=budget
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(a2b) blocked" grep -q " PAUL-36 blocked " "$QH/done.txt"
-check "(a2b) reason names the budget" has "budget of 60 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
+check "(a2b) reason names the budget" has "budget of 100 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
 
 # ---------- (a2c) HANDOFF.md then an abort REPORT.md (HANDOFF left behind) -> blocked, no restart loop ----------
 fresh_home a2c
@@ -333,6 +399,9 @@ check "(d) PR 11 done without no-plan" grep -q " docs/autopilot/sessions/2026-09
 check "(d) PR 12 done and marked no-plan" grep -q " PAUL-10 done https://github.com/e/r/pull/12 no-plan$" "$QH/done.txt"
 gh_args="$(cat "$REC/gh.args")"
 check "(d) labels swapped on PR 11" has "pr edit 11 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
+check "(d) PR 11 got a start comment with model and effort before the run" has "pr comment 11 --body Autopilot started on $(hostname -s) at " "$gh_args"
+check "(d) the start comment names the launch settings" has "(model sonnet, effort xhigh). Please do not push to this branch" "$gh_args"
+check "(d) PR 13 (not run) got no start comment" lacks "pr comment 13 --body Autopilot started" "$gh_args"
 check "(d) labels swapped on PR 12" has "pr edit 12 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
 check "(d) PR 13 (branch missing) blocked in done.txt" grep -q " #13 blocked https://github.com/e/r/pull/13$" "$QH/done.txt"
 check "(d) PR 13 labelled autopilot-blocked although no worktree exists" has "pr edit 13 --remove-label autopilot-ready --add-label autopilot-blocked" "$gh_args"
@@ -476,7 +545,7 @@ sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy >/dev/
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(f2) run exits 0" [ "$got" -eq 0 ]
 check "(f2) done without no-plan" grep -q " docs/autopilot/sessions/2026-09-18-PAUL-21-branchy done https://github.com/e/r/pull/7$" "$QH/done.txt"
-check "(f2) effort low taken from the plan on the branch" has "--effort low" "$(cat "$REC/claude.args")"
+check "(f2) model opus and effort low taken from the plan on the branch" has "--model opus --effort low " "$(cat "$REC/claude.args")"
 check "(f2) the run saw the branch history" grep -q "plan on branch" "$REC/claude.gitlog.1"
 check "(f2) the run was on feat/PAUL-21-branchy" grep -q "PAUL-21-branchy" "$QH/done.txt"
 
@@ -652,6 +721,11 @@ printf '%s PAUL-71\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
 check "(j4) zero bot comments: said on stdout" has "PAUL-71: no review-bot comment on the PR yet, check it" "$out"
 check "(j4) zero bot comments: recorded" grep -q " PAUL-71 done .* review-comments=0" "$QH/done.txt"
+# a developer's PR: the run answers from the queue machine's gh account, not as the PR author
+printf '%s PAUL-74\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_PR_AUTHOR=dev FAKE_GH_ME=andreas FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) developer PR: replies from the queue machine's account count as answered" grep -q " PAUL-74 done .* review-comments=1$" "$QH/done.txt"
+check "(j4) developer PR: nothing said about unanswered comments" lacks "no reply from the run" "$out"
 git -C "$proj" rm -q -r .github && commit "$proj" -m "remove review workflow" && git -C "$proj" push -q origin main 2>/dev/null || true
 
 # ---------- (k) timeout kills the run ----------
@@ -675,8 +749,8 @@ printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) env file beats the default (model haiku, effort xhigh, fallback sonnet)" has "--model haiku --effort xhigh --advisor fable --fallback-model sonnet" "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_MODEL=sonnet MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
-check "(l) environment beats the env file" has "--model sonnet --effort low " "$(tail -n 1 "$REC/claude.args")"
+MISSION_CONTROL_MODEL=opus MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+check "(l) environment beats the env file" has "--model opus --effort low " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) Effort: high from PLAN.md beats the env file" has "--effort high " "$(tail -n 1 "$REC/claude.args")"
@@ -686,7 +760,54 @@ check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tai
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l) defaults without env file" has "--model sonnet --effort medium --advisor fable --fallback-model opus" "$(tail -n 1 "$REC/claude.args")"
+check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
+
+# ---------- (l2) model from the plan header, sonnet effort floor, fallback and budget ----------
+fresh_home l2
+export FAKE_SCENARIO=report
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 120" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 120 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
+printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 100" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) the raise is logged" grep -q "effort medium raised to xhigh" "$(ls "$QH"/logs/*-PAUL-161.log)"
+printf '%s PAUL-162\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) Model: Sonnet with Effort: max keeps max" has "--model sonnet --effort max " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+MISSION_CONTROL_MODEL=sonnet sh "$TOOL" run >/dev/null 2>&1
+check "(l2) environment model beats the plan, the floor still applies" has "--model sonnet --effort xhigh " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+MISSION_CONTROL_BUDGET_USD=30 sh "$TOOL" run >/dev/null 2>&1
+check "(l2) an explicit budget beats the per-model default" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 30 " "$(tail -n 1 "$REC/claude.args")"
+printf 'MISSION_CONTROL_FALLBACK_MODEL=fable\n' >"$QH/env"; chmod 600 "$QH/env"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) a fallback of another family is kept for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable " "$(tail -n 1 "$REC/claude.args")"
+printf 'MISSION_CONTROL_FALLBACK_MODEL=opus,fable\n' >"$QH/env"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) opus is dropped from a fallback list for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable --permission-mode" "$(tail -n 1 "$REC/claude.args")"
+rm -f "$QH/env"
+printf '%s PAUL-164\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) markdown headers (- **Model:** \`Opus\`, **Effort:** High.) are read" has "--model opus --effort high " "$(tail -n 1 "$REC/claude.args")"
+
+# ---------- (l3) an unknown Model: blocks the item before anything runs ----------
+fresh_home l3
+printf '14 feat/PAUL-163-bogus https://github.com/e/r/pull/14\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(l3) an unknown Model: in the plan: run exits 0" [ "$got" -eq 0 ]
+check "(l3) claude not started" [ ! -e "$REC/claude.args" ]
+check "(l3) done.txt says blocked" grep -q " docs/autopilot/sessions/2026-09-25-PAUL-163-bogus blocked https://github.com/e/r/pull/14$" "$QH/done.txt"
+check "(l3) the reason names the header line" has "PLAN.md header 'Model: gpt-5' is not sonnet or opus" "$out"
+check "(l3) the PR comment carries the reason" has "'Model: gpt-5' is not sonnet or opus" "$(cat "$REC/comment.1")"
+check "(l3) the PR is labelled blocked" has "pr edit 14 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
+unset FAKE_GH_PRS
 
 # ---------- (m) no PR found after the run ----------
 fresh_home m
@@ -750,7 +871,7 @@ sleep 0.5
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
 check "(q) status exits 0" [ "$got" -eq 0 ]
 check "(q) status shows the running item with attempt and phase" has "running: proj PAUL-50 (attempt 1, since " "$out"
-check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort medium)" "$out"
+check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort xhigh)" "$out"
 check "(q) status: no package line for a ticket item" has "  package: none marked [~]" "$out"
 check "(q) status: run line before the hook wrote one" has "  run: no status line yet" "$out"
 check "(q) status: diff line" has "  diff since base: " "$out"
@@ -1110,6 +1231,27 @@ check "(t3) a plist with --scheduled gets no warning from status" lacks "without
 rm -f "$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
 out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"
 check "(t3) no plist: no warning from resume" [ "$out" = "resumed" ]
+
+# ---------- (v) PR items resolve their plan against the PR's target branch ----------
+fresh_home v
+export FAKE_SCENARIO=report
+printf '16 feat/default-org-redirect https://github.com/e/r/pull/16 preview\n17 feat/borrowed-plan https://github.com/e/r/pull/17 preview\n18 feat/big https://github.com/e/r/pull/18 preview\n19 feat/PAUL-190-new https://github.com/e/r/pull/19 preview\n20 feat/tick https://github.com/e/r/pull/20 preview\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+out="$(sh "$TOOL" run 2>&1)"
+cl="$(cat "$REC/claude.args" 2>/dev/null)"
+check "(v) PR 16 runs its own plan" has "/autopilot docs/autopilot/sessions/2026-09-23-default-org-redirect " "$cl"
+check "(v) the finished session on preview is never run" lacks "2026-09-23-two-factor-auth" "$cl"
+check "(v) PR 16 done with its own session dir" grep -q " docs/autopilot/sessions/2026-09-23-default-org-redirect done https://github.com/e/r/pull/16$" "$QH/done.txt"
+check "(v) PR 17 (its plan names another branch) not run" lacks "2026-09-24-borrowed" "$cl"
+check "(v) PR 17 blocked" grep -q " docs/autopilot/sessions/2026-09-24-borrowed blocked https://github.com/e/r/pull/17$" "$QH/done.txt"
+check "(v) the reason names both branches" has "belongs to branch feat/somewhere-else, not to the PR branch feat/borrowed-plan" "$out"
+check "(v) PR 17 labelled blocked" has "pr edit 17 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
+check "(v) PR 18 (a feature-branch session on its feature branch) runs" has "/autopilot docs/autopilot/sessions/2026-09-24-big-s2 " "$cl"
+check "(v) PR 19 runs its own plan, not the older one with the ticket key" has "/autopilot docs/autopilot/sessions/2026-09-24-new-work " "$cl"
+check "(v) the older plan with the ticket key is never run" lacks "2026-09-01-PAUL-190-old" "$cl"
+check "(v) PR 20 (Branch: header with backticks and a comma) runs, not blocked" has "/autopilot docs/autopilot/sessions/2026-09-24-tick " "$cl"
+unset FAKE_GH_PRS
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

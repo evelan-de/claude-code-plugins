@@ -12,6 +12,7 @@ docs/autopilot/
                      # first line; the Stop hook requires ## Review bot in a done report when the project
                      # has the Claude review workflow)
     MANUAL_TESTING.md  # only for steps impossible in this environment
+    screenshots/     # one image per screen from the browser check (references/browser.md)
 ```
 
 `INDEX.md` marker (prepend below it, never sort or rewrite):

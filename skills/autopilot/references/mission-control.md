@@ -13,7 +13,7 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR not by its author; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
@@ -23,10 +23,11 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
-`SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet), `MISSION_CONTROL_EFFORT`
-(medium; a plan's `Effort:` header wins over this default, an `MISSION_CONTROL_EFFORT` set in
-the environment wins over the plan), `MISSION_CONTROL_ADVISOR` (fable),
-`MISSION_CONTROL_FALLBACK_MODEL` (opus), `MISSION_CONTROL_BUDGET_USD` (60 per run),
+`SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet) and `MISSION_CONTROL_EFFORT`
+(medium; a plan's `Model:` and `Effort:` headers win over these defaults, a value set in the
+environment wins over the plan; a sonnet run below xhigh runs at xhigh),
+`MISSION_CONTROL_ADVISOR` (fable), `MISSION_CONTROL_FALLBACK_MODEL` (opus; left out for a run
+on the same model family), `MISSION_CONTROL_BUDGET_USD` (100 per attempt for sonnet, 120 for opus),
 `MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per attempt, a
 restart gets a fresh 240), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
@@ -139,12 +140,16 @@ column and runs from the default branch.
 2. **A labelled PR.** A developer runs `/autopilot-plan`, pushes the branch, opens a draft PR
    and adds the label `autopilot-ready`. The repo must be in `repos.txt`. The queue takes the
    session directory on that branch that has a `PLAN.md` as the item (name contains the ticket
-   key from the branch name, or created on the branch); without one it uses the ticket key
-   from the branch name (else the branch name) and marks `no-plan`.
+   key from the branch name, or created or changed on the branch compared with the PR's
+   target branch, e.g. `preview`); among several, the one whose `Branch:` header names the PR
+   branch wins. A plan whose `Branch:` header names another branch (and whose `Branch mode:`
+   is not `feature-branch <PR branch>`) is never run: the item is `blocked` with both branch
+   names in the reason. Without a plan it uses the ticket key from the branch name (else the
+   branch name) and marks `no-plan`.
 
 ## What `run` does per item
 
-1. Resolves the repo and, for a PR, its branch (`gh pr view`).
+1. Resolves the repo and, for a PR, its branch and target branch (`gh pr view`).
 2. Creates a worktree under `worktrees/`: on the PR branch or the recorded branch (fetched
    first; a branch checked out elsewhere, e.g. in the user's own checkout, is checked out here
    anyway with `--ignore-other-worktrees`, and the queue says where else it is: do not commit
@@ -155,15 +160,21 @@ column and runs from the default branch.
    continues on the local state. The same refresh runs before every restart. Your own
    checkout is never touched. A worktree that cannot be prepared makes the item `blocked`; a
    PR still gets its label and comment, via the repo.
-3. Effort: the `Effort:` header of the item's `PLAN.md` when there is one, unless
-   `MISSION_CONTROL_EFFORT` is set in the environment. Ticket: the `Ticket:` header; when the
+3. Model and effort: the `Model:` (`sonnet` or `opus`) and `Effort:` headers of the item's
+   `PLAN.md` when there is one, unless `MISSION_CONTROL_MODEL` / `MISSION_CONTROL_EFFORT` is
+   set in the environment. A sonnet run below xhigh is raised to xhigh (`max` stays). Any
+   other `Model:` value makes the item `blocked` before anything runs, with the header line
+   in the reason. Budget per attempt: 100 USD for sonnet, 120 for opus, unless
+   `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
    (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
-   updated.
+   updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
+   Please do not push to this branch until the result comment arrives."
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
-   --fallback-model <fallback> --permission-mode auto --max-budget-usd <budget> --output-format json`.
+   [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
+   (fallback entries of the run model's family are left out).
    Every `WATCH_MIN` minutes `autopilot-watchdog` checks for a new commit, a plan change or a
    change of the run's status file (`.claude/.autopilot-status`, rewritten by the
    context-budget hook after every tool call); four stalls in a row (no tool call, no commit, no plan change
@@ -172,7 +183,8 @@ column and runs from the default branch.
    tool call (dev server, test runner) may survive it.
 5. After the exit it looks for the item's session directory: the item itself when it is one,
    else a directory whose name contains the ticket key, else a directory created or changed
-   since the item's base commit (merge-base with the default branch). Never an unrelated
+   since the item's base commit (merge-base with the PR's target branch, for other items
+   with the default branch). Never an unrelated
    directory: an old session with a `REPORT.md` does not make a new item `done`. No
    directory → `blocked` ("no session directory for this item").
    `HANDOFF.md` present → the same item is started again (up to `MAX_RESTARTS`, then
