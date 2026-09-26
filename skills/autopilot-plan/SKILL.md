@@ -91,7 +91,7 @@ Goal artifact: name the browser checks the run performs with `agent-browser` (he
 `skills/autopilot/references/browser.md`) and say whether they need a login state file
 (`browserState` in `.claude/autopilot.json`; if the project has none and the check needs a
 login, list it under "Manual steps" with the recipe from
-`skills/autopilot/references/init.md`, step 6b).
+`skills/autopilot/references/init.md`, step 5).
 
 ## 6. Review
 

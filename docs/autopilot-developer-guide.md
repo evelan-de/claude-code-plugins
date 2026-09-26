@@ -127,6 +127,10 @@ hooks into `.claude/hooks/` and `.claude/settings.json`, and creates the labels
 `autopilot-ready`, `autopilot-done` and `autopilot-blocked` (plus `claude-re-review` when the
 project has the Claude review workflow). Commit and merge this like any other change.
 
+The hooks keep themselves current: before every run the runner checks them and, when they
+are missing or older than the plugin's, installs them on your branch. You then see a commit
+"chore(autopilot): install or update the autopilot hooks" in your PR.
+
 The run works in a fresh copy of the repo on the Mini: it installs the dependencies itself,
 but there is no `.env` from your machine. The gate and the dev server must run without it;
 otherwise the run ends blocked with a missing precondition.
@@ -219,15 +223,20 @@ Andreas can also start it right away. Your machine and session can be closed.
 - **The start comment.** When your PR's turn comes, the runner posts "Autopilot started on
   ... (model, effort)" on the PR. Until then you may push; from then on, do not push until
   the result comment arrives.
-- **Jira.** The ticket moves to In Progress and is assigned to Andreas (the Jira account the
-  Mini uses). Assign it back to yourself after the merge if your team needs that.
+- **Jira.** The ticket moves to In Progress; its assignee stays as it is. A ticket without
+  an assignee gets Andreas (the Jira account the Mini uses).
 - **Commits.** The run's commits on your branch are made on the Mini under Andreas' Git name.
+
+In Slack `#mission-control` you see the start: the PR's title, what the plan is about (its
+Destination paragraph), model and effort, and the PR link.
 
 When it ends you get:
 
 - the PR label `autopilot-done` or `autopilot-blocked` and a comment "Autopilot report" with
   the start of `REPORT.md`;
-- a Slack message in `#mission-control` and a comment on the Jira ticket.
+- a Slack message in `#mission-control`: status, title, PR link, duration and cost, what
+  shipped and the open items from the report (when blocked: the reason);
+- a comment on the Jira ticket.
 
 ## 6. What happens inside a run
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot SessionStart hook (TEMPLATE), matcher "compact".
-# Copied into a project's .claude/hooks/ by `/autopilot init`.
+# Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
+# autopilot-hook-version: 2   (raise it with every change to this file)
 #
 # If compaction happens in a standalone autopilot run, re-inject where the session artifacts
 # are (newest date-prefixed session folder). Plain text on stdout is added to the

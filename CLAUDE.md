@@ -70,3 +70,6 @@ See `README.md` for full installation instructions including auto-prompt setup f
 Run `sh bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
 README coverage, removed concepts) and every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh`;
 all must pass. Then `claude plugin validate .` and the version bump in `.claude-plugin/plugin.json`.
+
+A change to a hook in `skills/autopilot/hooks/` raises the number in its
+`# autopilot-hook-version:` line; only then do projects with an older copy get the update.

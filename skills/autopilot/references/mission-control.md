@@ -167,10 +167,18 @@ column and runs from the default branch.
    in the reason. Budget per attempt: 100 USD for sonnet, 120 for opus, unless
    `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
-   (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
+   (In Progress; the assignee stays, the token owner only when nobody is assigned); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
    updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
-   Please do not push to this branch until the result comment arrives."
+   Please do not push to this branch until the result comment arrives." Hooks:
+   `autopilot-hooks check` on the worktree; missing or older hooks are installed
+   (`autopilot-hooks install`; a locally changed copy of the same or a newer version is
+   kept). On a branch the runner commits only the four hook files, `.claude/settings.json`
+   and `.gitignore` ("chore(autopilot): install or update the autopilot hooks", without the
+   project's git hooks) and pushes the commit when the branch is on origin, so a later
+   fast-forward still works and the PR brings the hooks into the project. On a detached
+   worktree (an item without a branch) they stay uncommitted for this run. A failure is said
+   and the run goes ahead.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
@@ -209,7 +217,7 @@ column and runs from the default branch.
    (`review-comments=N`) and the inline bot threads the run left without a reply
    (`unanswered-review-comments=N`, said on stdout). Appends to `done.txt`, removes the line from `queue.txt`, notifies
    (macOS notification with a sound: Glass for `done`, Sosumi with the reason for everything
-   else; Slack when `SLACK_WEBHOOK_URL` is set), removes the worktree after `done`.
+   else; Slack when `SLACK_WEBHOOK_URL` is set), stops the Docker Compose projects whose working directory lies in the worktree (containers and networks; volumes stay), removes the worktree after `done`.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
@@ -306,7 +314,25 @@ and `chmod 600` the file. Never paste the URL into a chat, a ticket or a commit;
 never prints it either (curl's stderr is dropped, only the exit code is logged). Without it,
 notifications are macOS-only plus the PR comment.
 
+Two messages per item:
+
+- **Start** (first attempt): `*Autopilot started* on <host>: <repo> - <title>`, the first
+  paragraph of the plan's `## Destination` (at most 300 characters), model and effort, the
+  PR link. The title is the PR's title, else the topic in the plan's first line, else the
+  item.
+- **End**: `*Autopilot <status>*: <repo> - <title>`, the PR link (or the log), minutes, cost
+  of all attempts and restarts; when blocked the reason; from `REPORT.md` the `## What
+  shipped` lines (done only) and the `## Open items` lines (heading in any case, a colon
+  allowed), at most eight lines of at most 220 characters each, the rest counted.
+
+Text from titles, plans and reports is escaped for Slack (`&`, `<`, `>`; so no `<!channel>`
+ever pings), Markdown bold and links are turned into Slack's form. A message Slack rejects
+is logged with curl's exit code.
+
+The macOS notification is sent at the end only, as one short line.
+
 ## Test hooks
 
-`CLAUDE_BIN`, `GH_BIN` (fake binaries), `MISSION_CONTROL_WATCH_MIN=0` (no stall check),
-`MISSION_CONTROL_NO_NOTIFY=1` (no osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.
+`CLAUDE_BIN`, `GH_BIN`, `JIRA_BIN`, `DOCKER_BIN`, `JQ_BIN` (fake binaries), `JIRA_HOME`,
+`NVM_DIR`, `MISSION_CONTROL_WATCH_MIN=0` (no stall check), `MISSION_CONTROL_NO_NOTIFY=1` (no
+osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.

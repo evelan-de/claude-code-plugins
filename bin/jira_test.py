@@ -25,6 +25,7 @@ class FakeTransport:
         self.calls = []
         self.status_before = "To Do"
         self.status_after = "In Arbeit"
+        self.assignee_before = None
         self.assignee_after = "acc-1"
         self.comment_back = "Status: done"
         self.assign_fail = False
@@ -40,8 +41,9 @@ class FakeTransport:
         key = f"{req.get_method()} {path}"
         if key == "GET /rest/api/2/myself":
             return 200, b'{"accountId":"acc-1","displayName":"Andreas Straub"}'
-        if key == "GET /rest/api/2/issue/WEB-1?fields=status":
-            return 200, json.dumps({"fields": {"status": {"name": self.status_before}}}).encode()
+        if key == "GET /rest/api/2/issue/WEB-1?fields=status,assignee":
+            owner = {"accountId": self.assignee_before, "displayName": "Dev"} if self.assignee_before else None
+            return 200, json.dumps({"fields": {"status": {"name": self.status_before}, "assignee": owner}}).encode()
         if key == "GET /rest/api/2/issue/WEB-1?fields=summary,status,assignee":
             return 200, json.dumps({"fields": {"summary": "Do the thing", "status": {"name": self.status_after},
                                                "assignee": {"displayName": "Andreas Straub", "accountId": self.assignee_after}}}).encode()
@@ -166,6 +168,22 @@ class JiraCli(unittest.TestCase):
         self.assertIn(("POST", "/rest/api/2/issue/WEB-1/transitions", {"transition": {"id": "11"}}), self.t.calls)
         self.assertIn(("PUT", "/rest/api/2/issue/WEB-1/assignee", {"accountId": "acc-1"}), self.t.calls)
         self.assertIn("started: WEB-1  In Arbeit  Andreas Straub  Do the thing", out)
+
+    def test_start_keeps_the_assignee(self):
+        self.t.assignee_before = "acc-dev"
+        self.t.assignee_after = "acc-dev"
+        rc, out, _ = self.run_cli("start", "WEB-1")
+        self.assertEqual(rc, 0)
+        self.assertIn(("POST", "/rest/api/2/issue/WEB-1/transitions", {"transition": {"id": "11"}}), self.t.calls)
+        self.assertNotIn("PUT", [c[0] for c in self.t.calls])
+        self.assertIn("(assignee kept)", out)
+
+    def test_start_keeps_the_assignee_readback_mismatch(self):
+        self.t.assignee_before = "acc-dev"
+        self.t.assignee_after = "acc-other"
+        rc, _, err = self.run_cli("start", "WEB-1")
+        self.assertEqual(rc, 1)
+        self.assertIn("expected 'acc-dev'", err)
 
     def test_start_already_in_progress(self):
         self.t.status_before = "In Arbeit"
