@@ -27,7 +27,7 @@ Settings in `env` (environment variables override them; defaults in brackets):
 (medium; a plan's `Model:` and `Effort:` headers win over these defaults, a value set in the
 environment wins over the plan; a sonnet run below xhigh runs at xhigh),
 `MISSION_CONTROL_ADVISOR` (fable), `MISSION_CONTROL_FALLBACK_MODEL` (opus; left out for a run
-on the same model family), `MISSION_CONTROL_BUDGET_USD` (60 per attempt for sonnet, 120 for opus),
+on the same model family), `MISSION_CONTROL_BUDGET_USD` (100 per attempt for sonnet, 120 for opus),
 `MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per attempt, a
 restart gets a fresh 240), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
@@ -140,12 +140,16 @@ column and runs from the default branch.
 2. **A labelled PR.** A developer runs `/autopilot-plan`, pushes the branch, opens a draft PR
    and adds the label `autopilot-ready`. The repo must be in `repos.txt`. The queue takes the
    session directory on that branch that has a `PLAN.md` as the item (name contains the ticket
-   key from the branch name, or created on the branch); without one it uses the ticket key
-   from the branch name (else the branch name) and marks `no-plan`.
+   key from the branch name, or created or changed on the branch compared with the PR's
+   target branch, e.g. `preview`); among several, the one whose `Branch:` header names the PR
+   branch wins. A plan whose `Branch:` header names another branch (and whose `Branch mode:`
+   is not `feature-branch <PR branch>`) is never run: the item is `blocked` with both branch
+   names in the reason. Without a plan it uses the ticket key from the branch name (else the
+   branch name) and marks `no-plan`.
 
 ## What `run` does per item
 
-1. Resolves the repo and, for a PR, its branch (`gh pr view`).
+1. Resolves the repo and, for a PR, its branch and target branch (`gh pr view`).
 2. Creates a worktree under `worktrees/`: on the PR branch or the recorded branch (fetched
    first; a branch checked out elsewhere, e.g. in the user's own checkout, is checked out here
    anyway with `--ignore-other-worktrees`, and the queue says where else it is: do not commit
@@ -160,7 +164,7 @@ column and runs from the default branch.
    `PLAN.md` when there is one, unless `MISSION_CONTROL_MODEL` / `MISSION_CONTROL_EFFORT` is
    set in the environment. A sonnet run below xhigh is raised to xhigh (`max` stays). Any
    other `Model:` value makes the item `blocked` before anything runs, with the header line
-   in the reason. Budget per attempt: 60 USD for sonnet, 120 for opus, unless
+   in the reason. Budget per attempt: 100 USD for sonnet, 120 for opus, unless
    `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
    (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
@@ -178,7 +182,8 @@ column and runs from the default branch.
    tool call (dev server, test runner) may survive it.
 5. After the exit it looks for the item's session directory: the item itself when it is one,
    else a directory whose name contains the ticket key, else a directory created or changed
-   since the item's base commit (merge-base with the default branch). Never an unrelated
+   since the item's base commit (merge-base with the PR's target branch, for other items
+   with the default branch). Never an unrelated
    directory: an old session with a `REPORT.md` does not make a new item `done`. No
    directory → `blocked` ("no session directory for this item").
    `HANDOFF.md` present → the same item is started again (up to `MAX_RESTARTS`, then

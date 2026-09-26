@@ -28,7 +28,7 @@
 #
 # Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 # "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
-# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 60 USD
+# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 100 USD
 # for sonnet, 120 for opus, unless MISSION_CONTROL_BUDGET_USD is set.
 #
 # Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
@@ -293,12 +293,28 @@ default_ref() {
   else return 1; fi
 }
 
-# base_sha <tree>: the commit the item started from: merge-base with the default branch,
-# else HEAD. Session directories created or changed since it belong to the item.
+# base_sha <tree> [target branch]: the commit the item started from: merge-base with the
+# target branch (a PR's base, fetched first), else with the default branch, else HEAD.
+# Session directories created or changed since it belong to the item.
 base_sha() {
-  bs_ref="$(default_ref "$1")" || bs_ref=""
+  bs_ref=""
+  if [ -n "${2:-}" ]; then
+    git -C "$1" fetch -q origin "$2" >>"${ITEM_LOG:-/dev/null}" 2>&1 || log "fetch of $2 failed"
+    git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2" && bs_ref="origin/$2"
+  fi
+  [ -n "$bs_ref" ] || bs_ref="$(default_ref "$1")" || bs_ref=""
   { [ -n "$bs_ref" ] && git -C "$1" merge-base "$bs_ref" HEAD 2>/dev/null; } \
     || git -C "$1" rev-parse HEAD 2>/dev/null
+}
+
+# plan_branch <PLAN.md>: the branch of the plan header ("Branch: feat/x   Base: ..."), or nothing.
+plan_branch() {
+  sed -n 's/^Branch:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# plan_feature_branch <PLAN.md>: the feature branch of "Branch mode: feature-branch <name>", or nothing.
+plan_feature_branch() {
+  sed -n 's/^Branch mode:[[:space:]]*feature-branch[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
 }
 
 # changed_session_dirs <tree> <base sha>: session directories (relative) with tracked changes
@@ -309,13 +325,14 @@ changed_session_dirs() {
   } | awk -F/ 'NF > 4 && $1 == "docs" && $2 == "autopilot" && $3 == "sessions" { print $1 "/" $2 "/" $3 "/" $4 }' | sort -u
 }
 
-# find_session_dir <tree> <item> <base sha or empty> [plan]: prints the session directory
-# (relative) that belongs to the item: the item itself when it is a session dir, else the
-# newest one whose name contains the item's ticket key, else the newest one created or changed
-# since the base sha. Never an unrelated directory. With "plan", only directories that contain
-# PLAN.md count.
+# find_session_dir <tree> <item> <base sha or empty> [plan] [branch]: prints the session
+# directory (relative) that belongs to the item: the item itself when it is a session dir,
+# else the newest one whose name contains the item's ticket key, else the newest one created
+# or changed since the base sha; with a branch, a candidate whose PLAN.md header names that
+# branch wins over the newest. Never an unrelated directory. With "plan", only directories
+# that contain PLAN.md count.
 find_session_dir() {
-  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"
+  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"; fsd_branch="${5:-}"; fsd_match=""
   case "$fsd_item" in
     "$SESSIONS"/*)
       fsd_d="${fsd_item%/}"
@@ -333,6 +350,7 @@ find_session_dir() {
       case "$fsd_name" in *"$fsd_key"[!0-9]*|*"$fsd_key") ;; *) continue ;; esac
       if [ -n "$fsd_need" ] && [ ! -f "${d}PLAN.md" ]; then continue; fi
       fsd_hit="$SESSIONS/$fsd_name"
+      fsd_prefer "$fsd_hit"
     done
   fi
   if [ -z "$fsd_hit" ] && [ -n "$fsd_base" ]; then
@@ -341,10 +359,22 @@ find_session_dir() {
       [ -d "$fsd_tree/$d" ] || continue
       if [ -n "$fsd_need" ] && [ ! -f "$fsd_tree/$d/PLAN.md" ]; then continue; fi
       fsd_hit="$d"
+      fsd_prefer "$fsd_hit"
     done
   fi
+  [ -n "$fsd_match" ] && fsd_hit="$fsd_match"
   [ -n "$fsd_hit" ] || return 1
   printf '%s\n' "$fsd_hit"
+}
+
+# fsd_prefer <session dir>: remembers the directory as fsd_match when its PLAN.md names
+# fsd_branch (as the session branch or as the feature branch).
+fsd_prefer() {
+  [ -n "$fsd_branch" ] && [ -f "$fsd_tree/$1/PLAN.md" ] || return 0
+  if [ "$(plan_branch "$fsd_tree/$1/PLAN.md")" = "$fsd_branch" ] \
+     || [ "$(plan_feature_branch "$fsd_tree/$1/PLAN.md")" = "$fsd_branch" ]; then
+    fsd_match="$1"
+  fi
 }
 
 # item_has_plan <repo> <item> [branch]: 0 when a PLAN.md for the item exists in the checkout,
@@ -381,7 +411,7 @@ model_family() {
 # RUN_FALLBACK and RUN_BUDGET.
 # Model and effort: the environment, then the plan header, then the env file, then the
 # defaults. A sonnet run below xhigh is raised to xhigh. The fallback is left out when it is
-# the run model's family; the budget defaults to 60 USD for sonnet, 120 for opus. Returns 1
+# the run model's family; the budget defaults to 100 USD for sonnet, 120 for opus. Returns 1
 # with RL_REASON when the plan names a model other than sonnet or opus.
 resolve_launch() {
   RUN_MODEL="$MODEL"; RUN_EFFORT="$EFFORT"; RL_REASON=""
@@ -410,7 +440,7 @@ resolve_launch() {
   fi
   if [ -n "$BUDGET" ]; then RUN_BUDGET="$BUDGET"
   elif [ "$rl_family" = opus ]; then RUN_BUDGET=120
-  else RUN_BUDGET=60
+  else RUN_BUDGET=100
   fi
 }
 
@@ -749,7 +779,7 @@ rename_item_log() {
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
@@ -763,12 +793,13 @@ process_item() {
   pi_gh_dir="${pi_repo:-}"
 
   if [ -z "$pi_status" ] && [ "$pi_kind" = pr ]; then
-    pi_view="$(gh_in "$pi_repo" pr view "$pi_ref" --json headRefName,url,number --jq '"\(.number) \(.headRefName) \(.url)"' 2>>"$ITEM_LOG")"
+    pi_view="$(gh_in "$pi_repo" pr view "$pi_ref" --json number,headRefName,baseRefName,url --jq '"\(.number) \(.headRefName) \(.baseRefName) \(.url)"' 2>>"$ITEM_LOG")"
     if [ -z "$pi_view" ]; then
       pi_status=blocked; pi_reason="gh pr view $pi_ref failed"
     else
       pi_pr_number="${pi_view%% *}"
-      pi_rest="${pi_view#* }"; pi_branch="${pi_rest%% *}"; pi_pr_url="${pi_rest#* }"
+      pi_rest="${pi_view#* }"; pi_branch="${pi_rest%% *}"
+      pi_rest="${pi_rest#* }"; pi_target="${pi_rest%% *}"; pi_pr_url="${pi_rest#* }"
     fi
   fi
 
@@ -782,11 +813,18 @@ process_item() {
   fi
 
   if [ -z "$pi_status" ]; then
-    pi_base="$(base_sha "$pi_wt")"
+    pi_base="$(base_sha "$pi_wt" "$pi_target")"
     if [ "$pi_kind" = pr ]; then
-      pi_sd0="$(find_session_dir "$pi_wt" "$pi_branch" "$pi_base" plan || true)"
+      pi_sd0="$(find_session_dir "$pi_wt" "$pi_branch" "$pi_base" plan "$pi_branch" || true)"
       if [ -n "$pi_sd0" ]; then
         pi_item="$pi_sd0"
+        # A plan written for another branch is never run on this PR.
+        pi_pb="$(plan_branch "$pi_wt/$pi_sd0/PLAN.md")"
+        if [ -n "$pi_pb" ] && [ "$pi_pb" != "$pi_branch" ] \
+           && [ "$(plan_feature_branch "$pi_wt/$pi_sd0/PLAN.md")" != "$pi_branch" ]; then
+          pi_status=blocked
+          pi_reason="plan $pi_sd0 belongs to branch $pi_pb, not to the PR branch $pi_branch; commit this PR's own PLAN.md (or fix its Branch: line), then set $LABEL_READY again"
+        fi
       else
         pi_noplan=no-plan
         pi_item="$(ticket_from "$pi_branch")"; [ -n "$pi_item" ] || pi_item="$pi_branch"
@@ -799,7 +837,7 @@ process_item() {
       [ -n "$pi_sd0" ] || pi_noplan=no-plan
     fi
     say "$pi_rb $pi_item: worktree ready ($pi_wt)"
-    if ! resolve_launch "${pi_sd0:+$pi_wt/$pi_sd0/PLAN.md}" "${pi_sd0:+$pi_sd0/PLAN.md}"; then
+    if [ -z "$pi_status" ] && ! resolve_launch "${pi_sd0:+$pi_wt/$pi_sd0/PLAN.md}" "${pi_sd0:+$pi_sd0/PLAN.md}"; then
       pi_status=blocked; pi_reason="$RL_REASON"
     fi
   fi

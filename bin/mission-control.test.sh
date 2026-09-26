@@ -84,8 +84,9 @@ case "$1 $2" in
     exit 0 ;;
   "label list") printf '%s\n' ${FAKE_GH_LABELS-autopilot-ready autopilot-done autopilot-blocked}; exit 0 ;;
   "pr view")
+    # prs.txt lines: <number> <head branch> <url> [<base branch, default main>]
     case "$*" in *"--json author"*) echo andreas; exit 0 ;; esac
-    grep "^$3 " "$prs"; exit 0 ;;
+    grep "^$3 " "$prs" | awk '{ print $1, $2, ($4 != "" ? $4 : "main"), $3 }'; exit 0 ;;
   "repo view") echo e/r; exit 0 ;;
   "api "*)
     # review-bot comments: FAKE_REVIEW_INLINE / FAKE_REVIEW_TOP hold the login lists
@@ -109,7 +110,7 @@ case "$1 $2" in
     printf '%s' "$json" | jq "$jqexpr"; exit 0 ;;
   "pr list")
     case "$*" in
-      *--label*) [ -f "$prs" ] && cat "$prs"; exit 0 ;;
+      *--label*) [ -f "$prs" ] && awk '{ print $1, $2, $3 }' "$prs"; exit 0 ;;
       *--head*)
         [ -n "${FAKE_GH_NO_PR:-}" ] && exit 0
         b=""; while [ $# -gt 0 ]; do [ "$1" = --head ] && b="$2"; shift; done
@@ -187,6 +188,32 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus"
 printf '# PLAN\nModel: gpt-5\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan with an unknown model"
 git -C "$proj" push -q origin feat/PAUL-163-bogus
+# PRs that target preview, as in jexity-chatbot #276/#277: preview holds a finished session
+# that main does not have yet; PR branches start from preview and add their own plan
+git -C "$proj" checkout -q main
+git -C "$proj" checkout -q -b preview
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth"
+printf '# PLAN\nBranch: feat/two-factor-auth   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/PLAN.md"
+printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/REPORT.md"
+git -C "$proj" add -A; commit "$proj" -m "finished session merged into preview"
+git -C "$proj" push -q origin preview
+git -C "$proj" checkout -q -b feat/default-org-redirect
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-default-org-redirect"
+printf '# PLAN\nBranch: feat/default-org-redirect   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-23-default-org-redirect/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan for default-org-redirect"
+git -C "$proj" push -q origin feat/default-org-redirect
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/borrowed-plan
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-borrowed"
+printf '# PLAN\nBranch: feat/somewhere-else   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-24-borrowed/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan that names another branch"
+git -C "$proj" push -q origin feat/borrowed-plan
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/big
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-big-s2"
+printf '# PLAN\nBranch: feat/big-s2   Base: preview   Ticket: none\nBranch mode: feature-branch feat/big     PR: none\n' >"$proj/docs/autopilot/sessions/2026-09-24-big-s2/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "feature-branch session plan"
+git -C "$proj" push -q origin feat/big
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
@@ -226,7 +253,7 @@ check "(a) gh pr edit swaps labels to autopilot-done" has "pr edit 7 --remove-la
 check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
 check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
-check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
+check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
@@ -253,7 +280,7 @@ export FAKE_SCENARIO=budget
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(a2b) blocked" grep -q " PAUL-36 blocked " "$QH/done.txt"
-check "(a2b) reason names the budget" has "budget of 60 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
+check "(a2b) reason names the budget" has "budget of 100 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
 
 # ---------- (a2c) HANDOFF.md then an abort REPORT.md (HANDOFF left behind) -> blocked, no restart loop ----------
 fresh_home a2c
@@ -699,7 +726,7 @@ check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tai
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 " "$(tail -n 1 "$REC/claude.args")"
+check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
 
 # ---------- (l2) model from the plan header, sonnet effort floor, fallback and budget ----------
 fresh_home l2
@@ -710,7 +737,7 @@ check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 120" 
 check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
 printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 60" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 100" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the raise is logged" grep -q "effort medium raised to xhigh" "$(ls "$QH"/logs/*-PAUL-161.log)"
 printf '%s PAUL-162\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
@@ -1161,6 +1188,24 @@ check "(t3) a plist with --scheduled gets no warning from status" lacks "without
 rm -f "$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
 out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"
 check "(t3) no plist: no warning from resume" [ "$out" = "resumed" ]
+
+# ---------- (v) PR items resolve their plan against the PR's target branch ----------
+fresh_home v
+export FAKE_SCENARIO=report
+printf '16 feat/default-org-redirect https://github.com/e/r/pull/16 preview\n17 feat/borrowed-plan https://github.com/e/r/pull/17 preview\n18 feat/big https://github.com/e/r/pull/18 preview\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+out="$(sh "$TOOL" run 2>&1)"
+cl="$(cat "$REC/claude.args" 2>/dev/null)"
+check "(v) PR 16 runs its own plan" has "/autopilot docs/autopilot/sessions/2026-09-23-default-org-redirect " "$cl"
+check "(v) the finished session on preview is never run" lacks "2026-09-23-two-factor-auth" "$cl"
+check "(v) PR 16 done with its own session dir" grep -q " docs/autopilot/sessions/2026-09-23-default-org-redirect done https://github.com/e/r/pull/16$" "$QH/done.txt"
+check "(v) PR 17 (its plan names another branch) not run" lacks "2026-09-24-borrowed" "$cl"
+check "(v) PR 17 blocked" grep -q " docs/autopilot/sessions/2026-09-24-borrowed blocked https://github.com/e/r/pull/17$" "$QH/done.txt"
+check "(v) the reason names both branches" has "belongs to branch feat/somewhere-else, not to the PR branch feat/borrowed-plan" "$out"
+check "(v) PR 17 labelled blocked" has "pr edit 17 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
+check "(v) PR 18 (a feature-branch session on its feature branch) runs" has "/autopilot docs/autopilot/sessions/2026-09-24-big-s2 " "$cl"
+unset FAKE_GH_PRS
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

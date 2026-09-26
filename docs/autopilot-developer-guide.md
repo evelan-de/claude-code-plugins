@@ -465,7 +465,7 @@ dir>` on the Mini; ask Andreas (or anyone with SSH access through `/mission-cont
   ends blocked.
 - **Docs are part of done.** The run updates README, `docs/`, `CLAUDE.md` and doc comments
   its change made stale.
-- **Limits per item:** budget per attempt $60 on Sonnet, $120 on Opus; 240 minutes per
+- **Limits per item:** budget per attempt $100 on Sonnet, $120 on Opus; 240 minutes per
   attempt, five restarts after a hand-off, stall kill after 80 minutes without a tool call
   or commit.
 - **Model setup:** planning on Fable (Opus is fine) in your session; the run on the plan's
