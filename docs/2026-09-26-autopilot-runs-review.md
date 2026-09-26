@@ -92,9 +92,12 @@ plan decides the model.
 Effect on existing plans: a plan without `Model:` runs on Sonnet at `xhigh` from the next
 queue run, also when it says `Effort: medium`.
 
-Rollout: the Mini runs the plugin version installed there (3.0.2 today). The change takes
-effect once the plugin is updated on the Mini, in the GUI session (SSH cannot unlock the
-Keychain). The Mini's `~/.claude/settings.json` has no `fallbackModel`, so an Opus run
+Rollout: the office Mini's LaunchAgent runs `bin/mission-control` straight from the
+marketplace clone (`~/.claude/plugins/marketplaces/evelan-plugins`), so
+`claude plugin marketplace update evelan-plugins` delivers the new runner and
+`claude plugin update evelan@evelan-plugins` the skills. Both work over SSH (tested on
+26.09.: the marketplace update re-cloned over SSH without the Keychain). The office Mini's
+`~/.claude/settings.json` has no `fallbackModel`, so an Opus run
 without `--fallback-model` really has no fallback. Not yet verified: a real launch with the
 new flags (the CLI probe on the MacBook failed on an expired login) and a real queue run.
 
