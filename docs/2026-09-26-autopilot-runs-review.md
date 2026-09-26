@@ -43,18 +43,23 @@ website-a-wave 25%.
    by name and the loop keeps the last one, so `2026-09-23-two-factor-auth` beat
    `2026-09-23-default-org-redirect` and `2026-09-23-org-leads`. The run found a
    `Status: done` report, did nothing, and the runner marked the PR ready, labelled it
-   `autopilot-done` and posted the old report. Fix proposal: resolve the base from the PR's
-   `baseRefName`, prefer the session directory whose `PLAN.md` `Branch:` equals the PR head
-   branch, and refuse `done` from a `REPORT.md` that the item did not write. Not fixed yet.
-2. **jexity-chatbot has no context-budget hook.** The runner warned ("no context-budget hook
-   in this project"); attempt 1 of visitor-widget-language ran 484 turns and $50.34 of the
-   $60 budget before it handed off on its own. Action: `/autopilot init` in jexity-chatbot
-   to install the current hooks.
-3. **Leftover worktree on the Mini.** `worktrees/paul-2026-09-23-paul-2802-...` could not be
-   removed ("Directory not empty"). Action: look at what is left, then delete it.
-4. **fit-inn-trier-web is not trusted on the Mini.** Claude ignored the 14 permissions of
-   `.claude/settings.local.json`; the `.env.example` line was denied and became a manual
-   step. Action: open `claude` once in that repo on the Mini and accept the trust dialog.
+   `autopilot-done` and posted the old report. **Fixed in 3.1.1** (reproduced first in the
+   runner tests, case `(v)`): the base is the merge-base with the PR's target branch
+   (`baseRefName`); among several candidate plans the one whose `Branch:` header names the PR
+   branch wins; a plan whose `Branch:` header names another branch is never run, the item is
+   blocked with both branch names in the reason.
+2. **visitor-widget-language ran without the context-budget hook.** jexity-chatbot has the
+   hooks since 20.09. (on `preview` with PR #271), but the branch of PR #262 was created on
+   03.09. and was 31 commits behind `preview`, so its worktree had none. The runner only
+   warned; attempt 1 ran 484 turns and $50.34 before it handed off on its own. Nothing
+   installs or updates the hooks automatically in a run's worktree today.
+3. **Leftover worktree on the office Mini.** `worktrees/paul-2026-09-23-paul-2802-...` could
+   not be removed ("Directory not empty"): what is left are three empty folders
+   (`docker/dev`, `.nginx`), probably recreated by a dev container during the removal.
+4. **fit-inn-trier-web was not trusted on the office Mini at run time (22.09., 17:41).**
+   Claude ignored the 14 permissions of `.claude/settings.local.json`; the `.env.example`
+   line was denied and became a manual step. Checked on 26.09.: the trust flag for the repo
+   is set now, nothing left to do.
 5. **website-a-wave is stuck since 21.09.** local-recording #386 is open without a label.
    Action: relabel `autopilot-ready` (the limit is 5 restarts now) or split the plan.
 6. **The Mini's `opus` alias ran as Opus 5.** The reviewer showed `claude-opus-5[1m]` in the
@@ -77,8 +82,12 @@ plan decides the model.
 - The advisor stays Fable; the pairing table accepts it for Sonnet 5 and Opus 5 and later.
 - The fallback (`opus`) is left out when it is the run's own model family: an Opus run
   stays on Opus instead of silently falling back to a model the plan did not choose.
-- Budget per attempt: 60 USD for Sonnet, 120 for Opus (2x Opus 5.5, 2.5x Opus 5 list
-  price), unless `MISSION_CONTROL_BUDGET_USD` is set.
+- Budget per attempt: 100 USD for Sonnet, 120 for Opus (decided by Andreas on 26.09.),
+  unless `MISSION_CONTROL_BUDGET_USD` is set. An attempt that exhausts its budget before
+  writing `REPORT.md` or `HANDOFF.md` ends the item `blocked` ("budget of N USD exhausted"):
+  no automatic restart, the worktree with its commits stays on the Mini, the PR gets
+  `autopilot-blocked`, Slack and Jira get the reason; relabelling `autopilot-ready`
+  continues in that worktree with a fresh budget.
 
 Effect on existing plans: a plan without `Model:` runs on Sonnet at `xhigh` from the next
 queue run, also when it says `Effort: medium`.
@@ -89,9 +98,13 @@ Keychain). The Mini's `~/.claude/settings.json` has no `fallbackModel`, so an Op
 without `--fallback-model` really has no fallback. Not yet verified: a real launch with the
 new flags (the CLI probe on the MacBook failed on an expired login) and a real queue run.
 
-## Open decisions
+## Decisions (26.09.)
 
-1. Opus budget default of 120 USD per attempt, and whether Sonnet's 60 should rise now that
-   Sonnet runs at `xhigh` (visitor-widget-language used $50.34 at `medium`).
-2. `max` stays allowed for Sonnet; only `low`, `medium` and `high` are raised.
-3. Fix finding 1 next (with a reproduction in the runner tests first).
+1. Budget per attempt: Opus 120 USD, Sonnet 100 USD.
+2. Existing plans without `Model:` run on Sonnet at `xhigh`: accepted.
+3. Finding 1 fixed (3.1.1).
+
+## Open
+
+1. Sonnet with `Effort: max`: kept as `max` (above `xhigh`), or always exactly `xhigh`.
+2. Hooks in a run's worktree: install or update them automatically before each run.
