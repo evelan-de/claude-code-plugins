@@ -159,6 +159,8 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus" "$proj/docs/au
 printf '# PLAN\nModel: opus\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus/PLAN.md"
 printf '# PLAN\nModel: sonnet   (sonnet | opus)\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-161-sonnet/PLAN.md"
 printf '# PLAN\nModel: Sonnet\nEffort: max\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-162-sonnetmax/PLAN.md"
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-164-bold"
+printf '# PLAN\n- **Model:** `Opus`\n**Effort:** High.\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-164-bold/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "sessions on main"
 git init -q --bare "$tmp/origin.git"
 git -C "$proj" remote add origin "$tmp/origin.git"
@@ -195,7 +197,10 @@ git -C "$proj" checkout -q -b preview
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth"
 printf '# PLAN\nBranch: feat/two-factor-auth   Base: preview   Ticket: none\nBranch mode: session     PR: per session\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/PLAN.md"
 printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-09-23-two-factor-auth/REPORT.md"
-git -C "$proj" add -A; commit "$proj" -m "finished session merged into preview"
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old"
+printf '# PLAN\nBranch: feat/PAUL-190-old   Base: preview   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old/PLAN.md"
+printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-09-01-PAUL-190-old/REPORT.md"
+git -C "$proj" add -A; commit "$proj" -m "finished sessions merged into preview"
 git -C "$proj" push -q origin preview
 git -C "$proj" checkout -q -b feat/default-org-redirect
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-23-default-org-redirect"
@@ -214,6 +219,21 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-big-s2"
 printf '# PLAN\nBranch: feat/big-s2   Base: preview   Ticket: none\nBranch mode: feature-branch feat/big     PR: none\n' >"$proj/docs/autopilot/sessions/2026-09-24-big-s2/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "feature-branch session plan"
 git -C "$proj" push -q origin feat/big
+# a branch holding a ticket key whose own plan sits in a directory without the key, while an
+# older finished directory with that key is on preview
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/PAUL-190-new
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-new-work"
+printf '# PLAN\nBranch: feat/PAUL-190-new   Base: preview   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-24-new-work/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan without the key in its directory name"
+git -C "$proj" push -q origin feat/PAUL-190-new
+# a plan whose Branch: header has backticks and a comma
+git -C "$proj" checkout -q preview
+git -C "$proj" checkout -q -b feat/tick
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-24-tick"
+printf '# PLAN\nBranch: `feat/tick`, Base: preview\n' >"$proj/docs/autopilot/sessions/2026-09-24-tick/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan with a markdown Branch header"
+git -C "$proj" push -q origin feat/tick
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
@@ -756,7 +776,16 @@ printf 'MISSION_CONTROL_FALLBACK_MODEL=fable\n' >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l2) a fallback of another family is kept for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable " "$(tail -n 1 "$REC/claude.args")"
+printf 'MISSION_CONTROL_FALLBACK_MODEL=opus,fable\n' >"$QH/env"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) opus is dropped from a fallback list for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable --permission-mode" "$(tail -n 1 "$REC/claude.args")"
 rm -f "$QH/env"
+printf '%s PAUL-164\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) markdown headers (- **Model:** \`Opus\`, **Effort:** High.) are read" has "--model opus --effort high " "$(tail -n 1 "$REC/claude.args")"
+
+# ---------- (l3) an unknown Model: blocks the item before anything runs ----------
 fresh_home l3
 printf '14 feat/PAUL-163-bogus https://github.com/e/r/pull/14\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
@@ -1196,7 +1225,7 @@ check "(t3) no plist: no warning from resume" [ "$out" = "resumed" ]
 # ---------- (v) PR items resolve their plan against the PR's target branch ----------
 fresh_home v
 export FAKE_SCENARIO=report
-printf '16 feat/default-org-redirect https://github.com/e/r/pull/16 preview\n17 feat/borrowed-plan https://github.com/e/r/pull/17 preview\n18 feat/big https://github.com/e/r/pull/18 preview\n' >"$REC/prs.txt"
+printf '16 feat/default-org-redirect https://github.com/e/r/pull/16 preview\n17 feat/borrowed-plan https://github.com/e/r/pull/17 preview\n18 feat/big https://github.com/e/r/pull/18 preview\n19 feat/PAUL-190-new https://github.com/e/r/pull/19 preview\n20 feat/tick https://github.com/e/r/pull/20 preview\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
 out="$(sh "$TOOL" run 2>&1)"
@@ -1209,6 +1238,9 @@ check "(v) PR 17 blocked" grep -q " docs/autopilot/sessions/2026-09-24-borrowed 
 check "(v) the reason names both branches" has "belongs to branch feat/somewhere-else, not to the PR branch feat/borrowed-plan" "$out"
 check "(v) PR 17 labelled blocked" has "pr edit 17 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
 check "(v) PR 18 (a feature-branch session on its feature branch) runs" has "/autopilot docs/autopilot/sessions/2026-09-24-big-s2 " "$cl"
+check "(v) PR 19 runs its own plan, not the older one with the ticket key" has "/autopilot docs/autopilot/sessions/2026-09-24-new-work " "$cl"
+check "(v) the older plan with the ticket key is never run" lacks "2026-09-01-PAUL-190-old" "$cl"
+check "(v) PR 20 (Branch: header with backticks and a comma) runs, not blocked" has "/autopilot docs/autopilot/sessions/2026-09-24-tick " "$cl"
 unset FAKE_GH_PRS
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"

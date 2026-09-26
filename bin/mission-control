@@ -151,7 +151,7 @@ lock_pid() {
 # Written via a temp file and mv, so status never reads a half-written file.
 note_current() {
   [ -d "$LOCK" ] || return 0
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" "${pi_wt:-}" >"$LOCK/current.tmp" \
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" "${pi_wt:-}" "${pi_base:-}" >"$LOCK/current.tmp" \
     && mv -f "$LOCK/current.tmp" "$LOCK/current"
 }
 
@@ -300,21 +300,36 @@ base_sha() {
   bs_ref=""
   if [ -n "${2:-}" ]; then
     git -C "$1" fetch -q origin "$2" >>"${ITEM_LOG:-/dev/null}" 2>&1 || log "fetch of $2 failed"
-    git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2" && bs_ref="origin/$2"
+    if git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2"; then bs_ref="origin/$2"
+    elif git -C "$1" show-ref --verify --quiet "refs/heads/$2"; then bs_ref="$2"
+    else say "target branch $2 not found, comparing with the default branch; the Branch: check still guards the plan"
+    fi
   fi
   [ -n "$bs_ref" ] || bs_ref="$(default_ref "$1")" || bs_ref=""
   { [ -n "$bs_ref" ] && git -C "$1" merge-base "$bs_ref" HEAD 2>/dev/null; } \
     || git -C "$1" rev-parse HEAD 2>/dev/null
 }
 
-# plan_branch <PLAN.md>: the branch of the plan header ("Branch: feat/x   Base: ..."), or nothing.
-plan_branch() {
-  sed -n 's/^Branch:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+# plan_header <PLAN.md> <name> [n]: word n (default 1) of the first "<name>:" line of the plan,
+# also written "**<name>:**" or "- **<name>:**"; backticks and quotes removed, a trailing
+# comma, semicolon or full stop cut. Nothing when the line is missing.
+plan_header() {
+  sed -n "s/^[-[:space:]]*\**$2:\**[[:space:]]*//p" "$1" 2>/dev/null | head -n 1 | tr -d '`"' \
+    | awk -v n="${3:-1}" '{ w = $n; sub(/[,;.]+$/, "", w); print w }'
 }
+
+# plan_branch <PLAN.md>: the branch of the plan header ("Branch: feat/x   Base: ..."), or nothing.
+plan_branch() { plan_header "$1" Branch; }
 
 # plan_feature_branch <PLAN.md>: the feature branch of "Branch mode: feature-branch <name>", or nothing.
 plan_feature_branch() {
-  sed -n 's/^Branch mode:[[:space:]]*feature-branch[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+  [ "$(plan_header "$1" "Branch mode")" = feature-branch ] && plan_header "$1" "Branch mode" 2
+}
+
+# plan_is_for_branch <PLAN.md> <branch>: 0 when the plan header names the branch, as its
+# session branch or as its feature branch.
+plan_is_for_branch() {
+  [ -n "$2" ] && { [ "$(plan_branch "$1")" = "$2" ] || [ "$(plan_feature_branch "$1")" = "$2" ]; }
 }
 
 # changed_session_dirs <tree> <base sha>: session directories (relative) with tracked changes
@@ -328,11 +343,11 @@ changed_session_dirs() {
 # find_session_dir <tree> <item> <base sha or empty> [plan] [branch]: prints the session
 # directory (relative) that belongs to the item: the item itself when it is a session dir,
 # else the newest one whose name contains the item's ticket key, else the newest one created
-# or changed since the base sha; with a branch, a candidate whose PLAN.md header names that
-# branch wins over the newest. Never an unrelated directory. With "plan", only directories
-# that contain PLAN.md count.
+# or changed since the base sha. With a branch, a candidate from either list whose PLAN.md
+# names that branch wins. Never an unrelated directory. With "plan", only directories that
+# contain PLAN.md count.
 find_session_dir() {
-  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"; fsd_branch="${5:-}"; fsd_match=""
+  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"; fsd_branch="${5:-}"
   case "$fsd_item" in
     "$SESSIONS"/*)
       fsd_d="${fsd_item%/}"
@@ -342,7 +357,7 @@ find_session_dir() {
       return 1 ;;
   esac
   fsd_key="$(ticket_from "$fsd_item")"
-  fsd_hit=""
+  fsd_hit=""; fsd_changed=""; fsd_match=""
   if [ -n "$fsd_key" ]; then
     for d in "$fsd_tree/$SESSIONS"/*/; do
       [ -d "$d" ] || continue
@@ -350,31 +365,22 @@ find_session_dir() {
       case "$fsd_name" in *"$fsd_key"[!0-9]*|*"$fsd_key") ;; *) continue ;; esac
       if [ -n "$fsd_need" ] && [ ! -f "${d}PLAN.md" ]; then continue; fi
       fsd_hit="$SESSIONS/$fsd_name"
-      fsd_prefer "$fsd_hit"
+      plan_is_for_branch "${d}PLAN.md" "$fsd_branch" && fsd_match="$fsd_hit"
     done
   fi
-  if [ -z "$fsd_hit" ] && [ -n "$fsd_base" ]; then
+  if [ -n "$fsd_base" ] && { [ -z "$fsd_hit" ] || { [ -n "$fsd_branch" ] && [ -z "$fsd_match" ]; }; }; then
     fsd_list="$(changed_session_dirs "$fsd_tree" "$fsd_base")"
     for d in $fsd_list; do
       [ -d "$fsd_tree/$d" ] || continue
       if [ -n "$fsd_need" ] && [ ! -f "$fsd_tree/$d/PLAN.md" ]; then continue; fi
-      fsd_hit="$d"
-      fsd_prefer "$fsd_hit"
+      fsd_changed="$d"
+      plan_is_for_branch "$fsd_tree/$d/PLAN.md" "$fsd_branch" && fsd_match="$d"
     done
   fi
+  [ -n "$fsd_hit" ] || fsd_hit="$fsd_changed"
   [ -n "$fsd_match" ] && fsd_hit="$fsd_match"
   [ -n "$fsd_hit" ] || return 1
   printf '%s\n' "$fsd_hit"
-}
-
-# fsd_prefer <session dir>: remembers the directory as fsd_match when its PLAN.md names
-# fsd_branch (as the session branch or as the feature branch).
-fsd_prefer() {
-  [ -n "$fsd_branch" ] && [ -f "$fsd_tree/$1/PLAN.md" ] || return 0
-  if [ "$(plan_branch "$fsd_tree/$1/PLAN.md")" = "$fsd_branch" ] \
-     || [ "$(plan_feature_branch "$fsd_tree/$1/PLAN.md")" = "$fsd_branch" ]; then
-    fsd_match="$1"
-  fi
 }
 
 # item_has_plan <repo> <item> [branch]: 0 when a PLAN.md for the item exists in the checkout,
@@ -388,15 +394,11 @@ item_has_plan() {
   find_session_dir "$1" "$2" "" plan >/dev/null
 }
 
-# plan_effort <PLAN.md>: the value of the "Effort:" header line, or nothing.
-plan_effort() {
-  sed -n 's/^Effort:[[:space:]]*\([A-Za-z]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
-}
+# plan_effort <PLAN.md>: the value of the "Effort:" header line, lowercased, or nothing.
+plan_effort() { plan_header "$1" Effort | tr 'A-Z' 'a-z'; }
 
 # plan_model <PLAN.md>: the value of the "Model:" header line, lowercased, or nothing.
-plan_model() {
-  sed -n 's/^Model:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1 | tr 'A-Z' 'a-z'
-}
+plan_model() { plan_header "$1" Model | tr 'A-Z' 'a-z'; }
 
 # model_family <model>: sonnet, opus or other, for an alias or a full model name.
 model_family() {
@@ -410,8 +412,8 @@ model_family() {
 # resolve_launch <PLAN.md or empty> [<name for the log>]: sets RUN_MODEL, RUN_EFFORT,
 # RUN_FALLBACK and RUN_BUDGET.
 # Model and effort: the environment, then the plan header, then the env file, then the
-# defaults. A sonnet run below xhigh is raised to xhigh. The fallback is left out when it is
-# the run model's family; the budget defaults to 100 USD for sonnet, 120 for opus. Returns 1
+# defaults. A sonnet run below xhigh is raised to xhigh. Fallback entries of the run model's
+# family are left out; the budget defaults to 100 USD for sonnet, 120 for opus. Returns 1
 # with RL_REASON when the plan names a model other than sonnet or opus.
 resolve_launch() {
   RUN_MODEL="$MODEL"; RUN_EFFORT="$EFFORT"; RL_REASON=""
@@ -419,7 +421,7 @@ resolve_launch() {
     rl_pm="$(plan_model "$1")"
     case "$rl_pm" in
       ''|sonnet|opus) ;;
-      *) RL_REASON="PLAN.md header 'Model: $rl_pm' is not sonnet or opus; fix the line, then set $LABEL_READY again"; return 1 ;;
+      *) RL_REASON="PLAN.md header 'Model: $rl_pm' is not sonnet or opus; fix the line, then relabel the PR $LABEL_READY or add the item again"; return 1 ;;
     esac
     if [ -n "$rl_pm" ] && [ -z "$MODEL_FROM_ENV" ]; then RUN_MODEL="$rl_pm"; log "model $rl_pm from ${2:-$1}"; fi
     if [ -z "$EFFORT_FROM_ENV" ]; then
@@ -434,10 +436,12 @@ resolve_launch() {
       *) log "effort $RUN_EFFORT raised to xhigh (sonnet runs at xhigh or max)"; RUN_EFFORT=xhigh ;;
     esac
   fi
-  RUN_FALLBACK="$FALLBACK_MODEL"
-  if [ "$FALLBACK_MODEL" = "$RUN_MODEL" ] || { [ "$rl_family" != other ] && [ "$(model_family "$FALLBACK_MODEL")" = "$rl_family" ]; }; then
-    RUN_FALLBACK=""
-  fi
+  RUN_FALLBACK=""
+  for rl_f in $(printf '%s' "$FALLBACK_MODEL" | tr ',' ' '); do
+    [ "$rl_f" = "$RUN_MODEL" ] && continue
+    [ "$rl_family" != other ] && [ "$(model_family "$rl_f")" = "$rl_family" ] && continue
+    RUN_FALLBACK="${RUN_FALLBACK:+$RUN_FALLBACK,}$rl_f"
+  done
   if [ -n "$BUDGET" ]; then RUN_BUDGET="$BUDGET"
   elif [ "$rl_family" = opus ]; then RUN_BUDGET=120
   else RUN_BUDGET=100
@@ -779,7 +783,7 @@ rename_item_log() {
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
@@ -820,8 +824,7 @@ process_item() {
         pi_item="$pi_sd0"
         # A plan written for another branch is never run on this PR.
         pi_pb="$(plan_branch "$pi_wt/$pi_sd0/PLAN.md")"
-        if [ -n "$pi_pb" ] && [ "$pi_pb" != "$pi_branch" ] \
-           && [ "$(plan_feature_branch "$pi_wt/$pi_sd0/PLAN.md")" != "$pi_branch" ]; then
+        if [ -n "$pi_pb" ] && ! plan_is_for_branch "$pi_wt/$pi_sd0/PLAN.md" "$pi_branch"; then
           pi_status=blocked
           pi_reason="plan $pi_sd0 belongs to branch $pi_pb, not to the PR branch $pi_branch; commit this PR's own PLAN.md (or fix its Branch: line), then set $LABEL_READY again"
         fi
@@ -1211,7 +1214,8 @@ cmd_status() {
       # the line the run's context-budget hook rewrites after every tool call
       s_sf="$s_wt/.claude/.autopilot-status"
       if [ -f "$s_sf" ]; then echo "  run: $(tail -n 1 "$s_sf")"; else echo "  run: no status line yet"; fi
-      s_base="$(base_sha "$s_wt" 2>/dev/null || true)"
+      s_base="$(sed -n 7p "$LOCK/current")"
+      [ -n "$s_base" ] || s_base="$(base_sha "$s_wt" 2>/dev/null || true)"
       s_diff="$(git -C "$s_wt" diff --shortstat "${s_base:-HEAD}" 2>/dev/null | sed 's/^ *//')"
       echo "  diff since base: ${s_diff:-none}"
     fi

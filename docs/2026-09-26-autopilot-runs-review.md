@@ -101,13 +101,38 @@ marketplace clone (`~/.claude/plugins/marketplaces/evelan-plugins`), so
 without `--fallback-model` really has no fallback. Not yet verified: a real launch with the
 new flags (the CLI probe on the MacBook failed on an expired login) and a real queue run.
 
+## Found while working on this (26.09.)
+
+- **The runner test suite changed the real ticket PAUL-9.** Its sample plan carries
+  `Ticket: PAUL-9`; most test cases did not replace the `jira` helper, and the MacBook has
+  real credentials in `~/.claude/jira/env`. Every test run since 21.09. set PAUL-9 (a 2021
+  ticket, done since February 2021) to In Progress, assigned it to Andreas and added a comment
+  per test case: 144 comments. "Status: blocked - cannot reach the API" in them is sample
+  text from a test case, not a real failure. Fixed: the suite exports a fake `jira` and a
+  `JIRA_HOME` without credentials; a full run afterwards left the ticket untouched. Clean-up
+  of the ticket: a script for Andreas (deleting comments is his call).
+- **The PAUL-2802 run left its Docker stack running on the office Mini.** Seven containers
+  of the compose project named after the worktree kept running after the item was done; the
+  nginx container recreated empty folders in the removed worktree. Stopped and removed by
+  hand on 26.09. The runner does not stop a run's compose project when it removes the
+  worktree.
+
+## Review before release (26.09., Fable subagents and Codex)
+
+Codex: no findings. Fable standards and spec reviews: fixed the header parsing (markdown
+forms `**Model:**`, backticks, trailing commas; `Effort:` lowercased like `Model:`), a PR plan
+in a directory without the ticket key now wins over an older directory with the key, fallback
+lists drop entries of the run model's family, `status` shows the diff against the PR's
+target, a target branch that cannot be fetched is said, one helper for "plan names this
+branch", doc wording. Kept as is: `/autopilot <dir> opus` keeps the plan's `Effort:` line; an
+operator-set fallback of another family (e.g. `fable`) applies to Opus runs; a
+`fallbackModel` in the machine's settings cannot be overridden by the runner.
+
 ## Decisions (26.09.)
 
 1. Budget per attempt: Opus 120 USD, Sonnet 100 USD.
 2. Existing plans without `Model:` run on Sonnet at `xhigh`: accepted.
 3. Finding 1 fixed (3.1.1).
-
-## Open
-
-1. Sonnet with `Effort: max`: kept as `max` (above `xhigh`), or always exactly `xhigh`.
-2. Hooks in a run's worktree: install or update them automatically before each run.
+4. Sonnet with `Effort: max` stays at `max`.
+5. Next change: before each run the runner installs or updates the autopilot hooks in the
+   worktree (committed on the PR branch).

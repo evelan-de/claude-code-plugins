@@ -127,7 +127,7 @@ Why it adds up:
    says so, and the 1.x numbers agree: most coding work is sequential, so extra agents mostly
    add base loads and hand-over reading.
 3. **Deciding is expensive, executing is cheap.** Design questions now happen once, with you,
-   on a strong model; the run on Sonnet follows steps instead of inventing them. That is
+   on a strong model; the run follows steps instead of inventing them. That is
    also why the result matches what you asked for more often: the decisions are yours and
    written down, not guessed at 3 a.m.
 4. **Nothing depends on a session staying open.** The queue, the restarts, the ticket

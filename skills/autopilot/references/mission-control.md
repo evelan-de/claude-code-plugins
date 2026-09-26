@@ -173,7 +173,7 @@ column and runs from the default branch.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
-   (no fallback when it is the run model's family: an opus run stays on opus).
+   (fallback entries of the run model's family are left out).
    Every `WATCH_MIN` minutes `autopilot-watchdog` checks for a new commit, a plan change or a
    change of the run's status file (`.claude/.autopilot-status`, rewritten by the
    context-budget hook after every tool call); four stalls in a row (no tool call, no commit, no plan change
