@@ -85,12 +85,14 @@ case "$1 $2" in
   "label list") printf '%s\n' ${FAKE_GH_LABELS-autopilot-ready autopilot-done autopilot-blocked}; exit 0 ;;
   "pr view")
     # prs.txt lines: <number> <head branch> <url> [<base branch, default main>]
-    case "$*" in *"--json author"*) echo andreas; exit 0 ;; esac
+    case "$*" in *"--json author"*) echo "${FAKE_PR_AUTHOR:-andreas}"; exit 0 ;; esac
     grep "^$3 " "$prs" | awk '{ print $1, $2, ($4 != "" ? $4 : "main"), $3 }'; exit 0 ;;
   "repo view") echo e/r; exit 0 ;;
   "api "*)
     # review-bot comments: FAKE_REVIEW_INLINE / FAKE_REVIEW_TOP hold the login lists
     apipath="$2"; jqexpr=""; while [ $# -gt 0 ]; do [ "$1" = --jq ] && jqexpr="$2"; shift; done
+    # the gh account of the queue machine (FAKE_GH_ME, default andreas)
+    [ "$apipath" = user ] && { printf '{"login":"%s"}' "${FAKE_GH_ME:-andreas}" | jq -r "$jqexpr"; exit 0; }
     case "$apipath" in
       */pulls/*/comments) logins="${FAKE_REVIEW_INLINE:-}" ;;
       */issues/*/comments) logins="${FAKE_REVIEW_TOP:-}" ;;
@@ -397,6 +399,9 @@ check "(d) PR 11 done without no-plan" grep -q " docs/autopilot/sessions/2026-09
 check "(d) PR 12 done and marked no-plan" grep -q " PAUL-10 done https://github.com/e/r/pull/12 no-plan$" "$QH/done.txt"
 gh_args="$(cat "$REC/gh.args")"
 check "(d) labels swapped on PR 11" has "pr edit 11 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
+check "(d) PR 11 got a start comment with model and effort before the run" has "pr comment 11 --body Autopilot started on $(hostname -s) at " "$gh_args"
+check "(d) the start comment names the launch settings" has "(model sonnet, effort xhigh). Please do not push to this branch" "$gh_args"
+check "(d) PR 13 (not run) got no start comment" lacks "pr comment 13 --body Autopilot started" "$gh_args"
 check "(d) labels swapped on PR 12" has "pr edit 12 --remove-label autopilot-ready --add-label autopilot-done" "$gh_args"
 check "(d) PR 13 (branch missing) blocked in done.txt" grep -q " #13 blocked https://github.com/e/r/pull/13$" "$QH/done.txt"
 check "(d) PR 13 labelled autopilot-blocked although no worktree exists" has "pr edit 13 --remove-label autopilot-ready --add-label autopilot-blocked" "$gh_args"
@@ -716,6 +721,11 @@ printf '%s PAUL-71\n' "$proj" >"$QH/queue.txt"
 out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
 check "(j4) zero bot comments: said on stdout" has "PAUL-71: no review-bot comment on the PR yet, check it" "$out"
 check "(j4) zero bot comments: recorded" grep -q " PAUL-71 done .* review-comments=0" "$QH/done.txt"
+# a developer's PR: the run answers from the queue machine's gh account, not as the PR author
+printf '%s PAUL-74\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_PR_AUTHOR=dev FAKE_GH_ME=andreas FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
+check "(j4) developer PR: replies from the queue machine's account count as answered" grep -q " PAUL-74 done .* review-comments=1$" "$QH/done.txt"
+check "(j4) developer PR: nothing said about unanswered comments" lacks "no reply from the run" "$out"
 git -C "$proj" rm -q -r .github && commit "$proj" -m "remove review workflow" && git -C "$proj" push -q origin main 2>/dev/null || true
 
 # ---------- (k) timeout kills the run ----------

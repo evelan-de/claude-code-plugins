@@ -13,7 +13,7 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR not by its author; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
@@ -169,7 +169,8 @@ column and runs from the default branch.
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
    (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
-   updated.
+   updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
+   Please do not push to this branch until the result comment arrives."
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
    [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`

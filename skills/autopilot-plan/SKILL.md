@@ -15,7 +15,7 @@ every assertion. The run implements steps; it does not invent them.
 ## 0. Model
 
 Default planner: Fable; Opus is fine. On Sonnet or Haiku say so in one line ("planning on
-<model>; Fable or Opus is the intended planner") and continue.
+<model>; Fable or Opus is the intended planner, switch with `/model fable`") and continue.
 
 ## 1. Resolve the input
 
@@ -33,7 +33,9 @@ Default planner: Fable; Opus is fine. On Sonnet or Haiku say so in one line ("pl
 
 ## 2. Explore, whole files
 
-Locate with `grep -n`, then read every file a package will touch **whole**, plus the tests
+First `git fetch origin`; read the code as it is on `origin/<base>` (a checkout on the base
+branch: `git pull --ff-only`; another branch: say that the anchors come from `origin/<base>`
+and read them there with `git show origin/<base>:<path>`). Locate with `grep -n`, then read every file a package will touch **whole**, plus the tests
 next to it and the types it imports. No read cap. Find: the files and interfaces the topic touches, the existing patterns to follow
 (and the one file that is the best example of each), the test setup and gate command
 (`.claude/autopilot.json`), the risks (migrations, auth, CI constraints, flaky areas), and
@@ -101,15 +103,17 @@ in)` into the header. Fewer packages: `Reviewed: no (two packages)` unless asked
 ## 7. Commit and hand over
 
 Commit `PLAN.md` on the branch the plan header names, so the run finds it: session mode →
-create `<prefix>/<KEY>-<slug>` from the base (prefix per the project's branch convention in
-`CLAUDE.md`, else `feat`) and commit there; feature-branch mode → check out the feature
-branch (create it from the base if missing) and commit there. Commit message
+`git fetch origin`, create `<prefix>/<KEY>-<slug>` from `origin/<base>` (prefix per the
+project's branch convention in `CLAUDE.md`, else `feat`) and commit there; feature-branch
+mode → check out the feature branch (create it from `origin/<base>` if missing) and commit
+there. Commit message
 `docs(autopilot): plan for <key or slug>`. Write the approved run model and effort into the
 plan header so the runner reads them (`Model: sonnet` with `Effort: xhigh` or `max`;
 `Model: opus` with any level).
 
-Then tell the user the path and the two ways to run it (every run is started and chained
-by the runner, `mission-control`):
+Then tell the user the path and how it runs (every run is started and chained by the
+runner, `mission-control`). Without `~/.claude/mission-control` on this machine (a
+developer's machine) only way 2 exists: do it without asking. With it, offer both:
 
 1. **On this machine** (`~/.claude/mission-control` exists here): `/autopilot <session
    directory>` enqueues the item and starts the runner in the
@@ -119,11 +123,11 @@ by the runner, `mission-control`):
    Goal artifact paragraphs plus the path of `PLAN.md`; create the label when missing:
    `mission-control labels`). The queue picks it up on its next run, the result comes back on
    this PR (label `autopilot-done` or `autopilot-blocked`, report as a comment) and in Slack.
-   Developer note: the repo must be listed in the queue's `repos.txt` on the Mini; Andreas
+   Developer note: the repo must be cloned on the Mini and listed in the queue's `repos.txt`; Andreas
    adds a repo once (`mission-control doctor` prints the list), so a repo not yet on it goes
    to him with the PR link. Feature-branch mode has no PR: hand-over means pushing the
    feature branch and adding the item to the queue (`mission-control add <repo> <session
    dir>`, which records the branch; over SSH from the `/mission-control` skill).
 
-Ask once which of the two, do it, say what is still open, if anything. Do not implement
-anything here.
+With both available, ask once which of the two. Do it, say what is still open, if anything.
+Do not implement anything here.

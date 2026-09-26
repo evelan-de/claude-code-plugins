@@ -491,19 +491,22 @@ jira_comment() {
 }
 
 # review_bot_comments <pr number>: prints "<comments> <unanswered>": how many review comments
-# on the PR came from someone other than the PR author (inline + top-level), and how many of
-# the inline ones have no reply from the author in their thread. Empty when gh cannot tell.
+# on the PR came from someone other than "us" (the PR author and the gh account of this
+# machine, which the run answers from), inline + top-level, and how many of the inline ones
+# have no reply from us in their thread. Empty when gh cannot tell.
 review_bot_comments() {
   rb_repo="$(gh_in "$pi_gh_dir" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 0
   [ -n "$rb_repo" ] || return 0
   rb_author="$(gh_in "$pi_gh_dir" pr view "$1" --json author --jq .author.login 2>/dev/null)"
-  rb_inline="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
-  rb_top="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/issues/$1/comments" --jq "[.[] | select(.user.login != \"$rb_author\")] | length" 2>/dev/null)"
-  # a bot comment that starts a thread (no in_reply_to_id) is answered when the author
-  # replied to it (a comment whose in_reply_to_id is that comment's id)
+  rb_me="$(gh_in "$pi_gh_dir" api user --jq .login 2>/dev/null)"
+  rb_us="(.user.login == \"$rb_author\" or .user.login == \"${rb_me:-$rb_author}\")"
+  rb_inline="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "[.[] | select($rb_us | not)] | length" 2>/dev/null)"
+  rb_top="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/issues/$1/comments" --jq "[.[] | select($rb_us | not)] | length" 2>/dev/null)"
+  # a bot comment that starts a thread (no in_reply_to_id) is answered when we replied to
+  # it (a comment whose in_reply_to_id is that comment's id)
   rb_open="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "
-    [.[] | select(.user.login == \"$rb_author\" and .in_reply_to_id != null) | .in_reply_to_id] as \$answered
-    | [.[] | select(.user.login != \"$rb_author\" and .in_reply_to_id == null and (.id as \$i | \$answered | index(\$i) | not))] | length" 2>/dev/null)"
+    [.[] | select($rb_us and .in_reply_to_id != null) | .in_reply_to_id] as \$answered
+    | [.[] | select(($rb_us | not) and .in_reply_to_id == null and (.id as \$i | \$answered | index(\$i) | not))] | length" 2>/dev/null)"
   case "$rb_inline$rb_top$rb_open" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s %s\n' $((rb_inline + rb_top)) "$rb_open"
 }
@@ -853,6 +856,11 @@ process_item() {
       elif [ -n "$pi_ticket" ]; then
         log "jira: $pi_ticket not updated (no jira script or no $JIRA_ENV on this machine)"
       fi
+    fi
+    if [ -n "$pi_pr_number" ]; then
+      gh_step "gh pr comment (start)" pr comment "$pi_pr_number" --body \
+        "Autopilot started on $(hostname -s) at $(date +%H:%M) (model $RUN_MODEL, effort $RUN_EFFORT). Please do not push to this branch until the result comment arrives."
+      log "start comment on PR #$pi_pr_number"
     fi
 
     pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
