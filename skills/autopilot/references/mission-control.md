@@ -322,8 +322,12 @@ Two messages per item:
   item.
 - **End**: `*Autopilot <status>*: <repo> - <title>`, the PR link (or the log), minutes, cost
   of all attempts and restarts; when blocked the reason; from `REPORT.md` the `## What
-  shipped` lines (done only) and the `## Open items` lines, at most eight each, the rest
-  counted.
+  shipped` lines (done only) and the `## Open items` lines (heading in any case, a colon
+  allowed), at most eight lines of at most 220 characters each, the rest counted.
+
+Text from titles, plans and reports is escaped for Slack (`&`, `<`, `>`; so no `<!channel>`
+ever pings), Markdown bold and links are turned into Slack's form. A message Slack rejects
+is logged with curl's exit code.
 
 The macOS notification is sent at the end only, as one short line.
 

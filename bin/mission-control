@@ -618,27 +618,40 @@ item_title() {
   printf '%s\n' "${it_t:-$pi_item}"
 }
 
-# plan_destination <PLAN.md>: the first paragraph under "## Destination", at most 300 characters.
+# slack_escape: stdin to stdout with &, < and > escaped for Slack (no mentions, no broken text).
+slack_escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+# slack_md: slack_escape, then Markdown bold and links in Slack's form.
+slack_md() { slack_escape | sed 's/\*\*/*/g; s/\[\([^]]*\)\](\([^)]*\))/<\2|\1>/g'; }
+
+# cut_chars <n>: each stdin line cut to n characters (not bytes, so an umlaut stays whole).
+cut_chars() { LC_ALL=en_US.UTF-8 cut -c "1-$1"; }
+
+# plan_destination <PLAN.md>: the first paragraph under "## Destination", at most 300
+# characters, ready for Slack.
 plan_destination() {
-  awk '/^## Destination/ { f = 1; next } f && /^## / { exit }
-       f && NF { printf "%s%s", (n++ ? " " : ""), $0; next } f && n { exit }' "$1" 2>/dev/null \
-    | awk '{ print (length($0) > 300 ? substr($0, 1, 297) "..." : $0) }'
+  awk '{ sub(/\r$/, "") } /^## Destination/ { f = 1; next } f && /^## / { exit }
+       f && NF { printf "%s%s", (n++ ? " " : ""), $0; next } f && n { exit }
+       END { if (n) printf "\n" }' "$1" 2>/dev/null | cut_chars 300 | slack_md
 }
 
-# report_section <REPORT.md> <heading> [max lines]: the non-empty lines under "## <heading>",
-# at most max (default 8), Markdown bold turned into Slack bold, long lines cut, and a note
-# when there are more.
+# report_section <REPORT.md> <heading> [max lines]: the non-empty lines under the heading
+# ("## <heading>", any case, a trailing colon allowed), at most max (default 8), each cut to
+# 220 characters and ready for Slack, a note when there are more, a note when the report has
+# no such section.
 report_section() {
-  awk -v h="## $2" -v max="${3:-8}" '
-    $0 == h { f = 1; next }
+  awk -v h="$2" -v max="${3:-8}" '
+    { sub(/\r$/, "") }
     f && /^## / { exit }
-    f && NF { if (++n <= max) { l = $0; gsub(/\*\*/, "*", l); print (length(l) > 220 ? substr(l, 1, 217) "..." : l) } }
-    END { if (n > max) print "(" n - max " more in REPORT.md)" }' "$1" 2>/dev/null
+    !f && tolower($0) ~ ("^## +" tolower(h) "[[:space:]:]*$") { f = 1; next }
+    f && NF { if (++n <= max) print }
+    END { if (n > max) print "(" n - max " more in REPORT.md)"; if (!f) print "(no \"" h "\" section in REPORT.md)" }' "$1" 2>/dev/null \
+    | cut_chars 220 | slack_md
 }
 
 # item_cost: the summed total_cost_usd of every attempt in the item log, as "$N.NN", or nothing.
 item_cost() {
-  grep -o '"total_cost_usd":[0-9.]*' "$ITEM_LOG" 2>/dev/null | awk -F: '{ s += $2 } END { if (NR) printf "$%.2f", s }'
+  grep -o '"total_cost_usd":[0-9.]*' "$ITEM_LOG" 2>/dev/null | LC_ALL=C awk -F: '{ s += $2 } END { if (NR) printf "$%.2f", s }'
 }
 
 # notify_start: the Slack message when an item's first attempt starts: title, what it is
@@ -646,9 +659,9 @@ item_cost() {
 notify_start() {
   ns_what=""
   [ -n "${pi_sd0:-}" ] && ns_what="$(plan_destination "$pi_wt/$pi_sd0/PLAN.md")"
-  ns_link="$pi_pr_url"; [ "$ns_link" != "-" ] || ns_link="$pi_item"
+  ns_link="$pi_pr_url"; [ "$ns_link" != "-" ] || ns_link="$(printf '%s' "$pi_item" | slack_escape)"
   notify "" "" "$(printf '*Autopilot started* on %s: %s - %s\n%s%sModel %s, effort %s · %s' \
-    "$(hostname -s)" "$pi_rb" "$pi_title" "$ns_what" "${ns_what:+
+    "$(hostname -s)" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$ns_what" "${ns_what:+
 }" "$RUN_MODEL" "$RUN_EFFORT" "$ns_link")"
 }
 
@@ -659,32 +672,34 @@ slack_end() {
   [ -n "$pi_title" ] || pi_title="$(item_title)"
   se_report=""; [ -n "${pi_wt:-}" ] && [ -n "${pi_sd:-}" ] && se_report="$pi_wt/$pi_sd/REPORT.md"
   se_cost="$(item_cost)"
+  case "$pi_status:${RUN_RESULT:-}" in timeout:*|*:stalled) se_cost="${se_cost:-\$0.00} + a stopped attempt" ;; esac
   se_facts="$(( ($(date +%s) - pi_began) / 60 )) min${se_cost:+ · $se_cost}"
   [ "$pi_restarts" -gt 0 ] && se_facts="$se_facts · $pi_restarts restart(s)"
   se_link="$pi_pr_url"; [ "$se_link" != "-" ] || se_link="log $ITEM_LOG"
-  printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$pi_title" "$se_link" "$se_facts"
-  [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$pi_reason"
+  printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$se_link" "$se_facts"
+  [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$(printf '%s' "$pi_reason" | slack_escape)"
   if [ -n "$se_report" ] && [ -f "$se_report" ]; then
     se_shipped="$(report_section "$se_report" "What shipped")"
     se_open="$(report_section "$se_report" "Open items")"
-    [ "$pi_status" = "done" ] && printf '*What shipped*\n%s\n' "${se_shipped:-(see REPORT.md)}"
+    [ "$pi_status" = "done" ] && printf '*What shipped*\n%s\n' "${se_shipped:-none}"
     printf '*Open items*\n%s\n' "${se_open:-none}"
   fi
 }
 
-# slack_json <text>: {"text": <text>} as JSON, newlines kept (jq when present).
+# slack_json <text>: {"text": <text>} as JSON, newlines kept (jq when present; without it
+# control characters other than tab and newline are dropped).
 slack_json() {
   if command -v "${JQ_BIN:-jq}" >/dev/null 2>&1; then
     "${JQ_BIN:-jq}" -cn --arg t "$1" '{text: $t}'
   else
-    printf '{"text":"%s"}' "$(printf '%s' "$1" | awk 'BEGIN { ORS = "" }
+    printf '{"text":"%s"}' "$(printf '%s' "$1" | tr -d '\001-\010\013\014\016-\037' | awk 'BEGIN { ORS = "" }
       { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); if (NR > 1) printf "\\n"; print }')"
   fi
 }
 
 # notify <text> [sound] [slack text]: macOS notification with <text> (and the named sound:
 # Glass for done, Sosumi for anything that needs a look) and the Slack message (<slack text>,
-# else <text>).
+# else <text>). A Slack error status (for example a rejected payload) is logged.
 notify() {
   [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
   n_text="$1"; n_sound="${2:-}"; n_slack="${3:-$1}"
@@ -696,7 +711,7 @@ notify() {
   if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
     n_json="$(slack_json "$n_slack")"
     # stderr is dropped on purpose: curl error messages can quote the URL.
-    curl -sS --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
+    curl -sS --fail --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
       "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
     n_rc=$?
     [ "$n_rc" -eq 0 ] || log "notification: Slack webhook failed (curl exit $n_rc)"
@@ -930,7 +945,7 @@ rename_item_log() {
 process_item() {
   pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
   pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""
+  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""; pi_sd0=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"

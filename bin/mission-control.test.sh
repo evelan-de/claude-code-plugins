@@ -57,6 +57,10 @@ case "${FAKE_SCENARIO:-report}" in
     { printf 'Status: done\n\n## What shipped\n- **greet** helper with "quotes" and a back\\slash\n'
       for i in 2 3 4 5 6 7 8 9 10; do printf -- '- shipped line %s\n' "$i"; done
       printf '\n## Verification\n- gate green\n\n## Open items\n- ask Markus about the copy\n'; } >"$sd/REPORT.md" ;;
+  report-edge)
+    rm -f "$sd/HANDOFF.md"
+    long="$(printf 'ä%.0s' $(seq 1 300))"
+    printf 'Status: done\r\n\r\n## What shipped\r\n- ping <!channel> & see [docs](https://x.y/z?a=1&b=2)\r\n- esc \033[31mred\033[0m end\r\n- %s\r\n\r\n## Open Items:\r\n- none left\r\n' "$long" >"$sd/REPORT.md" ;;
   report-blocked-open)
     printf 'Status: blocked - gate needs a database\n\n## Open items\n- start Postgres on the Mini\n' >"$sd/REPORT.md" ;;
   report-nostatus) printf '# REPORT\n\nno status here\n' >"$sd/REPORT.md" ;;
@@ -679,9 +683,9 @@ git -C "$proj" checkout -q main
 printf '21 feat/PAUL-220-export https://github.com/e/r/pull/21\n' >"$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
 : >"$REC/curl.args"
-out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports <Select> & co" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
 slack="$(cat "$REC/curl.args")"
-check "(i) PR item: Slack start with the PR's title" has "*Autopilot started* on $(hostname -s): proj - WEB-9: CSV export on /reports" "$slack"
+check "(i) PR item: Slack start with the PR's title, escaped" has "*Autopilot started* on $(hostname -s): proj - WEB-9: CSV export on /reports &lt;Select&gt; &amp; co" "$slack"
 check "(i) PR item: what it is about, from the plan's Destination" has "Users export the report as CSV from /reports." "$slack"
 check "(i) PR item: the PR link at the start" has "effort xhigh · https://github.com/e/r/pull/21" "$slack"
 : >"$REC/repos.txt"; rm -f "$QH/repos.txt"
@@ -698,6 +702,44 @@ payload="$(grep -o -- '--data {.*} https://hooks' "$REC/curl.args" | tail -n 1 |
 check "(i) plan topic as the title when there is no PR" has "proj - Quote \\\"fix\\\"" "$(grep -F 'Autopilot started' "$REC/curl.args")"
 check "(i) without jq the Slack payload is valid JSON with newlines, quotes and a backslash" \
   python3 -c 'import json, sys; t = json.loads(sys.argv[1])["text"]; assert "\n*What shipped*\n" in t and "\"quotes\"" in t and "back\\slash" in t, t' "$payload"
+# Slack-safe text: escaping, links, umlauts cut by characters, control characters, heading variants
+cat >"$tmp/slack_payload.py" <<'PYEOF'
+import json, re, sys
+# argv[1]: the curl.args file, argv[2]: a text the message must contain; prints the message text
+for line in open(sys.argv[1], encoding="utf-8"):
+    m = re.search(r"--data (\{.*\}) https://hooks", line)
+    if m and sys.argv[2] in line:
+        text = json.loads(m.group(1))["text"]
+        print(text)
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+for jqmode in with without; do
+  : >"$REC/curl.args"
+  printf '%s PAUL-7e-%s\n' "$proj" "$jqmode" >"$QH/queue.txt"
+  jqbin=jq; [ "$jqmode" = without ] && jqbin=/nonexistent/jq
+  out="$(FAKE_SCENARIO=report-edge JQ_BIN="$jqbin" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+  msg="$(python3 "$tmp/slack_payload.py" "$REC/curl.args" "Autopilot done")"; got=$?
+  check "(i) $jqmode jq: the end message is valid JSON and UTF-8" [ "$got" -eq 0 ]
+  check "(i) $jqmode jq: <, > and & escaped, a Markdown link in Slack form" has "ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>" "$msg"
+  check "(i) $jqmode jq: the umlaut line cut to 220 characters, not inside a character" \
+    python3 -c 'import sys; l = [x for x in sys.argv[1].splitlines() if x.startswith("- ää")][0]; assert len(l) == 220, len(l)' "$msg"
+  check "(i) $jqmode jq: \"## Open Items:\" with CRLF found" has "*Open items*
+- none left" "$msg"
+done
+check "(i) without jq: the escape character is dropped" has "- esc [31mred[0m end" "$msg"
+: >"$REC/curl.args"
+printf '%s PAUL-7f\n' "$proj" >"$QH/queue.txt"
+out="$(LC_ALL=de_DE.UTF-8 FAKE_SCENARIO=report PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+check "(i) a German locale still writes the cost with a point" has "· \$0.10" "$(cat "$REC/curl.args")"
+: >"$REC/curl.args"
+printf '%s PAUL-7g\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=sleep FAKE_GH_NO_PR=1 MISSION_CONTROL_TIMEOUT_MIN=0.02 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+slack="$(cat "$REC/curl.args")"
+check "(i) timeout: status, reason and the stopped attempt in Slack" \
+  bash -c 'printf "%s" "$1" | grep -qF "*Autopilot timeout*: proj - PAUL-7g" && printf "%s" "$1" | grep -qF "Reason: wall-clock timeout" && printf "%s" "$1" | grep -qF "+ a stopped attempt"' _ "$slack"
+check "(i) no PR: the log instead of a PR link" has "log $QH/logs/" "$slack"
+kill -9 "$(cat "$REC/claude.pid" 2>/dev/null)" 2>/dev/null
 export MISSION_CONTROL_NO_NOTIFY=1
 
 # ---------- (j) reused worktree: fetch and fast-forward before the retry ----------
