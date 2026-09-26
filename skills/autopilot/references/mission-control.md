@@ -23,10 +23,11 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
-`SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet), `MISSION_CONTROL_EFFORT`
-(medium; a plan's `Effort:` header wins over this default, an `MISSION_CONTROL_EFFORT` set in
-the environment wins over the plan), `MISSION_CONTROL_ADVISOR` (fable),
-`MISSION_CONTROL_FALLBACK_MODEL` (opus), `MISSION_CONTROL_BUDGET_USD` (60 per run),
+`SLACK_WEBHOOK_URL` (none), `MISSION_CONTROL_MODEL` (sonnet) and `MISSION_CONTROL_EFFORT`
+(medium; a plan's `Model:` and `Effort:` headers win over these defaults, a value set in the
+environment wins over the plan; a sonnet run below xhigh runs at xhigh),
+`MISSION_CONTROL_ADVISOR` (fable), `MISSION_CONTROL_FALLBACK_MODEL` (opus; left out for a run
+on the same model family), `MISSION_CONTROL_BUDGET_USD` (60 per attempt for sonnet, 120 for opus),
 `MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per attempt, a
 restart gets a fresh 240), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
 
@@ -155,15 +156,20 @@ column and runs from the default branch.
    continues on the local state. The same refresh runs before every restart. Your own
    checkout is never touched. A worktree that cannot be prepared makes the item `blocked`; a
    PR still gets its label and comment, via the repo.
-3. Effort: the `Effort:` header of the item's `PLAN.md` when there is one, unless
-   `MISSION_CONTROL_EFFORT` is set in the environment. Ticket: the `Ticket:` header; when the
+3. Model and effort: the `Model:` (`sonnet` or `opus`) and `Effort:` headers of the item's
+   `PLAN.md` when there is one, unless `MISSION_CONTROL_MODEL` / `MISSION_CONTROL_EFFORT` is
+   set in the environment. A sonnet run below xhigh is raised to xhigh (`max` stays). Any
+   other `Model:` value makes the item `blocked` before anything runs, with the header line
+   in the reason. Budget per attempt: 60 USD for sonnet, 120 for opus, unless
+   `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
    (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
    updated.
 4. Starts the run in the background, output to the item log:
    `claude -p "/autopilot <item>" --model <model> --effort <effort> --advisor <advisor>
-   --fallback-model <fallback> --permission-mode auto --max-budget-usd <budget> --output-format json`.
+   [--fallback-model <fallback>] --permission-mode auto --max-budget-usd <budget> --output-format json`
+   (no fallback when it is the run model's family: an opus run stays on opus).
    Every `WATCH_MIN` minutes `autopilot-watchdog` checks for a new commit, a plan change or a
    change of the run's status file (`.claude/.autopilot-status`, rewritten by the
    context-budget hook after every tool call); four stalls in a row (no tool call, no commit, no plan change

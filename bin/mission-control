@@ -26,6 +26,11 @@
 # first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
 # the outcome and notifies. Sequential, one run at a time (lock).
 #
+# Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
+# "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
+# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 60 USD
+# for sonnet, 120 for opus, unless MISSION_CONTROL_BUDGET_USD is set.
+#
 # Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
 # 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
 # Every sleep on the run path is a background sleep plus wait, so a trapped signal (stop)
@@ -179,8 +184,9 @@ log() {
 
 # The environment wins over the env file; the env file wins over the defaults.
 load_env() {
-  EFFORT_FROM_ENV=""
+  EFFORT_FROM_ENV=""; MODEL_FROM_ENV=""
   [ -n "${MISSION_CONTROL_EFFORT:-}" ] && EFFORT_FROM_ENV=1
+  [ -n "${MISSION_CONTROL_MODEL:-}" ] && MODEL_FROM_ENV=1
   for v in $CONFIG_VARS; do
     eval "keep=\${$v:-}"
     if [ -n "$keep" ]; then eval "keep_$v=\$keep"; fi
@@ -197,7 +203,7 @@ load_env() {
   EFFORT="${MISSION_CONTROL_EFFORT:-medium}"
   ADVISOR="${MISSION_CONTROL_ADVISOR:-fable}"
   FALLBACK_MODEL="${MISSION_CONTROL_FALLBACK_MODEL:-opus}"
-  BUDGET="${MISSION_CONTROL_BUDGET_USD:-60}"
+  BUDGET="${MISSION_CONTROL_BUDGET_USD:-}"
   MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-5}"
   TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-240}"
   WATCH_MIN="${MISSION_CONTROL_WATCH_MIN:-20}"
@@ -355,6 +361,57 @@ item_has_plan() {
 # plan_effort <PLAN.md>: the value of the "Effort:" header line, or nothing.
 plan_effort() {
   sed -n 's/^Effort:[[:space:]]*\([A-Za-z]*\).*/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
+# plan_model <PLAN.md>: the value of the "Model:" header line, lowercased, or nothing.
+plan_model() {
+  sed -n 's/^Model:[[:space:]]*\([^[:space:]]*\).*/\1/p' "$1" 2>/dev/null | head -n 1 | tr 'A-Z' 'a-z'
+}
+
+# model_family <model>: sonnet, opus or other, for an alias or a full model name.
+model_family() {
+  case "$1" in
+    sonnet|sonnet\[*|claude-sonnet-*) echo sonnet ;;
+    opus|opus\[*|claude-opus-*) echo opus ;;
+    *) echo other ;;
+  esac
+}
+
+# resolve_launch <PLAN.md or empty> [<name for the log>]: sets RUN_MODEL, RUN_EFFORT,
+# RUN_FALLBACK and RUN_BUDGET.
+# Model and effort: the environment, then the plan header, then the env file, then the
+# defaults. A sonnet run below xhigh is raised to xhigh. The fallback is left out when it is
+# the run model's family; the budget defaults to 60 USD for sonnet, 120 for opus. Returns 1
+# with RL_REASON when the plan names a model other than sonnet or opus.
+resolve_launch() {
+  RUN_MODEL="$MODEL"; RUN_EFFORT="$EFFORT"; RL_REASON=""
+  if [ -n "$1" ]; then
+    rl_pm="$(plan_model "$1")"
+    case "$rl_pm" in
+      ''|sonnet|opus) ;;
+      *) RL_REASON="PLAN.md header 'Model: $rl_pm' is not sonnet or opus; fix the line, then set $LABEL_READY again"; return 1 ;;
+    esac
+    if [ -n "$rl_pm" ] && [ -z "$MODEL_FROM_ENV" ]; then RUN_MODEL="$rl_pm"; log "model $rl_pm from ${2:-$1}"; fi
+    if [ -z "$EFFORT_FROM_ENV" ]; then
+      rl_pe="$(plan_effort "$1")"
+      if [ -n "$rl_pe" ]; then RUN_EFFORT="$rl_pe"; log "effort $rl_pe from ${2:-$1}"; fi
+    fi
+  fi
+  rl_family="$(model_family "$RUN_MODEL")"
+  if [ "$rl_family" = sonnet ]; then
+    case "$RUN_EFFORT" in
+      xhigh|max) ;;
+      *) log "effort $RUN_EFFORT raised to xhigh (sonnet runs at xhigh or max)"; RUN_EFFORT=xhigh ;;
+    esac
+  fi
+  RUN_FALLBACK="$FALLBACK_MODEL"
+  if [ "$FALLBACK_MODEL" = "$RUN_MODEL" ] || { [ "$rl_family" != other ] && [ "$(model_family "$FALLBACK_MODEL")" = "$rl_family" ]; }; then
+    RUN_FALLBACK=""
+  fi
+  if [ -n "$BUDGET" ]; then RUN_BUDGET="$BUDGET"
+  elif [ "$rl_family" = opus ]; then RUN_BUDGET=120
+  else RUN_BUDGET=60
+  fi
 }
 
 # plan_ticket <PLAN.md>: the ticket key of the plan header ("Ticket: PAUL-2649"), nothing for
@@ -628,8 +685,9 @@ run_attempt() {
   mkdir -p "$ra_wt/.claude" && : >"$ra_wt/.claude/.autopilot-active"
   (
     cd "$ra_wt" || exit 1
-    "$CLAUDE_BIN" -p "/autopilot $ra_item" --model "$MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR" \
-      --fallback-model "$FALLBACK_MODEL" --permission-mode auto --max-budget-usd "$BUDGET" --output-format json \
+    set -- -p "/autopilot $ra_item" --model "$RUN_MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR"
+    [ -n "$RUN_FALLBACK" ] && set -- "$@" --fallback-model "$RUN_FALLBACK"
+    "$CLAUDE_BIN" "$@" --permission-mode auto --max-budget-usd "$RUN_BUDGET" --output-format json \
       >>"$ITEM_LOG" 2>&1 &
     echo "$!" >"$RUN_PIDFILE"
     wait "$!"
@@ -740,12 +798,13 @@ process_item() {
       pi_sd0="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" plan || true)"
       [ -n "$pi_sd0" ] || pi_noplan=no-plan
     fi
-    RUN_EFFORT="$EFFORT"
-    if [ -n "$pi_sd0" ] && [ -z "$EFFORT_FROM_ENV" ]; then
-      pi_pe="$(plan_effort "$pi_wt/$pi_sd0/PLAN.md")"
-      if [ -n "$pi_pe" ]; then RUN_EFFORT="$pi_pe"; log "effort $pi_pe from $pi_sd0/PLAN.md"; fi
-    fi
     say "$pi_rb $pi_item: worktree ready ($pi_wt)"
+    if ! resolve_launch "${pi_sd0:+$pi_wt/$pi_sd0/PLAN.md}" "${pi_sd0:+$pi_sd0/PLAN.md}"; then
+      pi_status=blocked; pi_reason="$RL_REASON"
+    fi
+  fi
+
+  if [ -z "$pi_status" ]; then
     if [ -n "$pi_sd0" ]; then
       pi_ticket="$(plan_ticket "$pi_wt/$pi_sd0/PLAN.md")"
       if [ -n "$pi_ticket" ] && jira_ready; then
@@ -760,7 +819,7 @@ process_item() {
       || say "$pi_rb $pi_item: no context-budget hook in this project (run /autopilot init there); the watchdog sees commits and plan changes only"
     while :; do
       note_current $((pi_restarts + 1))
-      say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $MODEL, effort $RUN_EFFORT)"
+      say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $RUN_MODEL, effort $RUN_EFFORT)"
       run_attempt "$pi_wt" "$pi_item" "$(date +%s)" "$pi_state"
       rm -f "$pi_wt/.claude/.autopilot-active" "$pi_wt/.claude/.autopilot-status" "$pi_wt/.claude/.autopilot-gate-blocks"
       if [ "$RUN_RESULT" = timeout ]; then
@@ -805,7 +864,7 @@ process_item() {
       if [ "$RUN_RESULT" = stalled ]; then
         pi_reason="run stalled (no tool call, commit or plan change for 4 watchdog ticks), killed"
       elif tail -n 5 "$ITEM_LOG" 2>/dev/null | grep -q 'max_budget'; then
-        pi_reason="budget of $BUDGET USD exhausted before REPORT.md or HANDOFF.md was written in $pi_sd"
+        pi_reason="budget of $RUN_BUDGET USD exhausted before REPORT.md or HANDOFF.md was written in $pi_sd"
       else
         pi_reason="no REPORT.md or HANDOFF.md in $pi_sd (claude exit $RUN_EXIT)"
       fi

@@ -8,7 +8,8 @@ and Tests sections, never from narrative.
 # PLAN - <ticket key or topic> - <YYYY-MM-DD>
 Branch: <prefix>/<KEY>-<slug>   Base: <integration branch>   Ticket: <key or none>   (prefix per the project's branch convention, else feat)
 Branch mode: session | feature-branch <name>     PR: per session | none (feature branch reviewed as a whole)
-Effort: medium   (low | medium | high | xhigh | max; the runner passes it as --effort)
+Model: sonnet   (sonnet | opus; the runner passes it as --model)
+Effort: xhigh   (low | medium | high | xhigh | max; the runner passes it as --effort; sonnet runs at xhigh or max, below xhigh is raised)
 Options: none   (or, comma-separated: defer PR, no Codex; the run reads them here)
 Planned with: <model of the planning session>   Reviewed: yes (<n> findings folded in) | no (<reason>)
 Sources: <spec, ADRs, docs the packages point to>

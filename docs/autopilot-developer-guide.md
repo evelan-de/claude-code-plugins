@@ -96,7 +96,7 @@ flowchart TB
 flowchart LR
     U3["You + Claude<br/>/autopilot-plan<br/>decisions, code-level plan"] --> PR0["Draft PR<br/>autopilot-ready"]
     PR0 --> Q["mission-control<br/>script, zero tokens"]
-    Q --> RUN["One headless run<br/>Sonnet + Fable advisor"]
+    Q --> RUN["One headless run<br/>Sonnet or Opus + Fable advisor"]
     RUN -- "HANDOFF.md" --> Q
     RUN --> REV["One reviewer<br/>whole branch"]
     REV --> OUT["PR + REPORT.md"]
@@ -270,7 +270,9 @@ Good answers to the shape questions name:
   (section 10).
 
 The plan lands in `docs/autopilot/sessions/<date>-<KEY>-<slug>/PLAN.md`. Read it before you
-hand it over. Worth a glance: `Effort:` (runner effort, `medium` by default), `Options:`
+hand it over. Worth a glance: `Model:` (`sonnet` by default, `opus` when you asked for it;
+say "opus" while planning, or run `/autopilot <session dir> opus` later), `Effort:` (Sonnet
+always runs at `xhigh` or `max`; Opus uses the header, `medium` by default), `Options:`
 (`defer PR`, `no Codex`), the Goal artifact, the Decisions, and whether the package list
 matches what you had in mind.
 
@@ -463,10 +465,12 @@ dir>` on the Mini; ask Andreas (or anyone with SSH access through `/mission-cont
   ends blocked.
 - **Docs are part of done.** The run updates README, `docs/`, `CLAUDE.md` and doc comments
   its change made stale.
-- **Limits per item:** $60 budget per run, 240 minutes per attempt, five restarts after a
-  hand-off, stall kill after 80 minutes without a tool call or commit.
-- **Model setup:** planning on Fable (Opus is fine) in your session; the run on Sonnet with
-  Fable as advisor and Opus as fallback; the final reviewer on Opus.
+- **Limits per item:** budget per attempt $60 on Sonnet, $120 on Opus; 240 minutes per
+  attempt, five restarts after a hand-off, stall kill after 80 minutes without a tool call
+  or commit.
+- **Model setup:** planning on Fable (Opus is fine) in your session; the run on the plan's
+  `Model:`, Sonnet (default, always at effort `xhigh` or `max`, Opus as fallback) or Opus
+  (no fallback), with Fable as advisor either way; the final reviewer on Opus.
 
 ## 12. Cheat sheet
 

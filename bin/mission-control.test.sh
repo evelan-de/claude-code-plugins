@@ -152,6 +152,12 @@ printf 'Status: done\n' >"$proj/docs/autopilot/sessions/2026-01-01-OLD-1-unrelat
 # a planned session on main with an Effort header
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort"
 printf '# PLAN\n\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-20-effort/PLAN.md"
+# planned sessions on main with a Model header
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus" "$proj/docs/autopilot/sessions/2026-09-25-PAUL-161-sonnet" \
+  "$proj/docs/autopilot/sessions/2026-09-25-PAUL-162-sonnetmax"
+printf '# PLAN\nModel: opus\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-160-opus/PLAN.md"
+printf '# PLAN\nModel: sonnet   (sonnet | opus)\nEffort: medium\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-161-sonnet/PLAN.md"
+printf '# PLAN\nModel: Sonnet\nEffort: max\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-162-sonnetmax/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "sessions on main"
 git init -q --bare "$tmp/origin.git"
 git -C "$proj" remote add origin "$tmp/origin.git"
@@ -171,9 +177,16 @@ git -C "$proj" push -q origin feat/PAUL-10-noplan
 git -C "$proj" checkout -q main
 git -C "$proj" checkout -q -b feat/PAUL-21-branchy
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy"
-printf '# PLAN\n\nEffort: low\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy/PLAN.md"
+printf '# PLAN\n\nModel: opus\nEffort: low\n' >"$proj/docs/autopilot/sessions/2026-09-18-PAUL-21-branchy/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan on branch"
 git -C "$proj" push -q origin feat/PAUL-21-branchy
+# PR branch whose plan names an unknown model
+git -C "$proj" checkout -q main
+git -C "$proj" checkout -q -b feat/PAUL-163-bogus
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus"
+printf '# PLAN\nModel: gpt-5\nEffort: high\n' >"$proj/docs/autopilot/sessions/2026-09-25-PAUL-163-bogus/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan with an unknown model"
+git -C "$proj" push -q origin feat/PAUL-163-bogus
 git -C "$proj" checkout -q main
 
 export CLAUDE_BIN="$tmp/fakes/claude" GH_BIN="$tmp/fakes/gh"
@@ -213,7 +226,7 @@ check "(a) gh pr edit swaps labels to autopilot-done" has "pr edit 7 --remove-la
 check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
 check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
-check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort medium --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
+check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
@@ -476,7 +489,7 @@ sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy >/dev/
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(f2) run exits 0" [ "$got" -eq 0 ]
 check "(f2) done without no-plan" grep -q " docs/autopilot/sessions/2026-09-18-PAUL-21-branchy done https://github.com/e/r/pull/7$" "$QH/done.txt"
-check "(f2) effort low taken from the plan on the branch" has "--effort low" "$(cat "$REC/claude.args")"
+check "(f2) model opus and effort low taken from the plan on the branch" has "--model opus --effort low " "$(cat "$REC/claude.args")"
 check "(f2) the run saw the branch history" grep -q "plan on branch" "$REC/claude.gitlog.1"
 check "(f2) the run was on feat/PAUL-21-branchy" grep -q "PAUL-21-branchy" "$QH/done.txt"
 
@@ -675,8 +688,8 @@ printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) env file beats the default (model haiku, effort xhigh, fallback sonnet)" has "--model haiku --effort xhigh --advisor fable --fallback-model sonnet" "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_MODEL=sonnet MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
-check "(l) environment beats the env file" has "--model sonnet --effort low " "$(tail -n 1 "$REC/claude.args")"
+MISSION_CONTROL_MODEL=opus MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+check "(l) environment beats the env file" has "--model opus --effort low " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
 check "(l) Effort: high from PLAN.md beats the env file" has "--effort high " "$(tail -n 1 "$REC/claude.args")"
@@ -686,7 +699,45 @@ check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tai
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l) defaults without env file" has "--model sonnet --effort medium --advisor fable --fallback-model opus" "$(tail -n 1 "$REC/claude.args")"
+check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 " "$(tail -n 1 "$REC/claude.args")"
+
+# ---------- (l2) model from the plan header, sonnet effort floor, fallback and budget ----------
+fresh_home l2
+export FAKE_SCENARIO=report
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 120" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 120 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
+printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 60" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 60 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) the raise is logged" grep -q "effort medium raised to xhigh" "$(ls "$QH"/logs/*-PAUL-161.log)"
+printf '%s PAUL-162\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) Model: Sonnet with Effort: max keeps max" has "--model sonnet --effort max " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+MISSION_CONTROL_MODEL=sonnet sh "$TOOL" run >/dev/null 2>&1
+check "(l2) environment model beats the plan, the floor still applies" has "--model sonnet --effort xhigh " "$(tail -n 1 "$REC/claude.args")"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+MISSION_CONTROL_BUDGET_USD=30 sh "$TOOL" run >/dev/null 2>&1
+check "(l2) an explicit budget beats the per-model default" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 30 " "$(tail -n 1 "$REC/claude.args")"
+printf 'MISSION_CONTROL_FALLBACK_MODEL=fable\n' >"$QH/env"; chmod 600 "$QH/env"
+printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
+sh "$TOOL" run >/dev/null 2>&1
+check "(l2) a fallback of another family is kept for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable " "$(tail -n 1 "$REC/claude.args")"
+rm -f "$QH/env"
+fresh_home l3
+printf '14 feat/PAUL-163-bogus https://github.com/e/r/pull/14\n' >"$REC/prs.txt"
+export FAKE_GH_PRS="$REC/prs.txt"
+printf '%s\n' "$proj" >"$QH/repos.txt"
+out="$(sh "$TOOL" run 2>&1)"; got=$?
+check "(l3) an unknown Model: in the plan: run exits 0" [ "$got" -eq 0 ]
+check "(l3) claude not started" [ ! -e "$REC/claude.args" ]
+check "(l3) done.txt says blocked" grep -q " docs/autopilot/sessions/2026-09-25-PAUL-163-bogus blocked https://github.com/e/r/pull/14$" "$QH/done.txt"
+check "(l3) the reason names the header line" has "PLAN.md header 'Model: gpt-5' is not sonnet or opus" "$out"
+check "(l3) the PR comment carries the reason" has "'Model: gpt-5' is not sonnet or opus" "$(cat "$REC/comment.1")"
+check "(l3) the PR is labelled blocked" has "pr edit 14 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
+unset FAKE_GH_PRS
 
 # ---------- (m) no PR found after the run ----------
 fresh_home m
@@ -750,7 +801,7 @@ sleep 0.5
 out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
 check "(q) status exits 0" [ "$got" -eq 0 ]
 check "(q) status shows the running item with attempt and phase" has "running: proj PAUL-50 (attempt 1, since " "$out"
-check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort medium)" "$out"
+check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort xhigh)" "$out"
 check "(q) status: no package line for a ticket item" has "  package: none marked [~]" "$out"
 check "(q) status: run line before the hook wrote one" has "  run: no status line yet" "$out"
 check "(q) status: diff line" has "  diff since base: " "$out"

@@ -1,7 +1,7 @@
 ---
 name: autopilot
 description: Execute a prepared plan unattended - TDD per package, gate, one adversarial review, goal-artifact check, PR. Started by the runner (mission-control); in an interactive session it enqueues and starts the runner. Triggers on "/autopilot", "autopilot", "autonom umsetzen", "autonome Session", "arbeite das selbstständig ab", "setze das eigenständig um".
-argument-hint: "[init | <session dir> | <ticket>] [defer PR] [no Codex]"
+argument-hint: "[init | <session dir> | <ticket>] [opus | sonnet] [defer PR] [no Codex]"
 ---
 
 # Autopilot
@@ -25,8 +25,10 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 - **Interactive session** (no `.claude/.autopilot-active`, and you were not started by the
   runner, which creates it before it starts you): do not implement here.
   `~/.claude/mission-control` exists on this machine → options in the prompt ("defer PR",
-  "no Codex") go into the plan header line `Options:` (replace the line, commit
-  `docs(autopilot): options for <slug>`); a clean checkout on the plan branch is switched
+  "no Codex") go into the plan header line `Options:` (replace the line), a model in the
+  prompt ("opus", "sonnet", "mit Opus") into the header line `Model:` (replace it, or insert
+  it above `Effort:`; `Model: sonnet` also sets `Effort: xhigh` unless it says `max`); one
+  commit `docs(autopilot): options for <slug>`; a clean checkout on the plan branch is switched
   to the base branch (`git switch <base>`, so the run owns the branch); then
   `mission-control add <repo path> <session dir>` (one Bash call), then `mission-control
   start` (one Bash call); print the `added:`
@@ -93,9 +95,10 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
 
 ## Run
 
-Model, effort and advisor are launch parameters the runner passes (`--model sonnet
---effort <plan header> --advisor fable`); consult the advisor before committing to an
-approach, on a recurring error and before declaring done. At the end print the table of
+Model, effort and advisor are launch parameters the runner passes (`--model` and
+`--effort` from the plan header `Model:` and `Effort:`, Sonnet at xhigh or max, `--advisor
+fable`); consult the advisor before committing to an approach, on a recurring error and
+before declaring done. At the end print the table of
 `autopilot-usage <this session's transcript>` (newest `.jsonl` under
 `~/.claude/projects/<cwd with "/" replaced by "-">/`).
 
