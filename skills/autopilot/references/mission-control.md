@@ -167,7 +167,7 @@ column and runs from the default branch.
    in the reason. Budget per attempt: 100 USD for sonnet, 120 for opus, unless
    `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
-   (In Progress, assigned to the token owner); a failure is said, logged as `jira-failed`,
+   (In Progress; the assignee stays, the token owner only when nobody is assigned); a failure is said, logged as `jira-failed`,
    and the run goes ahead. Without the credentials file the log says the ticket was not
    updated. A PR item gets a comment "Autopilot started on <host> at <time> (model, effort).
    Please do not push to this branch until the result comment arrives."

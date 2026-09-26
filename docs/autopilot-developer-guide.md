@@ -219,8 +219,8 @@ Andreas can also start it right away. Your machine and session can be closed.
 - **The start comment.** When your PR's turn comes, the runner posts "Autopilot started on
   ... (model, effort)" on the PR. Until then you may push; from then on, do not push until
   the result comment arrives.
-- **Jira.** The ticket moves to In Progress and is assigned to Andreas (the Jira account the
-  Mini uses). Assign it back to yourself after the merge if your team needs that.
+- **Jira.** The ticket moves to In Progress; its assignee stays as it is. A ticket without
+  an assignee gets Andreas (the Jira account the Mini uses).
 - **Commits.** The run's commits on your branch are made on the Mini under Andreas' Git name.
 
 When it ends you get:

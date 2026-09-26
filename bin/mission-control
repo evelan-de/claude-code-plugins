@@ -458,7 +458,7 @@ plan_ticket() {
 # jira_ready: the jira script and its credentials file exist on this machine.
 jira_ready() { command -v "$JIRA_BIN" >/dev/null 2>&1 && [ -f "$JIRA_ENV" ]; }
 
-# jira_start <KEY>: the ticket goes In Progress, assigned to the token owner, before the
+# jira_start <KEY>: the ticket goes In Progress (assignee kept, the token owner if none) before the
 # first attempt. A failure is said and logged, the run goes ahead.
 jira_start() {
   js_out="$("$JIRA_BIN" start "$1" 2>&1)" && { log "jira: $js_out"; return 0; }
