@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot Stop-hook gate (TEMPLATE).
 # Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
-# autopilot-hook-version: 2   (raise it with every change to this file)
+# autopilot-hook-version: 3   (raise it with every change to this file)
 #
 # Blocks turn-end while an autopilot run is active AND (a) the newest session has
 # neither REPORT.md nor HANDOFF.md (in a headless run, ending the turn ends the
@@ -102,7 +102,13 @@ if [ -n "$SESSION_DIR" ] && [ -f "$SESSION_DIR/REPORT.md" ] \
   exit 0
 fi
 
-if OUTPUT="$(bash -lc "$GATE" 2>&1)"; then
+# The user's own login shell, not a hardcoded `bash`: node/pnpm are often on PATH only
+# through the shell's startup files (~/.zshenv, ~/.zprofile), which `bash -lc` never
+# reads, so every gate went red with "pnpm: command not found" whatever the project's
+# state. Falls back to bash when SHELL is unset (some CI containers); launchd sets it
+# for the runner.
+GATE_SHELL="${SHELL:-bash}"
+if OUTPUT="$("$GATE_SHELL" -lc "$GATE" 2>&1)"; then
   rm -f "$BLOCKS"
   exit 0   # green -> allow the turn to end
 fi

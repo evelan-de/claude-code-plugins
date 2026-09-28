@@ -159,5 +159,54 @@ P3="$(setup no "false")"
 mkdir -p "$P3/docs/autopilot/sessions/2026-09-21-z"; echo "# PLAN" >"$P3/docs/autopilot/sessions/2026-09-21-z/PLAN.md"
 invoke "$P3" false; check "no sentinel: inert even without artifacts" 0 $?
 
+# --- login shell: the gate runs in the user's $SHELL as a login shell, in bash only when SHELL is unset
+invoke_env() {
+  # $1 project dir  $2 stop_hook_active  $3.. env arguments (NAME=value, -u NAME)  -> like invoke
+  local p="$1" active="$2" err="$1/stderr.txt"; shift 2
+  printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":%s}' "$active" \
+    | env "$@" CLAUDE_PROJECT_DIR="$p" bash "$HOOK" 2>"$err"
+  local got=$?
+  LAST_ERR="$(cat "$err")"
+  return "$got"
+}
+SH_DIR="$(mktemp -d)"
+cat >"$SH_DIR/recsh" <<'EOF'
+#!/bin/bash
+# Records its arguments one per line, then behaves like bash.
+printf '%s\n' "$@" >"${0%/*}/recsh.args"
+exec /bin/bash "$@"
+EOF
+chmod +x "$SH_DIR/recsh"
+P="$(setup yes "echo gate-ran")"
+invoke_env "$P" false SHELL="$SH_DIR/recsh"; check "SHELL set: gate green through that shell" 0 $?
+[ "$(cat "$SH_DIR/recsh.args" 2>/dev/null)" = "$(printf -- '-lc\necho gate-ran')" ] \
+  && { echo "ok   - the gate ran as \$SHELL -lc <gate>"; PASS=$((PASS+1)); } \
+  || { echo "FAIL - \$SHELL was not called as -lc <gate> (args: $(tr '\n' ' ' 2>/dev/null <"$SH_DIR/recsh.args"))"; FAIL=$((FAIL+1)); }
+rm -f "$SH_DIR/recsh.args"
+invoke_env "$P" false -u SHELL; check "SHELL unset: gate still runs (bash fallback)" 0 $?
+[ ! -f "$SH_DIR/recsh.args" ] && { echo "ok   - SHELL unset: no other shell was called"; PASS=$((PASS+1)); } || { echo "FAIL - a shell other than bash ran without SHELL"; FAIL=$((FAIL+1)); }
+printf '{\n  "gate": "false"\n}\n' >"$P/.claude/autopilot.json"
+invoke_env "$P" false SHELL="$SH_DIR/recsh"; check "SHELL set, red gate: still blocks (exit 2)" 2 $?
+rm -rf "$P"
+
+# The finding this guards: node/pnpm on PATH only through ~/.zshenv. HOME and ZDOTDIR point at a
+# scratch dir, so only its .zshenv is read, never the real dotfiles; the probe name exists nowhere else.
+if [ -x /bin/zsh ]; then
+  Z="$(mktemp -d)"
+  mkdir -p "$Z/shim"
+  printf '#!/bin/sh\necho probe-ran\n' >"$Z/shim/autopilot-login-shell-probe"; chmod +x "$Z/shim/autopilot-login-shell-probe"
+  printf 'export PATH="%s/shim:$PATH"\n' "$Z" >"$Z/.zshenv"
+  P="$(setup yes "autopilot-login-shell-probe")"
+  invoke_env "$P" false SHELL=/bin/zsh HOME="$Z" ZDOTDIR="$Z"
+  check "SHELL=zsh: a tool on PATH only via ~/.zshenv is found, gate green" 0 $?
+  invoke_env "$P" false SHELL=/bin/bash HOME="$Z" ZDOTDIR="$Z"
+  check "SHELL=bash: bash never reads ~/.zshenv, the same gate is red" 2 $?
+  check_err "red because the tool is not on bash's PATH" "command not found"
+  rm -rf "$P" "$Z"
+else
+  echo "note - /bin/zsh not found, skipping the ~/.zshenv login-shell test"
+fi
+rm -rf "$SH_DIR"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
