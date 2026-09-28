@@ -12,8 +12,8 @@
 #         the caller's cwd and the original command. Everything else passes through ({}).
 #
 #   run <cmdfile>
-#         Executes the saved command in the saved cwd, in the user's login shell ($SHELL,
-#         bash when unset) with pipefail, keeps its exit status,
+#         Executes the saved command in the saved cwd, in the user's login shell ($SHELL
+#         when it is bash or zsh, otherwise bash) with pipefail, keeps its exit status,
 #         prints a filtered view (RED: failure blocks + summary, GREEN: summary only) and
 #         appends one evidence line to .claude/autopilot-gate.log:
 #           <utc time> head=<sha> tree=<working-tree hash> exit=<code> cmd=<command>
@@ -73,9 +73,13 @@ if [ "$mode" = "run" ]; then
   tmp="$(mktemp -d)"
   raw="$tmp/raw.txt"
   orig="$(sed -n 's/^# CMD: //p' "$cmdfile" | head -n1 | cut -c1-160)"
-  # The user's own login shell, not a hardcoded `bash`: node/pnpm are often on PATH only
-  # through the shell's startup files (see autopilot-gate.sh); bash when SHELL is unset.
-  "${SHELL:-bash}" -l -o pipefail "$cmdfile" >"$raw" 2>&1
+  # The user's login shell when it is bash or zsh, otherwise bash (see autopilot-gate.sh).
+  gate_shell=bash
+  user_shell="${SHELL:-}"
+  case "${user_shell##*/}" in
+    bash|zsh) command -v "$user_shell" >/dev/null 2>&1 && gate_shell="$user_shell" ;;
+  esac
+  "$gate_shell" -l -o pipefail "$cmdfile" >"$raw" 2>&1
   rc=$?
   total="$(wc -l <"$raw" | tr -d ' ')"
   head_sha="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo nogit)"

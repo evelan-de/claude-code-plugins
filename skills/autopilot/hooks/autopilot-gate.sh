@@ -102,12 +102,14 @@ if [ -n "$SESSION_DIR" ] && [ -f "$SESSION_DIR/REPORT.md" ] \
   exit 0
 fi
 
-# The user's own login shell, not a hardcoded `bash`: node/pnpm are often on PATH only
-# through the shell's startup files (~/.zshenv, ~/.zprofile), which `bash -lc` never
-# reads, so every gate went red with "pnpm: command not found" whatever the project's
-# state. Falls back to bash when SHELL is unset (some CI containers); launchd sets it
-# for the runner.
-GATE_SHELL="${SHELL:-bash}"
+# The gate runs in the user's login shell, so node/pnpm set up in its startup files
+# (~/.zshenv, ~/.zprofile) are on PATH; `bash -lc` never reads zsh's. Only bash or zsh
+# (the filter hook needs -l -o pipefail too); any other or an empty SHELL gets bash.
+GATE_SHELL=bash
+USER_SHELL="${SHELL:-}"
+case "${USER_SHELL##*/}" in
+  bash|zsh) command -v "$USER_SHELL" >/dev/null 2>&1 && GATE_SHELL="$USER_SHELL" ;;
+esac
 if OUTPUT="$("$GATE_SHELL" -lc "$GATE" 2>&1)"; then
   rm -f "$BLOCKS"
   exit 0   # green -> allow the turn to end

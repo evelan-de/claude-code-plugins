@@ -18,10 +18,11 @@ setup() {
 }
 
 invoke() {
-  # $1 project dir  $2 stop_hook_active (true/false)  -> exit code in $?, stderr in LAST_ERR
-  local err="$1/stderr.txt"
-  printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":%s}' "$2" \
-    | CLAUDE_PROJECT_DIR="$1" bash "$HOOK" 2>"$err"
+  # $1 project dir  $2 stop_hook_active (true/false)  $3.. extra env (NAME=value)
+  # -> exit code in $?, stderr in LAST_ERR
+  local p="$1" active="$2" err="$1/stderr.txt"; shift 2
+  printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":%s}' "$active" \
+    | env "$@" CLAUDE_PROJECT_DIR="$p" bash "$HOOK" 2>"$err"
   local got=$?
   LAST_ERR="$(cat "$err")"
   return "$got"
@@ -159,54 +160,59 @@ P3="$(setup no "false")"
 mkdir -p "$P3/docs/autopilot/sessions/2026-09-21-z"; echo "# PLAN" >"$P3/docs/autopilot/sessions/2026-09-21-z/PLAN.md"
 invoke "$P3" false; check "no sentinel: inert even without artifacts" 0 $?
 
-# --- login shell: the gate runs in the user's $SHELL as a login shell, in bash only when SHELL is unset
-invoke_env() {
-  # $1 project dir  $2 stop_hook_active  $3.. env arguments (NAME=value, -u NAME)  -> like invoke
-  local p="$1" active="$2" err="$1/stderr.txt"; shift 2
-  printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":%s}' "$active" \
-    | env "$@" CLAUDE_PROJECT_DIR="$p" bash "$HOOK" 2>"$err"
-  local got=$?
-  LAST_ERR="$(cat "$err")"
-  return "$got"
-}
-SH_DIR="$(mktemp -d)"
-cat >"$SH_DIR/recsh" <<'EOF'
-#!/bin/bash
-# Records its arguments one per line, then behaves like bash.
-printf '%s\n' "$@" >"${0%/*}/recsh.args"
-exec /bin/bash "$@"
+# --- login shell: the gate runs in $SHELL as a login shell when that is bash or zsh, otherwise in
+# bash. HOME and ZDOTDIR point at a scratch dir in every case, so no real dotfiles are read.
+L="$(mktemp -d)"; mkdir -p "$L/home" "$L/sh"
+ISO=(HOME="$L/home" ZDOTDIR="$L/home")
+REAL_BASH="$(command -v bash)"
+mkrec() {
+  # $1 name -> $L/sh/<name>: writes its arguments one per line to $L/sh/<name>.args, then runs bash
+  cat >"$L/sh/$1" <<EOF
+#!$REAL_BASH
+printf '%s\n' "\$@" >"$L/sh/$1.args"
+exec "$REAL_BASH" "\$@"
 EOF
-chmod +x "$SH_DIR/recsh"
+  chmod +x "$L/sh/$1"
+}
+mkrec bash; mkrec dash
 P="$(setup yes "echo gate-ran")"
-invoke_env "$P" false SHELL="$SH_DIR/recsh"; check "SHELL set: gate green through that shell" 0 $?
-[ "$(cat "$SH_DIR/recsh.args" 2>/dev/null)" = "$(printf -- '-lc\necho gate-ran')" ] \
+invoke "$P" false "${ISO[@]}" SHELL="$L/sh/bash"; check "SHELL=bash: gate green through that shell" 0 $?
+[ "$(cat "$L/sh/bash.args" 2>/dev/null)" = "$(printf -- '-lc\necho gate-ran')" ] \
   && { echo "ok   - the gate ran as \$SHELL -lc <gate>"; PASS=$((PASS+1)); } \
-  || { echo "FAIL - \$SHELL was not called as -lc <gate> (args: $(tr '\n' ' ' 2>/dev/null <"$SH_DIR/recsh.args"))"; FAIL=$((FAIL+1)); }
-rm -f "$SH_DIR/recsh.args"
-invoke_env "$P" false -u SHELL; check "SHELL unset: gate still runs (bash fallback)" 0 $?
-[ ! -f "$SH_DIR/recsh.args" ] && { echo "ok   - SHELL unset: no other shell was called"; PASS=$((PASS+1)); } || { echo "FAIL - a shell other than bash ran without SHELL"; FAIL=$((FAIL+1)); }
+  || { echo "FAIL - \$SHELL was not called as -lc <gate> (args: $(tr '\n' ' ' 2>/dev/null <"$L/sh/bash.args"))"; FAIL=$((FAIL+1)); }
 printf '{\n  "gate": "false"\n}\n' >"$P/.claude/autopilot.json"
-invoke_env "$P" false SHELL="$SH_DIR/recsh"; check "SHELL set, red gate: still blocks (exit 2)" 2 $?
+invoke "$P" false "${ISO[@]}" SHELL="$L/sh/bash"; check "SHELL=bash, red gate: still blocks (exit 2)" 2 $?
+rm -rf "$P"
+# Any other shell (dash rejects -o pipefail, csh -l), an empty SHELL or a missing binary: bash
+# (not sh, which on macOS is bash in POSIX mode).
+P="$(setup yes '[ ${#BASH_VERSION} -gt 0 ] && ! shopt -oq posix')"
+invoke "$P" false "${ISO[@]}" SHELL="$L/sh/dash"; check "SHELL=dash: the gate runs in bash (green only there)" 0 $?
+[ ! -f "$L/sh/dash.args" ] && { echo "ok   - SHELL=dash: dash was not called"; PASS=$((PASS+1)); } || { echo "FAIL - dash was called"; FAIL=$((FAIL+1)); }
+invoke "$P" false "${ISO[@]}" SHELL=; check "empty SHELL: the gate runs in bash" 0 $?
+invoke "$P" false "${ISO[@]}" SHELL="$L/missing/zsh"; check "SHELL names a missing zsh: the gate runs in bash" 0 $?
 rm -rf "$P"
 
-# The finding this guards: node/pnpm on PATH only through ~/.zshenv. HOME and ZDOTDIR point at a
-# scratch dir, so only its .zshenv is read, never the real dotfiles; the probe name exists nowhere else.
-if [ -x /bin/zsh ]; then
-  Z="$(mktemp -d)"
-  mkdir -p "$Z/shim"
-  printf '#!/bin/sh\necho probe-ran\n' >"$Z/shim/autopilot-login-shell-probe"; chmod +x "$Z/shim/autopilot-login-shell-probe"
-  printf 'export PATH="%s/shim:$PATH"\n' "$Z" >"$Z/.zshenv"
+ZSH_BIN="$(command -v zsh || true)"
+if [ -n "$ZSH_BIN" ]; then
+  P="$(setup yes '[ ${#ZSH_VERSION} -gt 0 ]')"
+  invoke "$P" false "${ISO[@]}" SHELL="$ZSH_BIN"; check "SHELL=zsh: the gate runs in zsh (green only there)" 0 $?
+  rm -rf "$P"
+  # The finding this guards: node/pnpm on PATH only through zsh's startup files. ~/.zprofile is
+  # read by login shells only, so green here also proves -l; the probe name exists nowhere else.
+  mkdir -p "$L/shim"
+  printf '#!/bin/sh\necho probe-ran\n' >"$L/shim/autopilot-login-shell-probe"; chmod +x "$L/shim/autopilot-login-shell-probe"
+  printf 'export PATH="%s/shim:$PATH"\n' "$L" >"$L/home/.zprofile"
   P="$(setup yes "autopilot-login-shell-probe")"
-  invoke_env "$P" false SHELL=/bin/zsh HOME="$Z" ZDOTDIR="$Z"
-  check "SHELL=zsh: a tool on PATH only via ~/.zshenv is found, gate green" 0 $?
-  invoke_env "$P" false SHELL=/bin/bash HOME="$Z" ZDOTDIR="$Z"
-  check "SHELL=bash: bash never reads ~/.zshenv, the same gate is red" 2 $?
+  invoke "$P" false "${ISO[@]}" SHELL="$ZSH_BIN"
+  check "SHELL=zsh: a tool on PATH only via ~/.zprofile is found, gate green" 0 $?
+  invoke "$P" false "${ISO[@]}" SHELL="$REAL_BASH"
+  check "SHELL=bash: bash never reads ~/.zprofile, the same gate is red" 2 $?
   check_err "red because the tool is not on bash's PATH" "command not found"
-  rm -rf "$P" "$Z"
+  rm -rf "$P"
 else
-  echo "note - /bin/zsh not found, skipping the ~/.zshenv login-shell test"
+  echo "note - zsh not found, skipping the zsh login-shell tests"
 fi
-rm -rf "$SH_DIR"
+rm -rf "$L"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
