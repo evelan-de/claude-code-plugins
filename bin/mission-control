@@ -12,19 +12,33 @@
 #               only, `add` fills it in); processed top to bottom
 #   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
 #   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
+#               [push-failed]
 #   env         optional, mode 600: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings
 #   logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
 #               renamed once the session dir or ticket key is known), queue.log for lines
-#               outside an item; worktrees/ one per item
+#               outside an item
+#   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
+#               the project on the item's next attempt
 #   run.lock/   pid of the active run and current (the item it is on), removed after the run
 #   paused      one date (YYYY-MM-DD, local): the schedule is paused through that day; the
 #               LaunchAgent's "run --scheduled" skips while it is valid, a manual run ignores it
 #   force-once  written by start; the next scheduled run consumes it and ignores the pause
 #
+# Each item runs in its own worktree inside the project, <repo>/.claude/worktrees/
+# autopilot-<item>, where developers and the Claude app keep theirs and where the workbench
+# backup finds it. The runner adds .claude/worktrees/ to the repository's local exclude file
+# when the project does not ignore it. A done item's worktree is removed; any other keeps it
+# for a retry.
+#
 # The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
 # the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
 # first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
 # the outcome and notifies. Sequential, one run at a time (lock).
+#
+# Whatever the outcome - done, blocked, timeout, handoff-limit - the queue then pushes the
+# run's branch to origin (no PR, never a base branch, never forced, without the project's git
+# hooks), so a blocked run is visible on GitHub and its commits never exist on one Mac only.
+# A detached run with commits of its own gets the branch autopilot/<item> first.
 #
 # Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 # "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
@@ -289,6 +303,41 @@ ticket_from() {
 
 current_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || true; }
 
+# wt_path <repo> <item>: the item's worktree inside the project.
+wt_path() { printf '%s/.claude/worktrees/autopilot-%s\n' "$1" "$(safe_name "$2")"; }
+
+# legacy_wt_path <repo basename> <item>: where runs before plugin 3.3.0 put the item's worktree.
+legacy_wt_path() { printf '%s/%s-%s\n' "$WTDIR" "$1" "$(safe_name "$2")"; }
+
+# ensure_excluded <repo>: .claude/worktrees/ must not show up as untracked in the project's
+# own checkout. When the project does not ignore it, the line goes into the repository's
+# local exclude file - never into a tracked .gitignore, so no project file changes.
+ensure_excluded() {
+  git -C "$1" check-ignore -q .claude/worktrees/x 2>/dev/null && return 0
+  ee_ex="$(git -C "$1" rev-parse --git-path info/exclude 2>/dev/null)" || return 0
+  case "$ee_ex" in /*) : ;; *) ee_ex="$1/$ee_ex" ;; esac
+  mkdir -p "$(dirname "$ee_ex")" 2>/dev/null
+  if printf '.claude/worktrees/\n' >>"$ee_ex" 2>/dev/null; then
+    log "added .claude/worktrees/ to $ee_ex"
+  else
+    say "could not add .claude/worktrees/ to $ee_ex; the project checkout will list it as untracked"
+  fi
+}
+
+# move_legacy_worktree <repo> <old> <new>: a worktree an older runner kept under $WTDIR
+# (a blocked item waiting for its retry) moves into the project, so the retry continues on
+# its commits instead of starting next to them.
+move_legacy_worktree() {
+  [ -e "$2/.git" ] || return 0
+  if [ -e "$3" ]; then log "kept the old worktree $2: $3 already exists"; return 0; fi
+  mkdir -p "$(dirname "$3")"
+  if git -C "$1" worktree move "$2" "$3" >>"$ITEM_LOG" 2>&1; then
+    say "$pi_rb $pi_item: worktree moved into the project ($3)"
+  else
+    say "$pi_rb $pi_item: could not move the old worktree $2 into the project (see $ITEM_LOG); a new one is created"
+  fi
+}
+
 # default_ref <tree>: prints origin/<default> when that ref exists, else the local default branch.
 default_ref() {
   dr_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null)" || return 1
@@ -478,6 +527,8 @@ jira_comment() {
   {
     printf 'Autopilot: %s\n' "$jc_status"
     [ "$jc_pr" != "-" ] && printf 'PR: %s\n' "$jc_pr"
+    [ -n "${pi_pushed:-}" ] && printf 'Branch: %s (pushed to GitHub)\n' "$pi_pushed"
+    [ -n "${pi_push_failed:-}" ] && printf 'Branch NOT pushed, the work is only on the runner machine\n'
     if [ -f "$jc_report" ]; then
       printf '\n'
       head -n 40 "$jc_report" | sed 's/^#* *//'
@@ -679,6 +730,11 @@ slack_end() {
   se_link="$pi_pr_url"; [ "$se_link" != "-" ] || se_link="log $ITEM_LOG"
   printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$se_link" "$se_facts"
   [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$(printf '%s' "$pi_reason" | slack_escape)"
+  if [ -n "${pi_pushed:-}" ]; then
+    printf 'Branch: %s (on GitHub)\n' "$(printf '%s' "$pi_pushed" | slack_escape)"
+  elif [ -n "${pi_push_failed:-}" ]; then
+    printf 'Branch NOT pushed - the work is only in %s\n' "$(printf '%s' "${pi_wt:--}" | slack_escape)"
+  fi
   if [ -n "$se_report" ] && [ -f "$se_report" ]; then
     se_shipped="$(report_section "$se_report" "What shipped")"
     se_open="$(report_section "$se_report" "Open items")"
@@ -775,7 +831,7 @@ refresh_worktree() {
 prepare_worktree() {
   pw_repo="$1"; pw_wt="$2"; pw_branch="${3:-}"
   if [ -e "$pw_wt/.git" ]; then log "reusing worktree $pw_wt"; refresh_worktree "$pw_wt"; return 0; fi
-  mkdir -p "$WTDIR"
+  mkdir -p "$(dirname "$pw_wt")"
   git -C "$pw_repo" worktree prune >>"$ITEM_LOG" 2>&1
   if [ -n "$pw_branch" ]; then
     git -C "$pw_repo" fetch -q origin "$pw_branch" >>"$ITEM_LOG" 2>&1 || log "fetch of $pw_branch failed"
@@ -948,6 +1004,7 @@ process_item() {
   pi_rb="$(basename "$pi_repo_in")"
   pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""; pi_sd0=""
   pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
+  pi_pushed=""; pi_push_failed=""
   [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
   pi_began="$(date +%s)"
   mkdir -p "$LOGDIR"
@@ -971,7 +1028,9 @@ process_item() {
   fi
 
   if [ -z "$pi_status" ]; then
-    pi_wt="$WTDIR/$pi_rb-$(safe_name "$pi_item")"
+    pi_wt="$(wt_path "$pi_repo" "$pi_item")"
+    ensure_excluded "$pi_repo"
+    move_legacy_worktree "$pi_repo" "$(legacy_wt_path "$pi_rb" "$pi_item")" "$pi_wt"
     if prepare_worktree "$pi_repo" "$pi_wt" "$pi_branch"; then
       pi_gh_dir="$pi_wt"
     else
@@ -1099,8 +1158,46 @@ gh_step() {
   fi
 }
 
-# finish_item: uses the pi_* variables of process_item. Labels the PR, records, notifies.
+# push_branch: pushes the run's branch to origin, whatever the item's outcome, and sets
+# pi_pushed (the branch) or pi_push_failed. A blocked or timed-out run used to leave its
+# commits in the worktree only - on one Mac, invisible to the developer who queued the plan
+# (2026-09-28: WEB-1111 ended blocked with 113 commits that existed nowhere else). No PR is
+# opened here; done runs open their own. Never a base branch, never forced (a developer may
+# have pushed meanwhile), and --no-verify: a red gate is often why the run was blocked, and
+# the project's pre-push hook must not keep the work off GitHub for that reason.
+push_branch() {
+  [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ] || return 0
+  pb_b="$(current_branch "$pi_wt")"
+  if [ -z "$pb_b" ]; then
+    # detached: only commits of its own need a branch
+    [ -n "$(git -C "$pi_wt" rev-list --max-count=1 HEAD --not --remotes 2>/dev/null)" ] || return 0
+    pb_b="autopilot/$(safe_name "$pi_item")"
+    if ! git -C "$pi_wt" checkout -q -b "$pb_b" >>"$ITEM_LOG" 2>&1; then
+      say "$pi_rb $pi_item: could not create the branch $pb_b for the run's commits (see $ITEM_LOG); they stay in $pi_wt"
+      pi_push_failed=push-failed; return 0
+    fi
+    pi_branch="$pb_b"
+  fi
+  pb_def="$(cd "$pi_wt" && "$DEFBRANCH" 2>/dev/null || true)"
+  case "$pb_b" in
+    "$pb_def"|main|master|preview|develop)
+      say "$pi_rb $pi_item: the run ended on the base branch $pb_b; not pushed, its commits stay in $pi_wt"
+      pi_push_failed=push-failed; return 0 ;;
+  esac
+  if git -C "$pi_wt" push -q --no-verify -u origin "HEAD:refs/heads/$pb_b" >>"$ITEM_LOG" 2>&1 \
+     && [ "$(git -C "$pi_wt" ls-remote origin "refs/heads/$pb_b" 2>/dev/null | cut -f1)" = "$(git -C "$pi_wt" rev-parse HEAD)" ]; then
+    pi_pushed="$pb_b"
+    say "$pi_rb $pi_item: branch $pb_b pushed to origin"
+  else
+    say "$pi_rb $pi_item: pushing $pb_b to origin failed (see $ITEM_LOG); its commits are only in $pi_wt"
+    pi_push_failed=push-failed
+  fi
+}
+
+# finish_item: uses the pi_* variables of process_item. Pushes the branch, labels the PR,
+# records, notifies.
 finish_item() {
+  push_branch
   pi_draft=""
   if [ -n "$pi_branch" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
     pi_found="$(gh_in "$pi_gh_dir" pr list --head "$pi_branch" --state open --json url,number,isDraft \
@@ -1123,8 +1220,12 @@ finish_item() {
     else
       gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_BLOCKED"
       # shellcheck disable=SC2016
-      printf '## Autopilot queue: %s\n\n%s\n\nLog: `%s`\nWorktree kept at `%s`. Add the label `%s` again to retry.\n' \
-        "$pi_status" "$pi_reason" "$ITEM_LOG" "${pi_wt:--}" "$LABEL_READY" >"$pi_body"
+      {
+        printf '## Autopilot queue: %s\n\n%s\n\n' "$pi_status" "$pi_reason"
+        if [ -n "$pi_pushed" ]; then printf 'Branch `%s` pushed to origin with the work so far.\n' "$pi_pushed"
+        elif [ -n "$pi_push_failed" ]; then printf 'The branch could NOT be pushed; the work is only in the worktree below.\n'; fi
+        printf 'Log: `%s`\nWorktree kept at `%s`. Add the label `%s` again to retry.\n' "$ITEM_LOG" "${pi_wt:--}" "$LABEL_READY"
+      } >"$pi_body"
     fi
     gh_step "gh pr comment" pr comment "$pi_pr_number" --body-file "$pi_body"
     rm -f "$pi_body"
@@ -1153,6 +1254,7 @@ finish_item() {
   [ -n "$pi_noplan" ] && pi_extra="$pi_extra $pi_noplan"
   [ -n "$pi_gh_failed" ] && pi_extra="$pi_extra $pi_gh_failed"
   [ -n "$pi_jira_failed" ] && pi_extra="$pi_extra $pi_jira_failed"
+  [ -n "$pi_push_failed" ] && pi_extra="$pi_extra $pi_push_failed"
   [ -n "$pi_review" ] && pi_extra="$pi_extra $pi_review"
   printf '%s %s %s %s %s%s\n' "$(now_iso)" "${pi_repo:-$pi_repo_in}" "$(quote_item "$pi_item")" "$pi_status" "$pi_pr_url" "$pi_extra" >>"$DONE"
   [ -n "$pi_line" ] && remove_queue_line "$pi_line"
@@ -1171,7 +1273,11 @@ finish_item() {
   fi
 
   [ -n "${pi_wt:-}" ] && stop_compose "$pi_wt"
-  if [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
+  # A done run's worktree goes - unless its branch could not be pushed: then the worktree
+  # holds the only copy of the commits, and removing it (--force) would destroy them.
+  if [ "$pi_status" = "done" ] && [ -n "$pi_push_failed" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
+    say "$pi_rb $pi_item: worktree kept at $pi_wt because its branch is not on origin"
+  elif [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
     if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
       say "$pi_rb $pi_item: worktree removed"
     else
@@ -1225,7 +1331,7 @@ cmd_run() {
   warn_env_mode
   [ -n "$r_scheduled" ] && scheduled_gate "$(pause_date || true)"
   acquire_lock
-  mkdir -p "$LOGDIR" "$WTDIR"
+  mkdir -p "$LOGDIR"
   while r_line="$(first_queue_line)"; do
     if ! parse_line "$r_line"; then
       say "removed unparsable line from queue.txt: $r_line"
@@ -1477,7 +1583,8 @@ cmd_retry() {
   case "$1" in
     "$SESSIONS"/*)
       rt_item="${1%/}"
-      rt_wt="$WTDIR/$rt_rb-$(safe_name "$rt_item")"
+      rt_wt="$(wt_path "$rt_repo" "$rt_item")"
+      [ -e "$rt_wt/.git" ] || rt_wt="$(legacy_wt_path "$rt_rb" "$rt_item")"
       rt_branch="$(current_branch "$rt_wt")"
       cmd_add "$rt_repo" "$rt_item" ${rt_branch:+"$rt_branch"} ;;
     *) cmd_add "$rt_repo" "$@" ;;

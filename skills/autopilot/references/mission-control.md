@@ -3,9 +3,11 @@
 A shell script in the plugin's `bin/` (on PATH once the plugin is installed); the
 `/mission-control` skill is its control surface from a Claude session. It starts
 `claude -p "/autopilot <item>"` for each queued item in its own worktree, watches the run,
-restarts it when it handed off, reads the outcome from `REPORT.md`, labels the PR and
-notifies you. The run itself pushes, opens or updates the PR and works the review bot; the
-queue never opens PRs. One machine-wide queue, one run at a time.
+restarts it when it handed off, reads the outcome from `REPORT.md`, pushes the run's branch,
+labels the PR and notifies you. The run itself pushes, opens or updates the PR and works the
+review bot; the queue never opens PRs, but after every item - done or not - it pushes the
+branch, so the work is on GitHub whatever the outcome. One machine-wide queue, one run at a
+time.
 
 ## Files - all under `~/.claude/mission-control` (`MISSION_CONTROL_HOME`)
 
@@ -13,10 +15,10 @@ queue never opens PRs. One machine-wide queue, one run at a time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
-| `worktrees/` | `<repo basename>-<item>/`; removed after `done`, kept otherwise so the state survives. |
+| `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
 | `paused` | One date, `YYYY-MM-DD` (local time): the schedule is paused through that day. Written by `pause`, removed by `resume` or by the first scheduled run after the date. See "Pause the schedule". |
 | `force-once` | Written by `start`; the next scheduled run consumes it and goes ahead although a pause is set. |
@@ -152,7 +154,11 @@ column and runs from the default branch.
 ## What `run` does per item
 
 1. Resolves the repo and, for a PR, its branch and target branch (`gh pr view`).
-2. Creates a worktree under `worktrees/`: on the PR branch or the recorded branch (fetched
+2. Creates the item's worktree inside the project, `<repo>/.claude/worktrees/autopilot-<item>`
+   (where developers and the Claude app keep theirs and where the workbench backup finds it;
+   when the project does not ignore `.claude/worktrees/`, the runner adds it to the
+   repository's local `.git/info/exclude`, never to a tracked file; a worktree an older runner
+   left under `worktrees/` is moved here first): on the PR branch or the recorded branch (fetched
    first; a branch checked out elsewhere, e.g. in the user's own checkout, is checked out here
    anyway with `--ignore-other-worktrees`, and the queue says where else it is: do not commit
    there until the item is done), or
@@ -206,7 +212,15 @@ column and runs from the default branch.
    when the claude output ends with a `max_budget` error). After every attempt the runtime
    files `.claude/.autopilot-active`, `.autopilot-status` and `.autopilot-gate-blocks` are
    removed from the worktree; the sentinel is created again before the next attempt.
-6. Finds the PR the run pushed (`gh pr list --head <branch>`). `done`: draft → ready, label
+6. Pushes the run's branch to origin, whatever the outcome (`done`, `blocked`, `timeout`,
+   `handoff-limit`): `git push --no-verify -u origin HEAD:<branch>`, then reads the branch
+   back from origin. No PR is opened for it. Never a base branch (`main`, `master`, `preview`,
+   `develop`, the repo's default), never forced, without the project's git hooks (a red gate
+   is often why the run was blocked). A detached worktree with commits of its own gets the
+   branch `autopilot/<item>` first. The result is said on stdout and named in the PR comment,
+   the Jira comment and Slack; a refused push (someone pushed meanwhile, or the run ended on a
+   base branch) is `push-failed`, and the worktree then stays even after `done`.
+   Then finds the PR the run pushed (`gh pr list --head <branch>`). `done`: draft → ready, label
    `autopilot-ready` swapped for `autopilot-done`, comment "Autopilot report" with the first
    60 lines of `REPORT.md`. Otherwise: label swapped for `autopilot-blocked`, comment with the
    status, the reason and the log path; add `autopilot-ready` again to retry after you fixed
@@ -219,7 +233,7 @@ column and runs from the default branch.
    (`review-comments=N`) and the inline bot threads the run left without a reply
    (`unanswered-review-comments=N`, said on stdout). Appends to `done.txt`, removes the line from `queue.txt`, notifies
    (macOS notification with a sound: Glass for `done`, Sosumi with the reason for everything
-   else; Slack when `SLACK_WEBHOOK_URL` is set), stops the Docker Compose projects whose working directory lies in the worktree (containers and networks; volumes stay), removes the worktree after `done`.
+   else; Slack when `SLACK_WEBHOOK_URL` is set), stops the Docker Compose projects whose working directory lies in the worktree (containers and networks; volumes stay), removes the worktree after `done` (not after `push-failed`: then it holds the only copy of the commits).
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
