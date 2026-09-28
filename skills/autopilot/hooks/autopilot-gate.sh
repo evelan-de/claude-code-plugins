@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Autopilot Stop-hook gate (TEMPLATE).
 # Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
-# autopilot-hook-version: 2   (raise it with every change to this file)
+# autopilot-hook-version: 3   (raise it with every change to this file)
 #
 # Blocks turn-end while an autopilot run is active AND (a) the newest session has
 # neither REPORT.md nor HANDOFF.md (in a headless run, ending the turn ends the
@@ -102,7 +102,15 @@ if [ -n "$SESSION_DIR" ] && [ -f "$SESSION_DIR/REPORT.md" ] \
   exit 0
 fi
 
-if OUTPUT="$(bash -lc "$GATE" 2>&1)"; then
+# The gate runs in the user's login shell, so node/pnpm set up in its startup files
+# (~/.zshenv, ~/.zprofile) are on PATH; `bash -lc` never reads zsh's. Only bash or zsh
+# (the filter hook needs -l -o pipefail too); any other or an empty SHELL gets bash.
+GATE_SHELL=bash
+USER_SHELL="${SHELL:-}"
+case "${USER_SHELL##*/}" in
+  bash|zsh) command -v "$USER_SHELL" >/dev/null 2>&1 && GATE_SHELL="$USER_SHELL" ;;
+esac
+if OUTPUT="$("$GATE_SHELL" -lc "$GATE" 2>&1)"; then
   rm -f "$BLOCKS"
   exit 0   # green -> allow the turn to end
 fi
