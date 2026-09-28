@@ -383,7 +383,7 @@ Andreas to add it to the queue on the Mini.
 - **Docs are part of done.** The run updates README, `docs/`, `CLAUDE.md` and code comments
   its change made stale.
 - **Never-list:** see [Terms](#2-terms). A task that needs one of these ends blocked.
-- **Limits per session:** budget $100 on Sonnet, $400 on Opus; 480 minutes; a run is
+- **Limits per session:** budget $200 on Sonnet, $400 on Opus; 480 minutes; a run is
   stopped after 80 minutes without any activity. Up to six sessions per plan. The limits are
   per session, not per plan: a run close to one hands off to the next session, it never
   switches to a cheaper model to stay under it.
