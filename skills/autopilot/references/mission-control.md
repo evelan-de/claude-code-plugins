@@ -27,9 +27,11 @@ Settings in `env` (environment variables override them; defaults in brackets):
 (medium; a plan's `Model:` and `Effort:` headers win over these defaults, a value set in the
 environment wins over the plan; a sonnet run below xhigh runs at xhigh),
 `MISSION_CONTROL_ADVISOR` (fable), `MISSION_CONTROL_FALLBACK_MODEL` (opus; left out for a run
-on the same model family), `MISSION_CONTROL_BUDGET_USD` (100 per attempt for sonnet, 120 for opus),
-`MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (240 per attempt, a
-restart gets a fresh 240), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
+on the same model family), `MISSION_CONTROL_BUDGET_USD` (100 per attempt for sonnet, 400 for opus),
+`MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (480 per attempt, a
+restart gets a fresh 480), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
+Budget and wall clock are per attempt, never per task: a run nearing either hands off and the
+runner starts the next attempt (Andreas, 2026-09-28: Opus 400 USD, 480 minutes).
 
 ## Not on this machine?
 
@@ -164,7 +166,7 @@ column and runs from the default branch.
    `PLAN.md` when there is one, unless `MISSION_CONTROL_MODEL` / `MISSION_CONTROL_EFFORT` is
    set in the environment. A sonnet run below xhigh is raised to xhigh (`max` stays). Any
    other `Model:` value makes the item `blocked` before anything runs, with the header line
-   in the reason. Budget per attempt: 100 USD for sonnet, 120 for opus, unless
+   in the reason. Budget per attempt: 100 USD for sonnet, 400 for opus, unless
    `MISSION_CONTROL_BUDGET_USD` is set. Ticket: the `Ticket:` header; when the
    `jira` script and `~/.claude/jira/env` exist on this machine, `jira start <KEY>` runs now
    (In Progress; the assignee stays, the token owner only when nobody is assigned); a failure is said, logged as `jira-failed`,

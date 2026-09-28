@@ -878,7 +878,7 @@ fresh_home l2
 export FAKE_SCENARIO=report
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"
-check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 120" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 120 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 400" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 400 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
 printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1

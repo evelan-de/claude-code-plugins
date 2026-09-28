@@ -347,7 +347,7 @@ The PR comment and the Slack message carry the reason; `REPORT.md` (if written) 
 | needs a browser login | goal artifact behind a login, no login state file for the project | Andreas saves the state file on the Mini |
 | never-list | the task needs a migration, secrets, env files, production config, a force-push | do that part yourself, then relabel |
 | `handoff-limit` | the plan needed more than six sessions (five restarts) | split it into smaller packages or two plans |
-| `timeout` / stalled | a process that never ends (dev server, watch mode); 240 minutes per session | check the log line in the PR comment, fix the script |
+| `timeout` / stalled | a process that never ends (dev server, watch mode); 480 minutes per session | check the log line in the PR comment, fix the script |
 | plan belongs to another branch | the PR carries a `PLAN.md` whose `Branch:` line names another branch | commit this PR's own plan or fix the `Branch:` line |
 | no session directory | no `PLAN.md` on the PR branch and the run wrote none | commit the plan on the PR branch |
 
@@ -383,8 +383,10 @@ Andreas to add it to the queue on the Mini.
 - **Docs are part of done.** The run updates README, `docs/`, `CLAUDE.md` and code comments
   its change made stale.
 - **Never-list:** see [Terms](#2-terms). A task that needs one of these ends blocked.
-- **Limits per session:** budget $100 on Sonnet, $120 on Opus; 240 minutes; a run is
-  stopped after 80 minutes without any activity. Up to six sessions per plan.
+- **Limits per session:** budget $100 on Sonnet, $400 on Opus; 480 minutes; a run is
+  stopped after 80 minutes without any activity. Up to six sessions per plan. The limits are
+  per session, not per plan: a run close to one hands off to the next session, it never
+  switches to a cheaper model to stay under it.
 - **Models:** the plan on Fable (Opus is fine) in your session; the run on the plan's model
   (Sonnet or Opus) with Fable as its advisor; the review on Opus.
 
