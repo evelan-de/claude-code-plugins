@@ -28,8 +28,9 @@
 #
 # Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 # "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
-# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 100 USD
-# for sonnet, 120 for opus, unless MISSION_CONTROL_BUDGET_USD is set.
+# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 200 USD
+# for sonnet, 400 for opus, unless MISSION_CONTROL_BUDGET_USD is set. Wall clock per attempt:
+# 480 minutes, unless MISSION_CONTROL_TIMEOUT_MIN is set.
 #
 # Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
 # 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
@@ -208,7 +209,7 @@ load_env() {
   FALLBACK_MODEL="${MISSION_CONTROL_FALLBACK_MODEL:-opus}"
   BUDGET="${MISSION_CONTROL_BUDGET_USD:-}"
   MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-5}"
-  TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-240}"
+  TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-480}"
   WATCH_MIN="${MISSION_CONTROL_WATCH_MIN:-20}"
   TIMEOUT_S="$(awk -v m="$TIMEOUT_MIN" 'BEGIN { printf "%d", m * 60 }')"
   WATCH_S="$(awk -v m="$WATCH_MIN" 'BEGIN { printf "%d", m * 60 }')"
@@ -416,7 +417,7 @@ model_family() {
 # RUN_FALLBACK and RUN_BUDGET.
 # Model and effort: the environment, then the plan header, then the env file, then the
 # defaults. A sonnet run below xhigh is raised to xhigh. Fallback entries of the run model's
-# family are left out; the budget defaults to 100 USD for sonnet, 120 for opus. Returns 1
+# family are left out; the budget defaults to 200 USD for sonnet, 400 for opus. Returns 1
 # with RL_REASON when the plan names a model other than sonnet or opus.
 resolve_launch() {
   RUN_MODEL="$MODEL"; RUN_EFFORT="$EFFORT"; RL_REASON=""
@@ -446,8 +447,8 @@ resolve_launch() {
     RUN_FALLBACK="${RUN_FALLBACK:+$RUN_FALLBACK,}$rl_f"
   done
   if [ -n "$BUDGET" ]; then RUN_BUDGET="$BUDGET"
-  elif [ "$rl_family" = opus ]; then RUN_BUDGET=120
-  else RUN_BUDGET=100
+  elif [ "$rl_family" = opus ]; then RUN_BUDGET=400
+  else RUN_BUDGET=200
   fi
 }
 

@@ -302,7 +302,7 @@ check "(a) gh pr edit swaps labels to autopilot-done" has "pr edit 7 --remove-la
 check "(a) gh pr comment called" has "pr comment 7 --body-file" "$gh_args"
 check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat "$REC/comment.1")"
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
-check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 --output-format json" "$(cat "$REC/claude.args")"
+check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
 check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
@@ -329,7 +329,7 @@ export FAKE_SCENARIO=budget
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(a2b) blocked" grep -q " PAUL-36 blocked " "$QH/done.txt"
-check "(a2b) reason names the budget" has "budget of 100 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
+check "(a2b) reason names the budget" has "budget of 200 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
 
 # ---------- (a2c) HANDOFF.md then an abort REPORT.md (HANDOFF left behind) -> blocked, no restart loop ----------
 fresh_home a2c
@@ -871,18 +871,18 @@ check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tai
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
+check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 " "$(tail -n 1 "$REC/claude.args")"
 
 # ---------- (l2) model from the plan header, sonnet effort floor, fallback and budget ----------
 fresh_home l2
 export FAKE_SCENARIO=report
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"
-check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 120" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 120 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 400" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 400 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
 printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
-check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 100" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 100 " "$(tail -n 1 "$REC/claude.args")"
+check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 200" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the raise is logged" grep -q "effort medium raised to xhigh" "$(ls "$QH"/logs/*-PAUL-161.log)"
 printf '%s PAUL-162\n' "$proj" >"$QH/queue.txt"
 sh "$TOOL" run >/dev/null 2>&1
