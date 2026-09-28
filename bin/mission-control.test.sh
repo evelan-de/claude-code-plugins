@@ -22,6 +22,7 @@ count_lines() { grep -c . "$1" 2>/dev/null; }
 live_lines() { grep -c -v -E '^[[:space:]]*(#|$)' "$1" 2>/dev/null; }
 is_main_clean() { [ "$(git -C "$proj" symbolic-ref --short HEAD)" = main ] && [ -z "$(git -C "$proj" status --porcelain)" ]; }
 commit() { git -C "$1" -c user.name=t -c user.email=t@t commit -q "${@:2}"; }
+on_origin() { git -C "$tmp/origin.git" rev-parse -q --verify "refs/heads/$1" >/dev/null; }   # $1 branch
 
 # ---------- fakes ----------
 mkdir -p "$tmp/fakes"
@@ -304,7 +305,10 @@ check "(a) PR comment body contains the report head" has "shipped PAUL-1" "$(cat
 check "(a) PR comment body starts with the report heading" has "## Autopilot report" "$(head -n 1 "$REC/comment.1")"
 check "(a) claude started with /autopilot PAUL-1 and the launch flags" has "-p /autopilot PAUL-1 --model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 --output-format json" "$(cat "$REC/claude.args")"
 check "(a) progress lines on stdout" has "[mission-control] proj PAUL-1: done (PR https://github.com/e/r/pull/7" "$out"
-check "(a) worktree removed after done" [ ! -e "$QH/worktrees/proj-PAUL-1/.git" ]
+check "(a) worktree removed after done" [ ! -e "$proj/.claude/worktrees/autopilot-PAUL-1/.git" ]
+check "(a) the branch reached origin before the worktree was removed" on_origin feat/2026-09-20-PAUL-1
+check "(a) the worktree lived inside the project, not under the queue home" [ ! -e "$QH/worktrees" ]
+check "(a) .claude/worktrees/ excluded in the project's local exclude file" grep -qx ".claude/worktrees/" "$proj/.git/info/exclude"
 check "(a) main checkout untouched (still on main, clean)" is_main_clean
 check "(a) log file written" ls "$QH"/logs/*-PAUL-1.log >/dev/null 2>&1
 check "(a) the run saw the sentinel .claude/.autopilot-active" grep -q "attempt 1" "$REC/sentinel.seen"
@@ -319,9 +323,14 @@ check "(a2) status blocked in done.txt" grep -q " PAUL-31 blocked " "$QH/done.tx
 check "(a2) reason from the Status line on stdout" has "blocked: cannot reach the API" "$out"
 check "(a2) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
 check "(a2) PR comment carries the reason" has "cannot reach the API" "$(cat "$REC/comment.1")"
-check "(a2) worktree kept" [ -e "$QH/worktrees/proj-PAUL-31/.git" ]
-check "(a2) sentinel removed from the kept worktree" [ ! -e "$QH/worktrees/proj-PAUL-31/.claude/.autopilot-active" ]
-check "(a2) status file removed from the kept worktree" [ ! -e "$QH/worktrees/proj-PAUL-31/.claude/.autopilot-status" ]
+check "(a2) worktree kept" [ -e "$proj/.claude/worktrees/autopilot-PAUL-31/.git" ]
+check "(a2) the blocked run's branch is on origin, at the worktree's commit" \
+  [ "$(git -C "$tmp/origin.git" rev-parse -q --verify refs/heads/feat/2026-09-20-PAUL-31)" = "$(git -C "$proj/.claude/worktrees/autopilot-PAUL-31" rev-parse HEAD)" ]
+check "(a2) the push is said" has "PAUL-31: branch feat/2026-09-20-PAUL-31 pushed to origin" "$out"
+check "(a2) the PR comment names the pushed branch" has 'Branch `feat/2026-09-20-PAUL-31` pushed to origin' "$(cat "$REC/comment.1")"
+check "(a2) no push-failed in done.txt" lacks "push-failed" "$(cat "$QH/done.txt")"
+check "(a2) sentinel removed from the kept worktree" [ ! -e "$proj/.claude/worktrees/autopilot-PAUL-31/.claude/.autopilot-active" ]
+check "(a2) status file removed from the kept worktree" [ ! -e "$proj/.claude/worktrees/autopilot-PAUL-31/.claude/.autopilot-status" ]
 
 # ---------- (a2b) budget exhausted, no REPORT.md or HANDOFF.md -> blocked with the budget named ----------
 fresh_home a2b
@@ -404,7 +413,7 @@ check "(c) run exits 0" [ "$got" -eq 0 ]
 check "(c) claude called 1 + MAX_RESTARTS times" [ "$(count_lines "$REC/claude.args")" = 3 ]
 check "(c) status handoff-limit in done.txt" grep -q " PAUL-3 handoff-limit " "$QH/done.txt"
 check "(c) PR labelled autopilot-blocked" has "pr edit 7 --remove-label autopilot-ready --add-label autopilot-blocked" "$(cat "$REC/gh.args")"
-check "(c) worktree kept" [ -e "$QH/worktrees/proj-PAUL-3/.git" ]
+check "(c) worktree kept" [ -e "$proj/.claude/worktrees/autopilot-PAUL-3/.git" ]
 unset MISSION_CONTROL_MAX_RESTARTS
 
 # ---------- (d) PR items from repos.txt, including a PR whose branch is missing ----------
@@ -747,7 +756,7 @@ fresh_home j
 export FAKE_SCENARIO=report-blocked
 sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
 out="$(sh "$TOOL" run 2>&1)"
-wt="$QH/worktrees/proj-2026-09-19-PAUL-9-thing"
+wt="$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing"
 check "(j) first run blocked, worktree kept" [ -e "$wt/.git" ]
 git -C "$proj" push -q origin feat/PAUL-9-thing   # the run's commit, as the real run would push it
 git clone -q "$tmp/origin.git" "$tmp/devclone"
@@ -771,13 +780,15 @@ check "(j) diverged worktree: item still processed" [ "$(grep -c "PAUL-9-thing b
 # ---------- (j2) the plan branch is checked out in the user's main checkout ----------
 fresh_home j2
 export FAKE_SCENARIO=report-blocked
+# worktrees live in the project now, so (j)'s kept one would be reused; this case needs a new one
+git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing"
 git -C "$proj" checkout -q --ignore-other-worktrees feat/PAUL-9-thing
 sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(j2) run exits 0" [ "$got" -eq 0 ]
 check "(j2) says where else the branch is checked out" has "branch feat/PAUL-9-thing is also checked out in " "$out"
 check "(j2) names the other checkout and the rule" has "/proj; the run works on feat/PAUL-9-thing here, do not commit there until it is done" "$out"
-check "(j2) the worktree is on the branch, not detached" [ "$(git -C "$QH/worktrees/proj-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)" = feat/PAUL-9-thing ]
+check "(j2) the worktree is on the branch, not detached" [ "$(git -C "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)" = feat/PAUL-9-thing ]
 check "(j2) blocked as the fake run reports" grep -q " docs/autopilot/sessions/2026-09-19-PAUL-9-thing blocked " "$QH/done.txt"
 git -C "$proj" checkout -q main
 
@@ -923,13 +934,26 @@ unset FAKE_GH_PRS
 # ---------- (m) no PR found after the run ----------
 fresh_home m
 export FAKE_SCENARIO=report FAKE_GH_NO_PR=1
-printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
+printf '%s PAUL-137\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"; got=$?
 check "(m) run exits 0" [ "$got" -eq 0 ]
-check "(m) done with - as the PR url" grep -q " PAUL-37 done - no-plan$" "$QH/done.txt"
+check "(m) done with - as the PR url" grep -q " PAUL-137 done - no-plan$" "$QH/done.txt"
 check "(m) no label or comment call without a PR" lacks "pr edit" "$(cat "$REC/gh.args")"
-check "(m) stdout says done (PR -)" has "PAUL-37: done (PR -" "$out"
+check "(m) stdout says done (PR -)" has "PAUL-137: done (PR -" "$out"
 unset FAKE_GH_NO_PR
+
+# ---------- (m2) a done run whose push is refused keeps its worktree ----------
+# PAUL-37's branch is on origin since (a2d); this new run builds a different history on the
+# same branch name, origin refuses the non-fast-forward, and the commits exist only locally.
+fresh_home m2
+export FAKE_SCENARIO=report
+printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(m2) the refused push is recorded" grep -q " PAUL-37 done .*push-failed" "$QH/done.txt"
+check "(m2) the worktree is kept, not removed" [ -e "$proj/.claude/worktrees/autopilot-PAUL-37/.git" ]
+check "(m2) and it says why" has "PAUL-37: worktree kept at $proj/.claude/worktrees/autopilot-PAUL-37 because its branch is not on origin" "$out"
+check "(m2) nothing was force-pushed" bash -c '! git -C "$1" log --format=%s feat/2026-09-20-PAUL-37 | grep -c "^fake run" | grep -qx 1' _ "$tmp/origin.git"
+git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-PAUL-37"
 
 # ---------- (n) unparsable queue lines are removed and named ----------
 fresh_home n
@@ -986,7 +1010,7 @@ check "(q) status phase is the run line from the item log" has ", phase: run (at
 check "(q) status: no package line for a ticket item" has "  package: none marked [~]" "$out"
 check "(q) status: run line before the hook wrote one" has "  run: no status line yet" "$out"
 check "(q) status: diff line" has "  diff since base: " "$out"
-qwt="$QH/worktrees/proj-PAUL-50"
+qwt="$proj/.claude/worktrees/autopilot-PAUL-50"
 mkdir -p "$qwt/.claude" "$qwt/docs/autopilot/sessions/2026-09-20-PAUL-50-x"
 echo "2026-09-20T22:00:00Z ctx=123456 tool=Edit" >"$qwt/.claude/.autopilot-status"
 printf '# PLAN\n### P1 [x] done thing\n### P2 [~] the current package\n### P3 [ ] later\n' >"$qwt/docs/autopilot/sessions/2026-09-20-PAUL-50-x/PLAN.md"
@@ -1081,11 +1105,11 @@ check "(r) retry treats a mixed argument as an item, not a PR" grep -qxF "$proj 
 check "(r) retry did not label a PR for the mixed argument" lacks "pr edit 12abc" "$(cat "$REC/gh.args")"
 sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
 sh "$TOOL" run >/dev/null 2>&1
-check "(r) blocked run left its worktree" [ -e "$QH/worktrees/proj-2026-09-19-PAUL-9-thing/.git" ]
+check "(r) blocked run left its worktree" [ -e "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing/.git" ]
 check "(r) queue empty before retry" [ "$(live_lines "$QH/queue.txt")" = 0 ]
 # the branch the kept worktree is on (detached at its tip when (j) still holds the branch,
 # then the fake run created its own); retry must record exactly that one
-wt_branch="$(git -C "$QH/worktrees/proj-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)"
+wt_branch="$(git -C "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)"
 check "(r) the worktree is on a branch" [ -n "$wt_branch" ]
 out="$(sh "$TOOL" retry "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing 2>&1)"; got=$?
 check "(r) retry item exits 0" [ "$got" -eq 0 ]
@@ -1368,7 +1392,7 @@ unset FAKE_GH_PRS
 fresh_home w
 export FAKE_SCENARIO=report
 printf '%s PAUL-200\n' "$proj" >"$QH/queue.txt"
-wt200="$QH/worktrees/proj-PAUL-200"
+wt200="$proj/.claude/worktrees/autopilot-PAUL-200"
 out="$(FAKE_DOCKER_PS="$(printf 'proj-paul-200|%s\nproj-paul-200|%s/docker/dev\nother-stack|/somewhere/else\nprefix-trap|%s-other\n' "$wt200" "$wt200" "$wt200")" sh "$TOOL" run 2>&1)"
 check "(w) the run saw the hooks installed and registered" grep -q "attempt 1" "$REC/hooks.seen"
 check "(w) without a branch the hooks are not committed" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.1")" = 0 ]
@@ -1426,6 +1450,71 @@ sh "$TOOL" run >/dev/null 2>&1
 check "(x) .nvmrc v22: the highest installed 22.x (v22.10.1, not v22.2.0)" [ "$(cat "$REC/claude.path.2")" = "$NVM_DIR/versions/node/v22.10.1/bin" ]
 check "(x) the Node choice is logged" grep -q "node for the run: $NVM_DIR/versions/node/v22.10.1/bin" "$(ls "$QH"/logs/*-2026-09-26-PAUL-211-node.log)"
 rm -rf "$NVM_DIR"
+
+# ---------- (y) every run's branch reaches origin; worktrees live inside the project ----------
+# 2026-09-28: WEB-1111 ended blocked with 113 commits in a worktree under the queue home -
+# on one Mac only, invisible on GitHub and outside every backup.
+fresh_home y
+export FAKE_SCENARIO=report-blocked
+# (y1) a worktree an older runner kept under the queue home moves into the project
+git -C "$proj" worktree add -q --detach "$QH/worktrees/proj-PAUL-77" main
+printf '%s PAUL-77\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(y1) the old worktree moved into the project" [ -e "$proj/.claude/worktrees/autopilot-PAUL-77/.git" ]
+check "(y1) nothing left at the old place" [ ! -e "$QH/worktrees/proj-PAUL-77" ]
+check "(y1) the move is said" has "PAUL-77: worktree moved into the project" "$out"
+check "(y1) and the run's branch pushed" on_origin feat/2026-09-20-PAUL-77
+
+# The hooks below live in the test repos' own hooks folders. A machine-wide core.hooksPath
+# (this Mac has one) would silently replace them, so each repo names its folder explicitly.
+git -C "$tmp/origin.git" config core.hooksPath "$tmp/origin.git/hooks"
+git -C "$proj" config core.hooksPath "$proj/.git/hooks"
+
+# (y2) origin refuses the push: said, recorded, the work stays in the worktree
+cat >"$tmp/origin.git/hooks/pre-receive" <<'EOF'
+#!/bin/sh
+while read -r old new ref; do case "$ref" in *PAUL-88*) echo "rejected for the test" >&2; exit 1 ;; esac; done
+exit 0
+EOF
+chmod +x "$tmp/origin.git/hooks/pre-receive"
+check "(y2) sanity: origin really refuses such a branch" \
+  bash -c '! git -C "$1" push -q origin main:refs/heads/probe-PAUL-88 2>/dev/null' _ "$proj"
+printf '%s PAUL-88\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+rm -f "$tmp/origin.git/hooks/pre-receive"
+check "(y2) the failed push is said" has "PAUL-88: pushing feat/2026-09-20-PAUL-88 to origin failed" "$out"
+check "(y2) done.txt marks push-failed" grep -q " PAUL-88 blocked .*push-failed" "$QH/done.txt"
+check "(y2) the branch is not on origin" bash -c '! git -C "$1" rev-parse -q --verify refs/heads/feat/2026-09-20-PAUL-88 >/dev/null' _ "$tmp/origin.git"
+check "(y2) the worktree keeps the commits" [ -e "$proj/.claude/worktrees/autopilot-PAUL-88/.git" ]
+
+# (y3) the project's own pre-push hook never keeps a blocked run off GitHub
+printf '#!/bin/sh\necho "gate red" >&2\nexit 1\n' >"$proj/.git/hooks/pre-push"
+chmod +x "$proj/.git/hooks/pre-push"
+check "(y3) sanity: the hook blocks a normal push" \
+  bash -c '! git -C "$1" push -q origin main:refs/heads/probe-hook 2>/dev/null' _ "$proj"
+printf '%s PAUL-90\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+rm -f "$proj/.git/hooks/pre-push"
+git -C "$proj" config --unset core.hooksPath
+git -C "$tmp/origin.git" config --unset core.hooksPath
+check "(y3) pushed despite the failing pre-push hook" on_origin feat/2026-09-20-PAUL-90
+
+# (y4) a run that ends on a base branch is never pushed there
+git -C "$proj" checkout -q -b develop main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-27-PAUL-89-dev"
+printf '# PLAN\nBranch: develop   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-27-PAUL-89-dev/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan on develop"; git -C "$proj" push -q origin develop
+git -C "$proj" checkout -q main
+printf '%s docs/autopilot/sessions/2026-09-27-PAUL-89-dev develop\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+# (the hooks commit made before the run may reach develop - that is the older, separate
+# ensure_hooks step; the run's own work must not)
+check "(y4) the run's work is not on origin's develop" \
+  bash -c '! git -C "$1" log --format=%s develop | grep -q "^fake run"' _ "$tmp/origin.git"
+check "(y4) and it says why" has "ended on the base branch develop; not pushed" "$out"
+check "(y4) recorded as push-failed" grep -q "2026-09-27-PAUL-89-dev blocked .*push-failed" "$QH/done.txt"
+check "(y4) the project checkout stays clean" is_main_clean
+git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-89-dev"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

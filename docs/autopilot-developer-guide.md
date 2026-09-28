@@ -53,7 +53,7 @@ flowchart TB
 | Queue, runner | `mission-control`, a script on the office Mini that starts the runs one after another. |
 | Hand-off | When a run's working memory is full it writes `HANDOFF.md`, and the runner starts a fresh session that continues from there. |
 | Never-list | What a run never does: force-push, database migrations, secrets or env files, production config, CI credentials, other people's branches. |
-| Worktree | A separate copy of the repo on the Mini in which one run works. |
+| Worktree | A separate copy of the repo on the Mini in which one run works, inside the project at `.claude/worktrees/autopilot-<item>`. |
 
 ## 3. Who does what
 
@@ -339,6 +339,15 @@ Found something?
 
 The PR comment and the Slack message carry the reason; `REPORT.md` (if written) starts with
 `Status: blocked - <reason>`.
+
+Whatever the outcome - done, blocked, timeout, too many hand-offs - the queue pushes the run's
+branch to origin at the end, without opening a PR. So the work of a blocked run is on GitHub
+right away: look at the branch, the PR comment and the Slack message name it. The queue never
+pushes to a base branch (`main`, `master`, `preview`, `develop`, the repo's default) and never
+forces; it skips the project's git hooks for this push, because a red gate is often the very
+reason the run was blocked. `push-failed` in the message means the branch could not be pushed
+(someone pushed to it meanwhile, or the run ended on a base branch): the commits are then only
+in the run's worktree on the Mini, which stays in place.
 
 | Reason | Typical cause | Fix |
 | --- | --- | --- |

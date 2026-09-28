@@ -41,7 +41,7 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
   stop. No directory → say that runs are started by the runner only, and point to the
   hand-over in `/autopilot-plan` step 7 (draft PR labelled `autopilot-ready`). Stop. A
   sentinel that exists although a user is typing to you (an interactive session in a
-  checkout, not a runner worktree under `~/.claude/mission-control/worktrees/`) is stale:
+  checkout, not a runner worktree under `<repo>/.claude/worktrees/autopilot-*`) is stale:
   delete it and take this interactive route. The rest of this skill is for the run.
 - A session directory, or a ticket key whose plan exists under `docs/autopilot/sessions/` →
   run it. Options come from the prompt and from the plan header `Options:` ("defer PR",
