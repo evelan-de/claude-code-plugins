@@ -72,6 +72,12 @@ external blocker (a purchase, a human-only asset, input impossible here) is.
   one screenshot per screen at most.
 - **Hand off, never compact.** When the context-budget hook reports the budget: hand off
   (below). Do not push on, do not wait for compaction. The runner starts the next session.
+- **Runner limits are per attempt.** The cost cap (`--max-budget-usd`) and the wall clock
+  (`references/mission-control.md`) apply to one attempt, never to the task. Near either, hand
+  off. Never switch to a cheaper model or cheaper subagents, never shrink the scope to stay
+  under a cap: the plan's `Model:` holds for every step and subagent. An exhausted external
+  quota (image generation, an API rate limit) is not waited out: commit what exists and end
+  with `Status: blocked - <quota> until <reset time>`.
 - **Never end the turn to wait.** You are headless: when your turn ends, the process ends;
   no notification, no background result ever reaches you. Anything you wait for runs in the
   foreground of one Bash call (Codex review with `timeout: 600000`, `gh pr checks --watch`,
