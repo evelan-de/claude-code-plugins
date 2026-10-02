@@ -1,64 +1,85 @@
-#!/bin/sh
-# codex-image-copy - copy the image Codex generated last to a destination path.
-#
-# Codex's imagegen tool writes to ~/.codex/generated_images/<session>/ first and
-# then copies to the requested destination; on Windows the sandbox can block
-# that copy. This helper picks the newest session directory and its newest
-# ig_*.png (falling back to any png in that session) and copies it out.
-# Bundled sample images and older sessions are never picked.
-#
-# Usage: codex-image-copy <destination-file>
-# Env:   CODEX_IMAGES_DIR overrides ~/.codex/generated_images
-#
-# Exit codes: 0 ok | 1 nothing to copy | 64 usage error
+#!/usr/bin/env python3
+"""codex-image-copy - copy the image Codex generated last to a destination path.
 
-dest="${1:-}"
-if [ -z "$dest" ]; then
-  echo "usage: codex-image-copy <destination-file>" >&2
-  exit 64
-fi
+usage: codex-image-copy <destination-file>
 
-root="${CODEX_IMAGES_DIR:-$HOME/.codex/generated_images}"
-if [ ! -d "$root" ]; then
-  echo "codex-image-copy: no generated images directory at $root" >&2
-  exit 1
-fi
+Codex's imagegen tool writes to ~/.codex/generated_images/<session>/ first and then copies to
+the requested destination; on Windows the sandbox can block that copy. This helper picks the
+newest session directory and its newest ig_*.png (falling back to any png in that session)
+and copies it out. Bundled sample images and older sessions are never picked. The folder of
+the destination is created when it is missing.
 
-# Newest session directory by modification time.
-session=""
-for d in "$root"/*/; do
-  [ -d "$d" ] || continue
-  if [ -z "$session" ] || [ "$d" -nt "$session" ]; then
-    session="$d"
-  fi
-done
-if [ -z "$session" ]; then
-  echo "codex-image-copy: no session directory under $root" >&2
-  exit 1
-fi
-session="${session%/}"
+Env: CODEX_IMAGES_DIR overrides ~/.codex/generated_images
 
-newest() { # $1 directory  $2 glob pattern inside it (expanded unquoted on purpose)
-  dir="$1"
-  pattern="$2"
-  found=""
-  # shellcheck disable=SC2231  # the pattern must stay unquoted so it expands
-  for f in "$dir"/$pattern; do
-    [ -f "$f" ] || continue
-    if [ -z "$found" ] || [ "$f" -nt "$found" ]; then
-      found="$f"
-    fi
-  done
-  printf '%s' "$found"
-}
+Python 3 standard library only. Exit codes: 0 ok | 1 nothing to copy | 64 usage error
+"""
+import fnmatch
+import os
+import shutil
+import sys
 
-src="$(newest "$session" 'ig_*.png')"
-[ -n "$src" ] || src="$(newest "$session" '*.png')"
-if [ -z "$src" ]; then
-  echo "codex-image-copy: no png in newest session $session" >&2
-  exit 1
-fi
+USAGE = __doc__.split("\n\n")[1]
 
-mkdir -p "$(dirname "$dest")" || exit 1
-cp "$src" "$dest" || exit 1
-echo "copied $src -> $dest"
+
+def newest(directory, pattern, keep):
+    """The newest entry by modification time whose name matches the pattern and that passes
+    keep(path), "" when there is none. Hidden names never match; of two equally new entries
+    the first by name wins."""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return ""
+    found, found_time = "", None
+    for name in names:
+        if name.startswith(".") or not fnmatch.fnmatchcase(name, pattern):
+            continue
+        path = f"{directory}/{name}"
+        if not keep(path):
+            continue
+        modified = os.stat(path).st_mtime_ns
+        if found_time is None or modified > found_time:
+            found, found_time = path, modified
+    return found
+
+
+def parent_dir(path):
+    """The directory part of a path, as dirname(1) reports it."""
+    stripped = path.rstrip("/")
+    if not stripped:
+        return "/"
+    return os.path.dirname(stripped).rstrip("/") or ("/" if stripped.startswith("/") else ".")
+
+
+def main(argv):
+    dest = argv[0] if argv else ""
+    if not dest:
+        print(USAGE, file=sys.stderr)
+        return 64
+
+    root = os.environ.get("CODEX_IMAGES_DIR") or os.environ.get("HOME", "") + "/.codex/generated_images"
+    if not os.path.isdir(root):
+        print(f"codex-image-copy: no generated images directory at {root}", file=sys.stderr)
+        return 1
+
+    session = newest(root, "*", os.path.isdir)
+    if not session:
+        print(f"codex-image-copy: no session directory under {root}", file=sys.stderr)
+        return 1
+
+    src = newest(session, "ig_*.png", os.path.isfile) or newest(session, "*.png", os.path.isfile)
+    if not src:
+        print(f"codex-image-copy: no png in newest session {session}", file=sys.stderr)
+        return 1
+
+    try:
+        os.makedirs(parent_dir(dest), exist_ok=True)
+        shutil.copy(src, dest)
+    except OSError as e:
+        print(f"codex-image-copy: {e}", file=sys.stderr)
+        return 1
+    print(f"copied {src} -> {dest}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

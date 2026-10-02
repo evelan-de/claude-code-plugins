@@ -125,7 +125,9 @@ Adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see
 
 ## Helper scripts
 
-The scripts in `bin/` are on the PATH once the plugin is installed.
+The scripts in `bin/` are on the PATH once the plugin is installed. They are Python 3
+(standard library only) and need `python3` 3.9 or newer on the PATH, which macOS brings
+along. They are tested on macOS only.
 
 | Script | What it does |
 | --- | --- |
@@ -142,6 +144,6 @@ The scripts in `bin/` are on the PATH once the plugin is installed.
 ## Working on this plugin
 
 Structure and rules: [`CLAUDE.md`](CLAUDE.md). To try a local checkout:
-`claude --plugin-dir /path/to/claude-code-plugins`. Before a release: `sh bin/plugin-lint`,
+`claude --plugin-dir /path/to/claude-code-plugins`. Before a release: `bin/plugin-lint`,
 every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh`, `claude plugin validate .`,
 and the version bump in `.claude-plugin/plugin.json`.

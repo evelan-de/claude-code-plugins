@@ -1,1787 +1,2390 @@
-#!/bin/sh
-# mission-control - run prepared autopilot sessions one after another, unattended.
-#
-# usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
-#        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
-#        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
-#        mission-control install-schedule [HH:MM] | uninstall-schedule
-#
-# One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-control):
-#   queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
-#               dir, ticket key, or a "quoted topic"; the branch column exists for session dirs
-#               only, `add` fills it in); processed top to bottom
-#   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
-#   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
-#               [push-failed]
-#   env         optional, mode 600: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings
-#   logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
-#               renamed once the session dir or ticket key is known), queue.log for lines
-#               outside an item
-#   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
-#               the project on the item's next attempt
-#   run.lock/   pid of the active run and current (the item it is on), removed after the run
-#   paused      one date (YYYY-MM-DD, local): the schedule is paused through that day; the
-#               LaunchAgent's "run --scheduled" skips while it is valid, a manual run ignores it
-#   force-once  written by start; the next scheduled run consumes it and ignores the pause
-#
-# Each item runs in its own worktree inside the project, <repo>/.claude/worktrees/
-# autopilot-<item>, where developers and the Claude app keep theirs and where the workbench
-# backup finds it. The runner adds .claude/worktrees/ to the repository's local exclude file
-# when the project does not ignore it. A done item's worktree is removed; any other keeps it
-# for a retry.
-#
-# The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
-# the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
-# first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
-# the outcome and notifies. Sequential, one run at a time (lock).
-#
-# Whatever the outcome - done, blocked, timeout, handoff-limit - the queue then pushes the
-# run's branch to origin (no PR, never a base branch, never forced, without the project's git
-# hooks), so a blocked run is visible on GitHub and its commits never exist on one Mac only.
-# A detached run with commits of its own gets the branch autopilot/<item> first.
-#
-# Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
-# "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
-# wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 200 USD
-# for sonnet, 400 for opus, unless MISSION_CONTROL_BUDGET_USD is set. Wall clock per attempt:
-# 480 minutes, unless MISSION_CONTROL_TIMEOUT_MIN is set.
-#
-# Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
-# 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
-# Every sleep on the run path is a background sleep plus wait, so a trapped signal (stop)
-# interrupts it at once instead of after the watch step.
-#
-# Dependencies: git, gh, curl (Slack), osascript (macOS notification). jq is optional.
-# Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, JQ_BIN, NVM_DIR,
-# MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
-# POSIX sh. Never prints a secret: the Slack webhook URL is only ever read into a variable.
-set -u
+#!/usr/bin/env python3
+"""mission-control - run prepared autopilot sessions one after another, unattended.
 
-QHOME="${MISSION_CONTROL_HOME:-$HOME/.claude/mission-control}"
-CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-GH_BIN="${GH_BIN:-gh}"
-QUEUE="$QHOME/queue.txt"
-REPOS="$QHOME/repos.txt"
-DONE="$QHOME/done.txt"
-ENVFILE="$QHOME/env"
-LOGDIR="$QHOME/logs"
-WTDIR="$QHOME/worktrees"
-LOCK="$QHOME/run.lock"
-PAUSE="$QHOME/paused"
-FORCE="$QHOME/force-once"
-PLIST="$HOME/Library/LaunchAgents/de.evelan.mission-control.plist"
-MARKETPLACE_BIN="$HOME/.claude/plugins/marketplaces/evelan-plugins/bin"
-SESSIONS=docs/autopilot/sessions
-LABEL_READY=autopilot-ready
-LABEL_DONE=autopilot-done
-LABEL_BLOCKED=autopilot-blocked
-CONFIG_VARS="SLACK_WEBHOOK_URL MISSION_CONTROL_MODEL MISSION_CONTROL_EFFORT MISSION_CONTROL_ADVISOR MISSION_CONTROL_FALLBACK_MODEL MISSION_CONTROL_BUDGET_USD MISSION_CONTROL_MAX_RESTARTS MISSION_CONTROL_TIMEOUT_MIN MISSION_CONTROL_WATCH_MIN"
+usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
+       mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
+       mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
+       mission-control install-schedule [HH:MM] | uninstall-schedule
 
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-WATCHDOG="$script_dir/autopilot-watchdog"
-[ -x "$WATCHDOG" ] || WATCHDOG=autopilot-watchdog
-HOOKS_BIN="$script_dir/autopilot-hooks"
-[ -x "$HOOKS_BIN" ] || HOOKS_BIN=autopilot-hooks
-DOCKER_BIN="${DOCKER_BIN:-docker}"
-DEFBRANCH="$script_dir/git-default-branch"
-[ -x "$DEFBRANCH" ] || DEFBRANCH=git-default-branch
-JIRA_BIN="${JIRA_BIN:-$script_dir/jira}"
-[ -x "$JIRA_BIN" ] || JIRA_BIN=jira
-JIRA_ENV="${JIRA_HOME:-$HOME/.claude/jira}/env"
+One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-control):
+  queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
+              dir, ticket key, or a "quoted topic"; the branch column exists for session dirs
+              only, `add` fills it in); processed top to bottom
+  repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
+  done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
+              [push-failed] [runner-error]
+  env        optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
+              a line starting with "export" also reaches the run's environment
+  logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
+              renamed once the session dir or ticket key is known), queue.log for lines
+              outside an item
+  worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
+              the project on the item's next attempt
+  run.lock/   pid of the active run and current (the item it is on), removed after the run
+  paused      one date (YYYY-MM-DD, local): the schedule is paused through that day; the
+              LaunchAgent's "run --scheduled" skips while it is valid, a manual run ignores it
+  force-once  written by start; the next scheduled run consumes it and ignores the pause
 
-ITEM_LOG=""
-RUN_PIDFILE=""
-SLEEP_PID=""
-SOURCE_FAILED=0
+Each item runs in its own worktree inside the project, <repo>/.claude/worktrees/
+autopilot-<item>, where developers and the Claude app keep theirs and where the workbench
+backup finds it. The runner adds .claude/worktrees/ to the repository's local exclude file
+when the project does not ignore it. A done item's worktree is removed; any other keeps it
+for a retry.
 
-usage() {
-  sed -n '4,7p' "$0" | sed 's/^# //; s/^#//'
-  exit 2
-}
+The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
+the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
+first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
+the outcome and notifies. Sequential, one run at a time (lock).
 
-die() { echo "mission-control: $*" >&2; exit 1; }
-die_usage() { echo "mission-control: $*" >&2; exit 2; }
-expand_tilde() { case "$1" in \~/*) printf '%s\n' "$HOME/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
-now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-today() { date +%Y-%m-%d; }
-hhmm_of_epoch() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M 2>/dev/null || echo "?"; }
+Whatever the outcome - done, blocked, timeout, handoff-limit - the queue then pushes the
+run's branch to origin (no PR, never a base branch, never forced, without the project's git
+hooks), so a blocked run is visible on GitHub and its commits never exist on one Mac only.
+A detached run with commits of its own gets the branch autopilot/<item> first.
 
-# valid_date <YYYY-MM-DD>: 0 when the string is a real calendar date. The shape is checked
-# here; the calendar by date itself (BSD -j -f, else GNU -d), which must give the input back
-# (BSD strptime rolls 02-30 over to 03-02 instead of failing).
-valid_date() {
-  case "$1" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) return 1 ;; esac
-  vd="$(date -j -f %Y-%m-%d "$1" +%Y-%m-%d 2>/dev/null || date -d "$1" +%Y-%m-%d 2>/dev/null)"
-  [ "$vd" = "$1" ]
-}
+Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
+"Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
+wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 200 USD
+for sonnet, 400 for opus, unless MISSION_CONTROL_BUDGET_USD is set. Wall clock per attempt:
+480 minutes, unless MISSION_CONTROL_TIMEOUT_MIN is set.
 
-# date_plus_days <N>: today plus N days, local time (BSD -v, else GNU -d).
-date_plus_days() {
-  date -v+"$1"d +%Y-%m-%d 2>/dev/null || date -d "+$1 days" +%Y-%m-%d 2>/dev/null
-}
+Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
+10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
+INT and TERM (stop) end the run within a second while it waits for claude; a git or gh
+command that is running finishes first.
 
-# pause_date: the date in the pause file when the pause is still valid (today or later),
-# else nothing. Read-only; the scheduled run removes an expired file.
-pause_date() {
-  [ -f "$PAUSE" ] || return 1
-  pd="$(head -n 1 "$PAUSE" | tr -d '[:space:]')"
-  valid_date "$pd" || return 1
-  # YYYYMMDD as integers: a date before today is expired.
-  [ "$(printf '%s' "$pd" | tr -d -)" -lt "$(today | tr -d -)" ] && return 1
-  printf '%s\n' "$pd"
-}
+Dependencies: git, gh, curl (Slack), osascript (macOS notification).
+Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, NVM_DIR,
+MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
+Python 3 standard library only. Never prints a secret: the Slack webhook URL is only ever
+held in a variable.
+"""
+import datetime
+import filecmp
+import glob
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
 
-# plist_time: HH:MM of the installed LaunchAgent, read from its StartCalendarInterval.
-plist_time() {
-  pt_h="$(sed -n 's/.*<key>Hour<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
-  pt_m="$(sed -n 's/.*<key>Minute<\/key><integer>\([0-9]*\)<\/integer>.*/\1/p' "$PLIST" | head -n 1)"
-  printf '%02d:%02d\n' "${pt_h:-0}" "${pt_m:-0}"
-}
+USAGE = __doc__.split("\n\n")[1]
+SESSIONS = "docs/autopilot/sessions"
+LABEL_READY = "autopilot-ready"
+LABEL_DONE = "autopilot-done"
+LABEL_BLOCKED = "autopilot-blocked"
+LABELS = (
+    (LABEL_READY, "0E8A16", "Plan ready, the autopilot queue picks this PR up"),
+    (LABEL_DONE, "1D76DB", "Autopilot finished, report in the comments"),
+    (LABEL_BLOCKED, "B60205", "Autopilot stopped, reason in the comments"),
+)
+BASE_BRANCHES = ("main", "master", "preview", "develop", "dev")
+HOOK_FILES = (
+    ".claude/hooks/autopilot-gate.sh", ".claude/hooks/autopilot-gate-filter.sh",
+    ".claude/hooks/autopilot-context-budget.sh", ".claude/hooks/autopilot-session-start.sh",
+    ".claude/settings.json", ".gitignore",
+)
+CONFIG_VARS = (
+    "SLACK_WEBHOOK_URL", "MISSION_CONTROL_MODEL", "MISSION_CONTROL_EFFORT", "MISSION_CONTROL_ADVISOR",
+    "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
+    "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN",
+)
+# what the env file may hold besides the launch settings, and what is read before it
+ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
+READ_AT_START = ("HOME", "MISSION_CONTROL_HOME", "CLAUDE_BIN", "GH_BIN", "DOCKER_BIN", "JIRA_BIN", "JIRA_HOME")
+LAUNCHD_LABEL = "de.evelan.mission-control"
+QUEUE_COMMANDS = ("run", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause", "resume")
+COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
+                 "install-schedule | uninstall-schedule")
+SKIP_LINE = re.compile(r"^\s*(#|$)")
 
-# plist_on_demand: 0 when the installed LaunchAgent has no StartCalendarInterval (installed
-# by "start" or "install-schedule" without a time): it runs only on "start".
-plist_on_demand() {
-  [ -f "$PLIST" ] || return 1
-  ! grep -q '<key>StartCalendarInterval</key>' "$PLIST"
-}
 
-# plist_legacy: 0 when a LaunchAgent is installed whose ProgramArguments lack --scheduled
-# (written before the pause feature): that job ignores the pause file.
-plist_legacy() {
-  [ -f "$PLIST" ] || return 1
-  ! grep -q '<string>--scheduled</string>' "$PLIST"
-}
+def env(name, default=""):
+    """The environment variable, or the default when it is unset or empty."""
+    return os.environ.get(name) or default
 
-# warn_legacy_plist: one line on stdout when the installed LaunchAgent ignores the pause.
-warn_legacy_plist() {
-  plist_legacy || return 0
-  echo "schedule installed without --scheduled: run \"mission-control install-schedule $(plist_time)\" again, otherwise the nightly job ignores the pause"
-}
 
-# lock_pid: the pid recorded in the lock when that process is alive, else nothing.
-lock_pid() {
-  lp="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null && printf '%s\n' "$lp"
-}
+HOME = env("HOME", os.path.expanduser("~"))
+QHOME = env("MISSION_CONTROL_HOME", HOME + "/.claude/mission-control")
+CLAUDE_BIN = env("CLAUDE_BIN", "claude")
+GH_BIN = env("GH_BIN", "gh")
+DOCKER_BIN = env("DOCKER_BIN", "docker")
+QUEUE = QHOME + "/queue.txt"
+REPOS = QHOME + "/repos.txt"
+DONE = QHOME + "/done.txt"
+ENVFILE = QHOME + "/env"
+LOGDIR = QHOME + "/logs"
+WTDIR = QHOME + "/worktrees"
+LOCK = QHOME + "/run.lock"
+PAUSE = QHOME + "/paused"
+FORCE = QHOME + "/force-once"
+PLIST = HOME + "/Library/LaunchAgents/" + LAUNCHD_LABEL + ".plist"
+MARKETPLACE_BIN = HOME + "/.claude/plugins/marketplaces/evelan-plugins/bin"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# note_current <attempt>: records what the active run is on (read by status), six lines:
-# repo basename, item, attempt, start epoch, item log, worktree (empty until it exists).
-# Written via a temp file and mv, so status never reads a half-written file.
-note_current() {
-  [ -d "$LOCK" ] || return 0
-  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$pi_rb" "$pi_item" "$1" "$pi_began" "$ITEM_LOG" "${pi_wt:-}" "${pi_base:-}" >"$LOCK/current.tmp" \
-    && mv -f "$LOCK/current.tmp" "$LOCK/current"
-}
 
-# current_package <worktree> <item>: the "[~]" package line of the item's PLAN.md, without
-# its "### " prefix, or nothing.
-current_package() {
-  cp_plan="$1/$2/PLAN.md"
-  [ -f "$cp_plan" ] || return 0
-  sed -n '/^### P[^ ]* \[~\]/{s/^### //;p;q;}' "$cp_plan" 2>/dev/null
-}
+def is_executable(path):
+    return os.path.isfile(path) and os.access(path, os.X_OK)
 
-# nap <seconds>: a sleep that a trapped signal interrupts (POSIX: a trap interrupts wait).
-nap() {
-  sleep "$1" &
-  SLEEP_PID=$!
-  wait "$SLEEP_PID"
-  SLEEP_PID=""
-}
 
-# say: one progress line to stdout and to the log. log: log only. The log is the item log
-# while an item is open, else logs/queue.log.
-say() {
-  printf '[mission-control] %s\n' "$*"
-  log "$*"
-}
-log() {
-  mkdir -p "$LOGDIR"
-  printf '%s %s\n' "$(now_iso)" "$*" >>"${ITEM_LOG:-$LOGDIR/queue.log}"
-}
+def sibling(name):
+    """The helper next to this script, else its bare name for the PATH lookup."""
+    path = os.path.join(SCRIPT_DIR, name)
+    return path if is_executable(path) else name
 
-# The environment wins over the env file; the env file wins over the defaults.
-load_env() {
-  EFFORT_FROM_ENV=""; MODEL_FROM_ENV=""
-  [ -n "${MISSION_CONTROL_EFFORT:-}" ] && EFFORT_FROM_ENV=1
-  [ -n "${MISSION_CONTROL_MODEL:-}" ] && MODEL_FROM_ENV=1
-  for v in $CONFIG_VARS; do
-    eval "keep=\${$v:-}"
-    if [ -n "$keep" ]; then eval "keep_$v=\$keep"; fi
-  done
-  if [ -f "$ENVFILE" ]; then
-    # shellcheck disable=SC1090
-    . "$ENVFILE"
-  fi
-  for v in $CONFIG_VARS; do
-    eval "keep=\${keep_$v:-}"
-    if [ -n "$keep" ]; then eval "$v=\$keep"; fi
-  done
-  MODEL="${MISSION_CONTROL_MODEL:-sonnet}"
-  EFFORT="${MISSION_CONTROL_EFFORT:-medium}"
-  ADVISOR="${MISSION_CONTROL_ADVISOR:-fable}"
-  FALLBACK_MODEL="${MISSION_CONTROL_FALLBACK_MODEL:-opus}"
-  BUDGET="${MISSION_CONTROL_BUDGET_USD:-}"
-  MAX_RESTARTS="${MISSION_CONTROL_MAX_RESTARTS:-5}"
-  TIMEOUT_MIN="${MISSION_CONTROL_TIMEOUT_MIN:-480}"
-  WATCH_MIN="${MISSION_CONTROL_WATCH_MIN:-20}"
-  TIMEOUT_S="$(awk -v m="$TIMEOUT_MIN" 'BEGIN { printf "%d", m * 60 }')"
-  WATCH_S="$(awk -v m="$WATCH_MIN" 'BEGIN { printf "%d", m * 60 }')"
-}
 
-file_mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1" 2>/dev/null; }
+WATCHDOG = sibling("autopilot-watchdog")
+HOOKS_BIN = sibling("autopilot-hooks")
+DEFBRANCH = sibling("git-default-branch")
+JIRA_BIN = env("JIRA_BIN", os.path.join(SCRIPT_DIR, "jira"))
+if not is_executable(JIRA_BIN):
+    JIRA_BIN = "jira"
+JIRA_ENV = env("JIRA_HOME", HOME + "/.claude/jira") + "/env"
 
-warn_env_mode() {
-  [ -f "$ENVFILE" ] || return 0
-  we_mode="$(file_mode "$ENVFILE")"
-  [ "$we_mode" = 600 ] || say "warning: $ENVFILE has mode $we_mode, want 600 (chmod 600 $ENVFILE)"
-}
+
+class State:
+    """What one invocation carries along."""
+    item_log = ""          # the open item's log; empty outside an item
+    proc = None            # the running claude process
+    stop = False           # INT or TERM arrived during a run
+    source_failed = False  # a PR source could not be read
+    item_failed = False    # the runner itself failed on an item
+    gh_auth = None         # cached result of gh auth status
+
+
+class Config:
+    """Launch settings, filled by load_env."""
+    values = {}
+    unused = []   # names in the env file the runner does not use
+    model = effort = advisor = fallback_model = budget = ""
+    model_from_env = effort_from_env = False
+    max_restarts = 5
+    timeout_min = "480"
+    timeout_s = watch_s = 0
+
+
+class Stopped(BaseException):
+    """The run was asked to stop (INT or TERM). Not an Exception, so the guards around an item
+    let it pass."""
+
+
+# ---------- small helpers ----------
+
+def out(text=""):
+    print(text, flush=True)
+
+
+def die(msg, code=1):
+    print(f"mission-control: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def die_usage(msg):
+    die(msg, 2)
+
+
+def expand_tilde(path):
+    return HOME + "/" + path[2:] if path.startswith("~/") else path
+
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def today():
+    return datetime.date.today().isoformat()
+
+
+def hhmm_of_epoch(epoch):
+    try:
+        return time.strftime("%H:%M", time.localtime(int(epoch)))
+    except (ValueError, OverflowError, OSError):
+        return "?"
+
+
+def host():
+    return socket.gethostname().split(".")[0]
+
+
+def read_text(path):
+    """The file's text, empty when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def read_lines(path):
+    return read_text(path).splitlines()
+
+
+def first_line(path):
+    lines = read_lines(path)
+    return lines[0] if lines else ""
+
+
+def live_lines(path):
+    """The lines of a list file without comments and blank lines."""
+    return [line for line in read_lines(path) if not SKIP_LINE.match(line)]
+
+
+def remove_file(*paths):
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def sink():
+    """Where command output goes that belongs to the item log: the log, or nowhere outside an item."""
+    return open(State.item_log, "ab") if State.item_log else open(os.devnull, "wb")
+
+
+def exit_code(returncode):
+    """A shell-style exit code: 128 + n for a process ended by signal n."""
+    return 128 - returncode if returncode < 0 else returncode
+
+
+def check_stop():
+    if State.stop:
+        raise Stopped()
+
+
+def execute(cmd, **how):
+    """subprocess.run between two stop checks: a stop request never ends a command half way
+    (a git call finishes what it began), and no command starts after one."""
+    check_stop()
+    try:
+        return subprocess.run(cmd, **how)
+    finally:
+        check_stop()
+
+
+def capture(cmd, cwd=None, err="drop", stdin_text=None):
+    """(exit code, stdout without trailing newlines). err: drop, log (item log) or merge
+    (into stdout). 127 when the command cannot be started."""
+    errfile = None
+    try:
+        if err == "merge":
+            stderr = subprocess.STDOUT
+        elif err == "log":
+            errfile = stderr = sink()
+        else:
+            stderr = subprocess.DEVNULL
+        done = execute(
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=stderr,
+            input=None if stdin_text is None else stdin_text.encode("utf-8"),
+            stdin=subprocess.DEVNULL if stdin_text is None else None)
+        return exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n")
+    except OSError as e:
+        return 127, (str(e) if err == "merge" else "")
+    finally:
+        if errfile:
+            errfile.close()
+
+
+def capture_both(cmd, cwd=None):
+    """(exit code, stdout, stderr), both without trailing newlines."""
+    try:
+        done = execute(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    except OSError as e:
+        return 127, "", str(e)
+    return (exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
+            done.stderr.decode("utf-8", "replace").rstrip("\n"))
+
+
+def to_log(cmd, cwd=None):
+    """Runs the command with its output appended to the item log; its exit code."""
+    with sink() as f:
+        try:
+            return exit_code(execute(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL).returncode)
+        except OSError as e:
+            f.write(f"{e}\n".encode("utf-8"))
+            return 127
+
+
+def quiet(cmd, cwd=None):
+    """Runs the command without any output; its exit code."""
+    return capture(cmd, cwd=cwd)[0]
+
+
+def git(tree, *args, err="drop"):
+    return capture(["git", "-C", tree, *args], err=err)
+
+
+def git_ok(tree, *args):
+    return git(tree, *args)[0] == 0
+
+
+def git_log(tree, *args):
+    return to_log(["git", "-C", tree, *args])
+
+
+def gh_in(directory, *args, err="drop"):
+    return capture([GH_BIN, *args], cwd=directory, err=err)
+
+
+def say(msg):
+    """One progress line to stdout and to the log."""
+    out(f"[mission-control] {msg}")
+    log(msg)
+
+
+def log(msg):
+    """One line to the item log while an item is open, else to logs/queue.log."""
+    os.makedirs(LOGDIR, exist_ok=True)
+    with open(State.item_log or LOGDIR + "/queue.log", "a", encoding="utf-8") as f:
+        f.write(f"{now_iso()} {msg}\n")
+
+
+# ---------- dates, pause, schedule ----------
+
+def valid_date(text):
+    """True when the string is a real calendar date written YYYY-MM-DD."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text or ""):
+        return False
+    try:
+        return datetime.date.fromisoformat(text).isoformat() == text
+    except ValueError:
+        return False
+
+
+def date_plus_days(days):
+    return (datetime.date.today() + datetime.timedelta(days=int(days))).isoformat()
+
+
+def pause_date():
+    """The date in the pause file when the pause is still valid (today or later), else nothing."""
+    if not os.path.isfile(PAUSE):
+        return ""
+    until = "".join(first_line(PAUSE).split())
+    if not valid_date(until) or until < today():
+        return ""
+    return until
+
+
+def plist_time():
+    """HH:MM of the installed LaunchAgent, read from its StartCalendarInterval."""
+    text = read_text(PLIST)
+    hour = re.search(r"<key>Hour</key><integer>(\d*)</integer>", text)
+    minute = re.search(r"<key>Minute</key><integer>(\d*)</integer>", text)
+    return "%02d:%02d" % (int(hour.group(1) or 0) if hour else 0, int(minute.group(1) or 0) if minute else 0)
+
+
+def plist_on_demand():
+    """The installed LaunchAgent has no StartCalendarInterval: it runs only on "start"."""
+    return os.path.isfile(PLIST) and "<key>StartCalendarInterval</key>" not in read_text(PLIST)
+
+
+def plist_legacy():
+    """A LaunchAgent whose ProgramArguments lack --scheduled: that job ignores the pause file."""
+    return os.path.isfile(PLIST) and "<string>--scheduled</string>" not in read_text(PLIST)
+
+
+def warn_legacy_plist():
+    if plist_legacy():
+        out(f"schedule installed without --scheduled: run \"mission-control install-schedule {plist_time()}\" "
+            "again, otherwise the nightly job ignores the pause")
+
+
+# ---------- lock and current item ----------
+
+def pid_alive(pid):
+    """A process of this user has the pid. A pid that belongs to someone else's process (a
+    number reused after a reboot) counts as gone, so a lock left behind is taken over."""
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def lock_pid():
+    """The pid recorded in the lock when that process is alive, else nothing."""
+    pid = first_line(LOCK + "/pid").strip()
+    return pid if pid and pid_alive(pid) else ""
+
+
+def note_current(it, attempt):
+    """Records what the active run is on (read by status), seven lines: repo basename, item,
+    attempt, start epoch, item log, worktree and base commit (empty until they exist). Written
+    via a temp file and a rename, so status never reads a half-written file."""
+    if not os.path.isdir(LOCK):
+        return
+    lines = (it.rb, it.item, str(attempt), str(it.began), State.item_log, it.wt, it.base)
+    try:
+        with open(LOCK + "/current.tmp", "w", encoding="utf-8") as f:
+            f.write("".join(line + "\n" for line in lines))
+        os.replace(LOCK + "/current.tmp", LOCK + "/current")
+    except OSError:
+        pass
+
+
+def current_package(wt, item):
+    """The "[~]" package line of the item's PLAN.md, without its "### " prefix, or nothing."""
+    for line in read_lines(f"{wt}/{item}/PLAN.md"):
+        if re.match(r"### P[^ ]* \[~\]", line):
+            return line[4:]
+    return ""
+
+
+def acquire_lock():
+    os.makedirs(QHOME, exist_ok=True)
+    try:
+        os.mkdir(LOCK)
+    except OSError:
+        pid = first_line(LOCK + "/pid").strip()
+        if pid and pid_alive(pid):
+            die(f"another run is active (pid {pid}, lock {LOCK})")
+        shutil.rmtree(LOCK, ignore_errors=True)
+        try:
+            os.mkdir(LOCK)
+        except OSError:
+            die(f"cannot take the lock {LOCK}")
+    with open(LOCK + "/pid", "w") as f:
+        f.write(f"{os.getpid()}\n")
+
+
+def release_lock():
+    shutil.rmtree(LOCK, ignore_errors=True)
+
+
+def on_signal(signum, frame):
+    """Notes the stop request; the run ends at its next stop check, between two commands or
+    within a second while it waits for claude."""
+    State.stop = True
+
+
+def kill_run():
+    """SIGTERM to the claude pid, SIGKILL after 10 s. Children of a tool call may survive."""
+    proc = State.proc
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+# ---------- settings ----------
+
+def parse_env_file(path):
+    """(values, exported names) of the env file's KEY=VALUE lines. Blank lines, comment lines
+    and a comment after a value are skipped, surrounding quotes removed, a leading "export"
+    noted. The file is read, never executed."""
+    values, exported = {}, set()
+    for line in read_lines(path):
+        line = line.strip()
+        export = line.startswith("export ")
+        if export:
+            line = line[7:].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        quoted = re.match(r"""(["'])(.*?)\1\s*(#.*)?$""", value)
+        values[key] = quoted.group(2) if quoted else re.sub(r"\s+#.*$", "", value)
+        if export:
+            exported.add(key)
+    return values, exported
+
+
+def to_seconds(minutes):
+    """Minutes as whole seconds, from the number the text begins with; 0 without one."""
+    number = re.match(r"\s*[-+]?(\d+\.?\d*|\.\d+)", minutes)
+    try:
+        return int(float(number.group(0)) * 60) if number else 0
+    except OverflowError:
+        return 0
+
+
+def load_env():
+    """The environment wins over the env file; the env file wins over the defaults. A line of
+    the env file that starts with "export" also reaches the environment of the run (a token,
+    a PATH). Any other name the runner does not read is kept for the warning."""
+    Config.effort_from_env = bool(os.environ.get("MISSION_CONTROL_EFFORT"))
+    Config.model_from_env = bool(os.environ.get("MISSION_CONTROL_MODEL"))
+    values, exported = parse_env_file(ENVFILE)
+    Config.unused = sorted(name for name in values
+                           if name not in ENV_FILE_SETTINGS and (name not in exported or name in READ_AT_START))
+    for name in exported:
+        if name not in ENV_FILE_SETTINGS and name not in READ_AT_START:
+            os.environ[name] = values[name]
+    for name in CONFIG_VARS:
+        if os.environ.get(name):
+            values[name] = os.environ[name]
+    Config.values = values
+
+    def setting(name, default):
+        return values.get(name) or default
+
+    Config.model = setting("MISSION_CONTROL_MODEL", "sonnet")
+    Config.effort = setting("MISSION_CONTROL_EFFORT", "medium")
+    Config.advisor = setting("MISSION_CONTROL_ADVISOR", "fable")
+    Config.fallback_model = setting("MISSION_CONTROL_FALLBACK_MODEL", "opus")
+    Config.budget = setting("MISSION_CONTROL_BUDGET_USD", "")
+    try:
+        Config.max_restarts = int(setting("MISSION_CONTROL_MAX_RESTARTS", "5"))
+    except ValueError:
+        Config.max_restarts = 5
+    Config.timeout_min = setting("MISSION_CONTROL_TIMEOUT_MIN", "480")
+    Config.timeout_s = to_seconds(Config.timeout_min)
+    Config.watch_s = to_seconds(setting("MISSION_CONTROL_WATCH_MIN", "20"))
+
+
+def setting(name, default=""):
+    """A setting outside the launch settings: the environment, else the env file, else the
+    default."""
+    return os.environ.get(name) or Config.values.get(name) or default
+
+
+def file_mode(path):
+    try:
+        return "%o" % stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return ""
+
+
+def warn_env_mode():
+    """Says when the env file is readable by others, and which of its names are not used."""
+    if os.path.isfile(ENVFILE) and file_mode(ENVFILE) != "600":
+        say(f"warning: {ENVFILE} has mode {file_mode(ENVFILE)}, want 600 (chmod 600 {ENVFILE})")
+    if Config.unused:
+        say(f"warning: {ENVFILE}: {', '.join(Config.unused)} not used (the runner reads its own settings from "
+            "this file; a line starting with \"export\" reaches the run's environment; the binaries and "
+            "directories of the runner itself are set in its own environment)")
+
 
 # ---------- queue file helpers ----------
 
-# parse_line <line>: sets P_REPO, P_ITEM and P_BRANCH (session dir items only); returns 1 for
-# comments, blank lines and lines without an item.
-parse_line() {
-  pl_line="$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  case "$pl_line" in ''|\#*) return 1 ;; esac
-  P_REPO="${pl_line%%[[:space:]]*}"
-  pl_rest="${pl_line#"$P_REPO"}"
-  pl_rest="$(printf '%s' "$pl_rest" | sed 's/^[[:space:]]*//')"
-  P_BRANCH=""
-  case "$pl_rest" in
-    \"*\") P_ITEM="${pl_rest#\"}"; P_ITEM="${P_ITEM%\"}" ;;
-    "$SESSIONS"/*)
-      P_ITEM="${pl_rest%%[[:space:]]*}"
-      P_BRANCH="$(printf '%s' "${pl_rest#"$P_ITEM"}" | sed 's/^[[:space:]]*//')"
-      P_ITEM="${P_ITEM%/}" ;;
-    *) P_ITEM="$pl_rest" ;;
-  esac
-  P_REPO="$(expand_tilde "$P_REPO")"
-  [ -n "$P_ITEM" ]
-}
+def parse_line(line):
+    """(repo, item, branch) of a queue line; the branch only for session dir items. None for
+    comments, blank lines and lines without an item."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split(None, 1)
+    repo, rest = parts[0], (parts[1] if len(parts) > 1 else "")
+    branch = ""
+    if len(rest) >= 2 and rest.startswith('"') and rest.endswith('"'):
+        item = rest[1:-1]
+    elif rest.startswith(SESSIONS + "/"):
+        words = rest.split(None, 1)
+        item = words[0]
+        branch = words[1].strip() if len(words) > 1 else ""
+        if item.endswith("/"):
+            item = item[:-1]
+    else:
+        item = rest
+    if not item:
+        return None
+    return expand_tilde(repo), item, branch
 
-quote_item() {
-  case "$1" in *[[:space:]]*) printf '"%s"' "$1" ;; *) printf '%s' "$1" ;; esac
-}
 
-first_queue_line() {
-  [ -f "$QUEUE" ] || return 1
-  fq="$(grep -v -E '^[[:space:]]*(#|$)' "$QUEUE" | head -n 1)"
-  [ -n "$fq" ] || return 1
-  printf '%s\n' "$fq"
-}
+def quote_item(item):
+    return f'"{item}"' if re.search(r"\s", item) else item
 
-remove_queue_line() {
-  L="$1" awk 'BEGIN { l = ENVIRON["L"] } !d && $0 == l { d = 1; next } { print }' "$QUEUE" >"$QUEUE.tmp" \
-    && mv "$QUEUE.tmp" "$QUEUE"
-  if first_queue_line | grep -qxF "$1"; then die "could not remove the processed line from $QUEUE, stopping"; fi
-}
 
-# resolve_repo <path>: prints the absolute path of a git repository, or returns 1.
-# resolve_repo <path or bare name>: the absolute path of a git checkout. A bare name (no
-# "/") means $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>.
-resolve_repo() {
-  rr_in="$1"
-  case "$rr_in" in
-    */*|.|..) ;;
-    *) [ -d "$rr_in" ] || rr_in="${MISSION_CONTROL_PROJECTS:-$HOME/dev/projects}/$rr_in" ;;
-  esac
-  rr="$(cd "$rr_in" 2>/dev/null && pwd)" || return 1
-  git -C "$rr" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  printf '%s\n' "$rr"
-}
+def first_queue_line():
+    lines = live_lines(QUEUE)
+    return lines[0] if lines else None
 
-safe_name() {
-  sn="$1"
-  case "$sn" in "$SESSIONS"/*) sn="${sn%/}"; sn="${sn##*/}" ;; esac
-  printf '%s' "$sn" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-60
-}
 
-ticket_from() {
-  printf '%s' "$1" | grep -oE '[A-Z][A-Z0-9]+-[0-9]+' | head -n 1
-}
+def remove_queue_line(line):
+    """Removes the first occurrence of the line from queue.txt. A line that cannot be removed
+    ends the run: it would be processed again and again."""
+    lines = read_lines(QUEUE)
+    before = lines.count(line)
+    if before:
+        lines.remove(line)
+    try:
+        with open(QUEUE + ".tmp", "w", encoding="utf-8") as f:
+            f.write("".join(entry + "\n" for entry in lines))
+        os.replace(QUEUE + ".tmp", QUEUE)
+    except OSError:
+        pass
+    if before and read_lines(QUEUE).count(line) != before - 1:
+        die(f"could not remove the processed line from {QUEUE}, stopping")
 
-current_branch() { git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || true; }
 
-# wt_path <repo> <item>: the item's worktree inside the project.
-wt_path() { printf '%s/.claude/worktrees/autopilot-%s\n' "$1" "$(safe_name "$2")"; }
+def resolve_repo(path):
+    """The absolute path of a git checkout, or nothing. A bare name (no "/") means
+    $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>."""
+    if "/" not in path and path not in (".", "..") and not os.path.isdir(path):
+        path = setting("MISSION_CONTROL_PROJECTS", HOME + "/dev/projects") + "/" + path
+    if not os.path.isdir(path):
+        return ""
+    path = os.path.normpath(os.path.join(working_dir(), path))
+    return path if git_ok(path, "rev-parse", "--is-inside-work-tree") else ""
 
-# legacy_wt_path <repo basename> <item>: where runs before plugin 3.3.0 put the item's worktree.
-legacy_wt_path() { printf '%s/%s-%s\n' "$WTDIR" "$1" "$(safe_name "$2")"; }
 
-# ensure_excluded <repo>: .claude/worktrees/ must not show up as untracked in the project's
-# own checkout. When the project does not ignore it, the line goes into the repository's
-# local exclude file - never into a tracked .gitignore, so no project file changes.
-ensure_excluded() {
-  git -C "$1" check-ignore -q .claude/worktrees/x 2>/dev/null && return 0
-  ee_ex="$(git -C "$1" rev-parse --git-path info/exclude 2>/dev/null)" || return 0
-  case "$ee_ex" in /*) : ;; *) ee_ex="$1/$ee_ex" ;; esac
-  mkdir -p "$(dirname "$ee_ex")" 2>/dev/null
-  if printf '.claude/worktrees/\n' >>"$ee_ex" 2>/dev/null; then
-    log "added .claude/worktrees/ to $ee_ex"
-  else
-    say "could not add .claude/worktrees/ to $ee_ex; the project checkout will list it as untracked"
-  fi
-}
+def working_dir():
+    """The current directory as the caller's shell names it ($PWD, symlinks kept) when that
+    is this directory, else as the system names it."""
+    here, named = os.getcwd(), os.environ.get("PWD", "")
+    try:
+        if named.startswith("/") and os.path.samefile(named, here):
+            return named
+    except OSError:
+        pass
+    return here
 
-# move_legacy_worktree <repo> <old> <new>: a worktree an older runner kept under $WTDIR
-# (a blocked item waiting for its retry) moves into the project, so the retry continues on
-# its commits instead of starting next to them.
-move_legacy_worktree() {
-  [ -e "$2/.git" ] || return 0
-  if [ -e "$3" ]; then log "kept the old worktree $2: $3 already exists"; return 0; fi
-  mkdir -p "$(dirname "$3")"
-  if git -C "$1" worktree move "$2" "$3" >>"$ITEM_LOG" 2>&1; then
-    say "$pi_rb $pi_item: worktree moved into the project ($3)"
-  else
-    say "$pi_rb $pi_item: could not move the old worktree $2 into the project (see $ITEM_LOG); a new one is created"
-  fi
-}
 
-# default_ref <tree>: prints origin/<default> when that ref exists, else the local default branch.
-default_ref() {
-  dr_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null)" || return 1
-  if git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$dr_def"; then printf 'origin/%s\n' "$dr_def"
-  elif git -C "$1" show-ref --verify --quiet "refs/heads/$dr_def"; then printf '%s\n' "$dr_def"
-  else return 1; fi
-}
+def safe_name(name):
+    """The item as a file name part: a session dir by its last component, every byte that is
+    not a letter, digit, dot, underscore or hyphen replaced by an underscore (an umlaut is two
+    bytes, so two underscores), at most 60 characters."""
+    if name.startswith(SESSIONS + "/"):
+        if name.endswith("/"):
+            name = name[:-1]
+        name = name.rsplit("/", 1)[-1]
+    return re.sub(rb"[^A-Za-z0-9._-]", b"_", name.encode("utf-8", "surrogateescape"))[:60].decode("ascii")
 
-# base_sha <tree> [target branch]: the commit the item started from: merge-base with the
-# target branch (a PR's base, fetched first), else with the default branch, else HEAD.
-# Session directories created or changed since it belong to the item.
-base_sha() {
-  bs_ref=""
-  if [ -n "${2:-}" ]; then
-    git -C "$1" fetch -q origin "$2" >>"${ITEM_LOG:-/dev/null}" 2>&1 || log "fetch of $2 failed"
-    if git -C "$1" show-ref --verify --quiet "refs/remotes/origin/$2"; then bs_ref="origin/$2"
-    elif git -C "$1" show-ref --verify --quiet "refs/heads/$2"; then bs_ref="$2"
-    else say "target branch $2 not found, comparing with the default branch; the Branch: check still guards the plan"
-    fi
-  fi
-  [ -n "$bs_ref" ] || bs_ref="$(default_ref "$1")" || bs_ref=""
-  { [ -n "$bs_ref" ] && git -C "$1" merge-base "$bs_ref" HEAD 2>/dev/null; } \
-    || git -C "$1" rev-parse HEAD 2>/dev/null
-}
 
-# plan_header <PLAN.md> <name> [n]: word n (default 1) of the first "<name>:" line of the plan,
-# also written "**<name>:**" or "- **<name>:**"; backticks and quotes removed, a trailing
-# comma, semicolon or full stop cut. Nothing when the line is missing.
-plan_header() {
-  sed -n "s/^[-[:space:]]*\**$2:\**[[:space:]]*//p" "$1" 2>/dev/null | head -n 1 | tr -d '`"' \
-    | awk -v n="${3:-1}" '{ w = $n; sub(/[,;.]+$/, "", w); print w }'
-}
+def ticket_from(text):
+    hit = re.search(r"[A-Z][A-Z0-9]+-[0-9]+", text)
+    return hit.group(0) if hit else ""
 
-# plan_branch <PLAN.md>: the branch of the plan header ("Branch: feat/x   Base: ..."), or nothing.
-plan_branch() { plan_header "$1" Branch; }
 
-# plan_feature_branch <PLAN.md>: the feature branch of "Branch mode: feature-branch <name>", or nothing.
-plan_feature_branch() {
-  [ "$(plan_header "$1" "Branch mode")" = feature-branch ] && plan_header "$1" "Branch mode" 2
-}
+def current_branch(tree):
+    return git(tree, "symbolic-ref", "--short", "-q", "HEAD")[1]
 
-# plan_is_for_branch <PLAN.md> <branch>: 0 when the plan header names the branch, as its
-# session branch or as its feature branch.
-plan_is_for_branch() {
-  [ -n "$2" ] && { [ "$(plan_branch "$1")" = "$2" ] || [ "$(plan_feature_branch "$1")" = "$2" ]; }
-}
 
-# changed_session_dirs <tree> <base sha>: session directories (relative) with tracked changes
-# since the base or untracked files.
-changed_session_dirs() {
-  { git -C "$1" diff --name-only "$2" -- "$SESSIONS" 2>/dev/null
-    git -C "$1" ls-files --others --exclude-standard -- "$SESSIONS" 2>/dev/null
-  } | awk -F/ 'NF > 4 && $1 == "docs" && $2 == "autopilot" && $3 == "sessions" { print $1 "/" $2 "/" $3 "/" $4 }' | sort -u
-}
+def wt_path(repo, item):
+    """The item's worktree inside the project."""
+    return f"{repo}/.claude/worktrees/autopilot-{safe_name(item)}"
 
-# find_session_dir <tree> <item> <base sha or empty> [plan] [branch]: prints the session
-# directory (relative) that belongs to the item: the item itself when it is a session dir,
-# else the newest one whose name contains the item's ticket key, else the newest one created
-# or changed since the base sha. With a branch, a candidate from either list whose PLAN.md
-# names that branch wins. Never an unrelated directory. With "plan", only directories that
-# contain PLAN.md count.
-find_session_dir() {
-  fsd_tree="$1"; fsd_item="$2"; fsd_base="${3:-}"; fsd_need="${4:-}"; fsd_branch="${5:-}"
-  case "$fsd_item" in
-    "$SESSIONS"/*)
-      fsd_d="${fsd_item%/}"
-      if [ -d "$fsd_tree/$fsd_d" ] && { [ -z "$fsd_need" ] || [ -f "$fsd_tree/$fsd_d/PLAN.md" ]; }; then
-        printf '%s\n' "$fsd_d"; return 0
-      fi
-      return 1 ;;
-  esac
-  fsd_key="$(ticket_from "$fsd_item")"
-  fsd_hit=""; fsd_changed=""; fsd_match=""
-  if [ -n "$fsd_key" ]; then
-    for d in "$fsd_tree/$SESSIONS"/*/; do
-      [ -d "$d" ] || continue
-      fsd_name="${d%/}"; fsd_name="${fsd_name##*/}"
-      case "$fsd_name" in *"$fsd_key"[!0-9]*|*"$fsd_key") ;; *) continue ;; esac
-      if [ -n "$fsd_need" ] && [ ! -f "${d}PLAN.md" ]; then continue; fi
-      fsd_hit="$SESSIONS/$fsd_name"
-      plan_is_for_branch "${d}PLAN.md" "$fsd_branch" && fsd_match="$fsd_hit"
-    done
-  fi
-  if [ -n "$fsd_base" ] && { [ -z "$fsd_hit" ] || { [ -n "$fsd_branch" ] && [ -z "$fsd_match" ]; }; }; then
-    fsd_list="$(changed_session_dirs "$fsd_tree" "$fsd_base")"
-    for d in $fsd_list; do
-      [ -d "$fsd_tree/$d" ] || continue
-      if [ -n "$fsd_need" ] && [ ! -f "$fsd_tree/$d/PLAN.md" ]; then continue; fi
-      fsd_changed="$d"
-      plan_is_for_branch "$fsd_tree/$d/PLAN.md" "$fsd_branch" && fsd_match="$d"
-    done
-  fi
-  [ -n "$fsd_hit" ] || fsd_hit="$fsd_changed"
-  [ -n "$fsd_match" ] && fsd_hit="$fsd_match"
-  [ -n "$fsd_hit" ] || return 1
-  printf '%s\n' "$fsd_hit"
-}
 
-# item_has_plan <repo> <item> [branch]: 0 when a PLAN.md for the item exists in the checkout,
-# or, with a branch, in that branch (local or origin).
-item_has_plan() {
-  if [ -n "${3:-}" ]; then
-    git -C "$1" cat-file -e "$3:${2%/}/PLAN.md" 2>/dev/null && return 0
-    git -C "$1" cat-file -e "origin/$3:${2%/}/PLAN.md" 2>/dev/null && return 0
-    return 1
-  fi
-  find_session_dir "$1" "$2" "" plan >/dev/null
-}
+def legacy_wt_path(repo_base, item):
+    """Where runs before plugin 3.3.0 put the item's worktree."""
+    return f"{WTDIR}/{repo_base}-{safe_name(item)}"
 
-# plan_effort <PLAN.md>: the value of the "Effort:" header line, lowercased, or nothing.
-plan_effort() { plan_header "$1" Effort | tr 'A-Z' 'a-z'; }
 
-# plan_model <PLAN.md>: the value of the "Model:" header line, lowercased, or nothing.
-plan_model() { plan_header "$1" Model | tr 'A-Z' 'a-z'; }
+def ensure_excluded(repo):
+    """.claude/worktrees/ must not show up as untracked in the project's own checkout. When the
+    project does not ignore it, the line goes into the repository's local exclude file - never
+    into a tracked .gitignore, so no project file changes."""
+    if git_ok(repo, "check-ignore", "-q", ".claude/worktrees/x"):
+        return
+    rc, exclude = git(repo, "rev-parse", "--git-path", "info/exclude")
+    if rc != 0:
+        return
+    if not exclude.startswith("/"):
+        exclude = f"{repo}/{exclude}"
+    try:
+        os.makedirs(os.path.dirname(exclude), exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as f:
+            f.write(".claude/worktrees/\n")
+        log(f"added .claude/worktrees/ to {exclude}")
+    except OSError:
+        say(f"could not add .claude/worktrees/ to {exclude}; the project checkout will list it as untracked")
 
-# model_family <model>: sonnet, opus or other, for an alias or a full model name.
-model_family() {
-  case "$1" in
-    sonnet|sonnet\[*|claude-sonnet-*) echo sonnet ;;
-    opus|opus\[*|claude-opus-*) echo opus ;;
-    *) echo other ;;
-  esac
-}
 
-# resolve_launch <PLAN.md or empty> [<name for the log>]: sets RUN_MODEL, RUN_EFFORT,
-# RUN_FALLBACK and RUN_BUDGET.
-# Model and effort: the environment, then the plan header, then the env file, then the
-# defaults. A sonnet run below xhigh is raised to xhigh. Fallback entries of the run model's
-# family are left out; the budget defaults to 200 USD for sonnet, 400 for opus. Returns 1
-# with RL_REASON when the plan names a model other than sonnet or opus.
-resolve_launch() {
-  RUN_MODEL="$MODEL"; RUN_EFFORT="$EFFORT"; RL_REASON=""
-  if [ -n "$1" ]; then
-    rl_pm="$(plan_model "$1")"
-    case "$rl_pm" in
-      ''|sonnet|opus) ;;
-      *) RL_REASON="PLAN.md header 'Model: $rl_pm' is not sonnet or opus; fix the line, then relabel the PR $LABEL_READY or add the item again"; return 1 ;;
-    esac
-    if [ -n "$rl_pm" ] && [ -z "$MODEL_FROM_ENV" ]; then RUN_MODEL="$rl_pm"; log "model $rl_pm from ${2:-$1}"; fi
-    if [ -z "$EFFORT_FROM_ENV" ]; then
-      rl_pe="$(plan_effort "$1")"
-      if [ -n "$rl_pe" ]; then RUN_EFFORT="$rl_pe"; log "effort $rl_pe from ${2:-$1}"; fi
-    fi
-  fi
-  rl_family="$(model_family "$RUN_MODEL")"
-  if [ "$rl_family" = sonnet ]; then
-    case "$RUN_EFFORT" in
-      xhigh|max) ;;
-      *) log "effort $RUN_EFFORT raised to xhigh (sonnet runs at xhigh or max)"; RUN_EFFORT=xhigh ;;
-    esac
-  fi
-  RUN_FALLBACK=""
-  for rl_f in $(printf '%s' "$FALLBACK_MODEL" | tr ',' ' '); do
-    [ "$rl_f" = "$RUN_MODEL" ] && continue
-    [ "$rl_family" != other ] && [ "$(model_family "$rl_f")" = "$rl_family" ] && continue
-    RUN_FALLBACK="${RUN_FALLBACK:+$RUN_FALLBACK,}$rl_f"
-  done
-  if [ -n "$BUDGET" ]; then RUN_BUDGET="$BUDGET"
-  elif [ "$rl_family" = opus ]; then RUN_BUDGET=400
-  else RUN_BUDGET=200
-  fi
-}
+def move_legacy_worktree(it, old, new):
+    """A worktree an older runner kept under the queue home (a blocked item waiting for its
+    retry) moves into the project, so the retry continues on its commits instead of starting
+    next to them."""
+    if not os.path.exists(old + "/.git"):
+        return
+    if os.path.exists(new):
+        log(f"kept the old worktree {old}: {new} already exists")
+        return
+    os.makedirs(os.path.dirname(new), exist_ok=True)
+    if git_log(it.repo, "worktree", "move", old, new) == 0:
+        say(f"{it.who}: worktree moved into the project ({new})")
+    else:
+        say(f"{it.who}: could not move the old worktree {old} into the project (see {State.item_log}); "
+            "a new one is created")
 
-# plan_ticket <PLAN.md>: the ticket key of the plan header ("Ticket: PAUL-2649"), nothing for
-# "none" or a missing header.
-plan_ticket() {
-  pt="$(sed -n 's/.*Ticket:[[:space:]]*\([A-Z][A-Z0-9]*-[0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n 1)"
-  [ -n "$pt" ] && printf '%s\n' "$pt"
-}
 
-# jira_ready: the jira script and its credentials file exist on this machine.
-jira_ready() { command -v "$JIRA_BIN" >/dev/null 2>&1 && [ -f "$JIRA_ENV" ]; }
+def default_branch(tree):
+    """The repo's default branch, or nothing."""
+    rc, name = capture([DEFBRANCH], cwd=tree)
+    return name if rc == 0 else ""
 
-# jira_start <KEY>: the ticket goes In Progress (assignee kept, the token owner if none) before the
-# first attempt. A failure is said and logged, the run goes ahead.
-jira_start() {
-  js_out="$("$JIRA_BIN" start "$1" 2>&1)" && { log "jira: $js_out"; return 0; }
-  say "$pi_rb $pi_item: jira start $1 failed: $(printf '%s' "$js_out" | tail -n 1)"
-  pi_jira_failed=jira-failed
-}
 
-# jira_comment <KEY> <status> <pr url> <REPORT.md or ->: the result on the ticket, plain text
-# (REST v2 renders wiki markup, so no Markdown headings), first 40 lines of the report.
-jira_comment() {
-  jc_key="$1"; jc_status="$2"; jc_pr="$3"; jc_report="$4"
-  jc_body="$(mktemp "${TMPDIR:-/tmp}/mission-control.XXXXXX")"
-  {
-    printf 'Autopilot: %s\n' "$jc_status"
-    [ "$jc_pr" != "-" ] && printf 'PR: %s\n' "$jc_pr"
-    [ -n "${pi_pushed:-}" ] && printf 'Branch: %s (pushed to GitHub)\n' "$pi_pushed"
-    [ -n "${pi_push_failed:-}" ] && printf 'Branch NOT pushed, the work is only on the runner machine\n'
-    if [ -f "$jc_report" ]; then
-      printf '\n'
-      head -n 40 "$jc_report" | sed 's/^#* *//'
-    else
-      printf 'Reason: %s\n' "${pi_reason:-see the queue log}"
-    fi
-  } >"$jc_body"
-  if jc_out="$("$JIRA_BIN" comment "$jc_key" - <"$jc_body" 2>&1)"; then
-    log "jira: $jc_out"
-  else
-    say "$pi_rb $pi_item: jira comment $jc_key failed: $(printf '%s' "$jc_out" | tail -n 1)"
-    pi_jira_failed=jira-failed
-  fi
-  rm -f "$jc_body"
-}
+def default_ref(tree):
+    """origin/<default> when that ref exists, else the local default branch, else nothing."""
+    name = default_branch(tree)
+    if not name:
+        return ""
+    if git_ok(tree, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}"):
+        return f"origin/{name}"
+    if git_ok(tree, "show-ref", "--verify", "--quiet", f"refs/heads/{name}"):
+        return name
+    return ""
 
-# review_bot_comments <pr number>: prints "<comments> <unanswered>": how many review comments
-# on the PR came from someone other than "us" (the PR author and the gh account of this
-# machine, which the run answers from), inline + top-level, and how many of the inline ones
-# have no reply from us in their thread. Empty when gh cannot tell.
-review_bot_comments() {
-  rb_repo="$(gh_in "$pi_gh_dir" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 0
-  [ -n "$rb_repo" ] || return 0
-  rb_author="$(gh_in "$pi_gh_dir" pr view "$1" --json author --jq .author.login 2>/dev/null)"
-  rb_me="$(gh_in "$pi_gh_dir" api user --jq .login 2>/dev/null)"
-  rb_us="(.user.login == \"$rb_author\" or .user.login == \"${rb_me:-$rb_author}\")"
-  rb_inline="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "[.[] | select($rb_us | not)] | length" 2>/dev/null)"
-  rb_top="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/issues/$1/comments" --jq "[.[] | select($rb_us | not)] | length" 2>/dev/null)"
-  # a bot comment that starts a thread (no in_reply_to_id) is answered when we replied to
-  # it (a comment whose in_reply_to_id is that comment's id)
-  rb_open="$(gh_in "$pi_gh_dir" api "repos/$rb_repo/pulls/$1/comments" --jq "
-    [.[] | select($rb_us and .in_reply_to_id != null) | .in_reply_to_id] as \$answered
-    | [.[] | select(($rb_us | not) and .in_reply_to_id == null and (.id as \$i | \$answered | index(\$i) | not))] | length" 2>/dev/null)"
-  case "$rb_inline$rb_top$rb_open" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s %s\n' $((rb_inline + rb_top)) "$rb_open"
-}
 
-# branch_of_dir <repo> <session dir>: the branch that holds the directory: the current branch
-# when the directory exists in the checkout, else the branch at whose tip it was last touched
-# (git log --all), else the default branch.
-branch_of_dir() {
-  bd_repo="$1"; bd_dir="${2%/}"
-  bd_cur="$(current_branch "$bd_repo")"
-  if [ -n "$bd_cur" ] && [ -d "$bd_repo/$bd_dir" ]; then printf '%s\n' "$bd_cur"; return 0; fi
-  git -C "$bd_repo" fetch -q origin >/dev/null 2>&1 || true
-  bd_dec="$(git -C "$bd_repo" log --all --format=%D -1 -- "$bd_dir" 2>/dev/null)"
-  bd_hit="$(printf '%s\n' "$bd_dec" | tr ',' '\n' | sed 's/^ *//; s/^HEAD -> //; s#^origin/##' \
-    | grep -v -E '^(HEAD|tag: .*)?$' | head -n 1)"
-  if [ -n "$bd_hit" ]; then printf '%s\n' "$bd_hit"; return 0; fi
-  (cd "$bd_repo" && "$DEFBRANCH")
-}
+def base_sha(tree, target=""):
+    """The commit the item started from: merge-base with the target branch (a PR's base,
+    fetched first), else with the default branch, else HEAD. Session directories created or
+    changed since it belong to the item."""
+    ref = ""
+    if target:
+        if git_log(tree, "fetch", "-q", "origin", target) != 0:
+            log(f"fetch of {target} failed")
+        if git_ok(tree, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{target}"):
+            ref = f"origin/{target}"
+        elif git_ok(tree, "show-ref", "--verify", "--quiet", f"refs/heads/{target}"):
+            ref = target
+        else:
+            say(f"target branch {target} not found, comparing with the default branch; "
+                "the Branch: check still guards the plan")
+    ref = ref or default_ref(tree)
+    if ref:
+        rc, sha = git(tree, "merge-base", ref, "HEAD")
+        if rc == 0:
+            return sha
+    return git(tree, "rev-parse", "HEAD")[1]
 
-gh_in() { gi_dir="$1"; shift; (cd "$gi_dir" && "$GH_BIN" "$@"); }
 
-# gh_auth_ok: 0 when gh can read its token in this session; checked once per invocation.
-GH_AUTH=""
-gh_auth_ok() {
-  if [ -z "$GH_AUTH" ]; then
-    if "$GH_BIN" auth status >/dev/null 2>&1; then GH_AUTH=1; else GH_AUTH=0; fi
-  fi
-  [ "$GH_AUTH" = 1 ]
-}
+# ---------- plan header ----------
 
-in_ssh() { [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; }
+def plan_header(plan, name, word=1):
+    """Word n (default 1) of the first "<name>:" line of the plan, also written "**<name>:**"
+    or "- **<name>:**"; backticks and quotes removed, a trailing comma, semicolon or full stop
+    cut. Nothing when the line is missing."""
+    pattern = re.compile(r"^[-\s]*\**" + re.escape(name) + r":\**\s*")
+    for line in read_lines(plan):
+        hit = pattern.match(line)
+        if hit:
+            words = line[hit.end():].replace("`", "").replace('"', "").split()
+            return re.sub(r"[,;.]+$", "", words[word - 1]) if len(words) >= word else ""
+    return ""
 
-# gh_auth_notice: the one line printed instead of polling the repos when gh has no token.
-# Over SSH the token sits in the macOS Keychain, which an SSH session cannot read while the
-# scheduled run in the GUI session can; anywhere else it is a real login problem.
-gh_auth_notice() {
-  if in_ssh; then
-    echo "gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown here, the scheduled run in the GUI session sees them"
-  else
-    echo "gh: not authenticated (run \"gh auth login -h github.com -w\"); labelled PRs unknown"
-  fi
-}
 
-# repos_pollable <repos file>: 0 when the repos can be polled for labelled PRs. With repos
-# listed and gh unable to read its token, prints the notice (via say in a run, so it reaches
-# queue.log), empties the file so no repo is polled, and returns 1. Over SSH that is not a
-# source failure (manual runs there cannot see PRs, the scheduled run can); elsewhere it is.
-repos_pollable() {
-  [ -s "$1" ] || return 0
-  gh_auth_ok && return 0
-  if [ "${2:-}" = run ]; then say "$(gh_auth_notice)"; else gh_auth_notice; fi
-  in_ssh || SOURCE_FAILED=1
-  : >"$1"
-  return 1
-}
+def plan_branch(plan):
+    """The branch of the plan header ("Branch: feat/x   Base: ..."), or nothing."""
+    return plan_header(plan, "Branch")
 
-# list_ready_prs <repo> <outfile>: writes lines "<number> <branch> <url>" of open PRs labelled
-# autopilot-ready. On failure prints a FAIL line, sets SOURCE_FAILED and returns 1.
-list_ready_prs() {
-  lr_err="$(gh_in "$1" pr list --label "$LABEL_READY" --state open --json number,headRefName,url \
-    --jq '.[] | "\(.number) \(.headRefName) \(.url)"' 2>&1 >"$2")"; lr_rc=$?
-  if [ "$lr_rc" -ne 0 ]; then
-    say "FAIL - $1: gh pr list --label $LABEL_READY failed (exit $lr_rc): $(printf '%s' "$lr_err" | head -n 1)"
-    SOURCE_FAILED=1
-    : >"$2"
-    return 1
-  fi
-}
 
-# ---------- labels ----------
+def plan_feature_branch(plan):
+    """The feature branch of "Branch mode: feature-branch <name>", or nothing."""
+    if plan_header(plan, "Branch mode") == "feature-branch":
+        return plan_header(plan, "Branch mode", 2)
+    return ""
 
-# ensure_labels <repo>: creates the three queue labels when missing; prints one line per
-# label; returns 1 when one is missing and could not be created.
-ensure_labels() {
-  el_repo="$1"; el_rb="$(basename "$el_repo")"; el_fail=0
-  el_have="$(gh_in "$el_repo" label list --limit 200 --json name --jq '.[].name' 2>/dev/null)"
-  for el_l in "$LABEL_READY:0E8A16:Plan ready, the autopilot queue picks this PR up" \
-              "$LABEL_DONE:1D76DB:Autopilot finished, report in the comments" \
-              "$LABEL_BLOCKED:B60205:Autopilot stopped, reason in the comments"; do
-    el_name="${el_l%%:*}"; el_rest="${el_l#*:}"; el_color="${el_rest%%:*}"; el_desc="${el_rest#*:}"
-    if printf '%s\n' "$el_have" | grep -qx "$el_name"; then
-      echo "ok   - label $el_name exists in $el_rb"
-    elif gh_in "$el_repo" label create "$el_name" --color "$el_color" --description "$el_desc" >/dev/null 2>&1; then
-      echo "ok   - label $el_name created in $el_rb"
-    else
-      echo "FAIL - label $el_name missing in $el_rb and gh label create failed"; el_fail=1
-    fi
-  done
-  return "$el_fail"
-}
+
+def plan_is_for_branch(plan, branch):
+    """The plan header names the branch, as its session branch or as its feature branch."""
+    return bool(branch) and branch in (plan_branch(plan), plan_feature_branch(plan))
+
+
+def plan_effort(plan):
+    return plan_header(plan, "Effort").lower()
+
+
+def plan_model(plan):
+    return plan_header(plan, "Model").lower()
+
+
+def plan_ticket(plan):
+    """The ticket key of the plan header ("Ticket: PAUL-2649"), nothing for "none" or a
+    missing header."""
+    for line in read_lines(plan):
+        hit = re.match(r".*Ticket:\s*([A-Z][A-Z0-9]*-[0-9]+)", line)
+        if hit:
+            return hit.group(1)
+    return ""
+
+
+def changed_session_dirs(tree, base):
+    """Session directories (relative) with tracked changes since the base or untracked files."""
+    names = git(tree, "diff", "--name-only", base, "--", SESSIONS)[1].splitlines()
+    names += git(tree, "ls-files", "--others", "--exclude-standard", "--", SESSIONS)[1].splitlines()
+    dirs = set()
+    for name in names:
+        parts = name.split("/")
+        if len(parts) > 4 and parts[:3] == SESSIONS.split("/"):
+            dirs.add("/".join(parts[:4]))
+    return sorted(dirs)
+
+
+def find_session_dir(tree, item, base="", need_plan=False, branch=""):
+    """The session directory (relative) that belongs to the item: the item itself when it is a
+    session dir, else the newest one whose name contains the item's ticket key, else the newest
+    one created or changed since the base sha. With a branch, a candidate from either list
+    whose PLAN.md names that branch wins. Never an unrelated directory. With need_plan, only
+    directories that contain PLAN.md count."""
+    if item.startswith(SESSIONS + "/"):
+        directory = item[:-1] if item.endswith("/") else item
+        if os.path.isdir(f"{tree}/{directory}") and (not need_plan or os.path.isfile(f"{tree}/{directory}/PLAN.md")):
+            return directory
+        return ""
+    key = ticket_from(item)
+    hit = changed = match = ""
+    if key:
+        key_in_name = re.compile(re.escape(key) + r"(?:[^0-9]|$)")
+        for path in sorted(glob.glob(f"{glob.escape(tree)}/{SESSIONS}/*/")):
+            name = os.path.basename(path.rstrip("/"))
+            if not key_in_name.search(name):
+                continue
+            if need_plan and not os.path.isfile(path + "PLAN.md"):
+                continue
+            hit = f"{SESSIONS}/{name}"
+            if plan_is_for_branch(path + "PLAN.md", branch):
+                match = hit
+    if base and (not hit or (branch and not match)):
+        for directory in changed_session_dirs(tree, base):
+            if not os.path.isdir(f"{tree}/{directory}"):
+                continue
+            if need_plan and not os.path.isfile(f"{tree}/{directory}/PLAN.md"):
+                continue
+            changed = directory
+            if plan_is_for_branch(f"{tree}/{directory}/PLAN.md", branch):
+                match = directory
+    return match or hit or changed
+
+
+def item_has_plan(repo, item, branch=""):
+    """A PLAN.md for the item exists in the checkout, or, with a branch, in that branch (local
+    or origin)."""
+    if branch:
+        path = item.rstrip("/") + "/PLAN.md"
+        return git_ok(repo, "cat-file", "-e", f"{branch}:{path}") or git_ok(repo, "cat-file", "-e", f"origin/{branch}:{path}")
+    return bool(find_session_dir(repo, item, "", True))
+
+
+# ---------- launch settings ----------
+
+def model_family(model):
+    """sonnet, opus or other, for an alias or a full model name."""
+    for family in ("sonnet", "opus"):
+        if model == family or model.startswith(family + "[") or model.startswith(f"claude-{family}-"):
+            return family
+    return "other"
+
+
+def resolve_launch(it, plan, name):
+    """Sets the item's model, effort, fallback and budget. Model and effort: the environment,
+    then the plan header, then the env file, then the defaults. A sonnet run below xhigh is
+    raised to xhigh. Fallback entries of the run model's family are left out; the budget
+    defaults to 200 USD for sonnet, 400 for opus. Returns the reason when the plan names a
+    model other than sonnet or opus."""
+    it.model, it.effort = Config.model, Config.effort
+    if plan:
+        named = plan_model(plan)
+        if named not in ("", "sonnet", "opus"):
+            return (f"PLAN.md header 'Model: {named}' is not sonnet or opus; fix the line, then relabel the PR "
+                    f"{LABEL_READY} or add the item again")
+        if named and not Config.model_from_env:
+            it.model = named
+            log(f"model {named} from {name or plan}")
+        if not Config.effort_from_env:
+            effort = plan_effort(plan)
+            if effort:
+                it.effort = effort
+                log(f"effort {effort} from {name or plan}")
+    family = model_family(it.model)
+    if family == "sonnet" and it.effort not in ("xhigh", "max"):
+        log(f"effort {it.effort} raised to xhigh (sonnet runs at xhigh or max)")
+        it.effort = "xhigh"
+    fallback = []
+    for entry in Config.fallback_model.replace(",", " ").split():
+        if entry == it.model or (family != "other" and model_family(entry) == family):
+            continue
+        fallback.append(entry)
+    it.fallback = ",".join(fallback)
+    it.budget = Config.budget or ("400" if family == "opus" else "200")
+    return ""
+
+
+# ---------- jira ----------
+
+def jira_ready():
+    """The jira script and its credentials file exist on this machine."""
+    return bool(shutil.which(JIRA_BIN)) and os.path.isfile(JIRA_ENV)
+
+
+def last_line(text):
+    lines = text.splitlines()
+    return lines[-1] if lines else ""
+
+
+def jira_start(it, key):
+    """The ticket goes In Progress (assignee kept, the token owner if none) before the first
+    attempt. A failure is said and logged, the run goes ahead."""
+    rc, text = capture([JIRA_BIN, "start", key], err="merge")
+    if rc == 0:
+        log(f"jira: {text}")
+        return
+    say(f"{it.who}: jira start {key} failed: {last_line(text)}")
+    it.jira_failed = "jira-failed"
+
+
+def jira_comment(it, report):
+    """The result on the ticket, plain text (REST v2 renders wiki markup, so no Markdown
+    headings), first 40 lines of the report."""
+    body = [f"Autopilot: {it.status}"]
+    if it.pr_url != "-":
+        body.append(f"PR: {it.pr_url}")
+    if it.pushed:
+        body.append(f"Branch: {it.pushed} (pushed to GitHub)")
+    if it.push_failed:
+        body.append("Branch NOT pushed, the work is only on the runner machine")
+    if report and os.path.isfile(report):
+        body.append("")
+        body += [re.sub(r"^#* *", "", line) for line in read_lines(report)[:40]]
+    else:
+        body.append(f"Reason: {it.reason or 'see the queue log'}")
+    rc, text = capture([JIRA_BIN, "comment", it.ticket, "-"], err="merge", stdin_text="\n".join(body) + "\n")
+    if rc == 0:
+        log(f"jira: {text}")
+    else:
+        say(f"{it.who}: jira comment {it.ticket} failed: {last_line(text)}")
+        it.jira_failed = "jira-failed"
+
+
+# ---------- gh ----------
+
+def gh_json(directory, path):
+    """The JSON list a gh api call returns, or nothing when gh cannot tell."""
+    rc, text = gh_in(directory, "api", path, "--jq", ".")
+    if rc != 0:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def review_bot_comments(it):
+    """(comments, unanswered): how many review comments on the PR came from someone other than
+    "us" (the PR author and the gh account of this machine, which the run answers from), inline
+    + top-level, and how many of the inline ones have no reply from us in their thread. Nothing
+    when gh cannot tell."""
+    rc, repo = gh_in(it.gh_dir, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+    if rc != 0 or not repo:
+        return None
+    author = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "author", "--jq", ".author.login")[1]
+    me = gh_in(it.gh_dir, "api", "user", "--jq", ".login")[1]
+    us = {author, me or author}
+
+    def login(comment):
+        return (comment.get("user") or {}).get("login")
+
+    inline = gh_json(it.gh_dir, f"repos/{repo}/pulls/{it.pr_number}/comments")
+    top = gh_json(it.gh_dir, f"repos/{repo}/issues/{it.pr_number}/comments")
+    if inline is None and top is None:
+        return None
+    inline, top = inline or [], top or []
+    # a bot comment that starts a thread (no in_reply_to_id) is answered when we replied to
+    # it (a comment whose in_reply_to_id is that comment's id)
+    answered = {c.get("in_reply_to_id") for c in inline if login(c) in us and c.get("in_reply_to_id") is not None}
+    theirs = [c for c in inline if login(c) not in us]
+    unanswered = [c for c in theirs if c.get("in_reply_to_id") is None and c.get("id") not in answered]
+    return len(theirs) + len([c for c in top if login(c) not in us]), len(unanswered)
+
+
+def branch_of_dir(repo, directory):
+    """The branch that holds the session directory: the current branch when the directory
+    exists in the checkout, else the branch at whose tip it was last touched (git log --all),
+    else the default branch."""
+    directory = directory.rstrip("/")
+    current = current_branch(repo)
+    if current and os.path.isdir(f"{repo}/{directory}"):
+        return current
+    quiet(["git", "-C", repo, "fetch", "-q", "origin"])
+    for name in git(repo, "log", "--all", "--format=%D", "-1", "--", directory)[1].split(","):
+        name = name.lstrip(" ")
+        if name.startswith("HEAD -> "):
+            name = name[8:]
+        if name.startswith("origin/"):
+            name = name[7:]
+        if name and name != "HEAD" and not name.startswith("tag: "):
+            return name
+    return default_branch(repo)
+
+
+def gh_auth_ok():
+    """gh can read its token in this session; checked once per invocation."""
+    if State.gh_auth is None:
+        State.gh_auth = quiet([GH_BIN, "auth", "status"]) == 0
+    return State.gh_auth
+
+
+def in_ssh():
+    return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+
+
+def gh_auth_notice():
+    """The one line printed instead of polling the repos when gh has no token. Over SSH the
+    token sits in the macOS Keychain, which an SSH session cannot read while the scheduled run
+    in the GUI session can; anywhere else it is a real login problem."""
+    if in_ssh():
+        return ("gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown here, "
+                "the scheduled run in the GUI session sees them")
+    return 'gh: not authenticated (run "gh auth login -h github.com -w"); labelled PRs unknown'
+
+
+def repos_pollable(repos, in_run=False):
+    """True when the repos can be polled for labelled PRs. With repos listed and gh unable to
+    read its token, prints the notice (via say in a run, so it reaches queue.log) and returns
+    False. Over SSH that is not a source failure (manual runs there cannot see PRs, the
+    scheduled run can); elsewhere it is."""
+    if not repos or gh_auth_ok():
+        return True
+    if in_run:
+        say(gh_auth_notice())
+    else:
+        out(gh_auth_notice())
+    if not in_ssh():
+        State.source_failed = True
+    return False
+
+
+def list_ready_prs(repo):
+    """(number, branch, url) of the open PRs labelled autopilot-ready. On failure says a FAIL
+    line, notes the failed source and returns nothing."""
+    rc, text, err = capture_both(
+        [GH_BIN, "pr", "list", "--label", LABEL_READY, "--state", "open", "--json", "number,headRefName,url",
+         "--jq", r'.[] | "\(.number) \(.headRefName) \(.url)"'], cwd=repo)
+    if rc != 0:
+        first = err.splitlines()[0] if err.splitlines() else ""
+        say(f"FAIL - {repo}: gh pr list --label {LABEL_READY} failed (exit {rc}): {first}")
+        State.source_failed = True
+        return None
+    prs = []
+    for line in text.splitlines():
+        words = line.split()
+        if words:
+            prs.append((words[0], words[1] if len(words) > 1 else "", " ".join(words[2:])))
+    return prs
+
+
+def ensure_labels(repo):
+    """Creates the three queue labels when missing; prints one line per label; False when one
+    is missing and could not be created."""
+    base = os.path.basename(repo)
+    have = gh_in(repo, "label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name")[1].splitlines()
+    ok = True
+    for name, color, description in LABELS:
+        if name in have:
+            out(f"ok   - label {name} exists in {base}")
+        elif gh_in(repo, "label", "create", name, "--color", color, "--description", description)[0] == 0:
+            out(f"ok   - label {name} created in {base}")
+        else:
+            out(f"FAIL - label {name} missing in {base} and gh label create failed")
+            ok = False
+    return ok
+
 
 # ---------- notifications ----------
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+def slack_escape(text):
+    """&, < and > escaped for Slack (no mentions, no broken text)."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-# item_title: a short title of the current item: the PR's title, else the topic in the first
-# line of its PLAN.md ("# PLAN - <topic> - <date>"), else the item itself.
-item_title() {
-  it_t=""
-  if [ -n "$pi_pr_number" ] && [ -n "${pi_gh_dir:-}" ]; then
-    it_t="$(gh_in "$pi_gh_dir" pr view "$pi_pr_number" --json title --jq .title 2>/dev/null)"
-  fi
-  if [ -z "$it_t" ] && [ -n "${pi_sd0:-}" ] && [ -f "$pi_wt/$pi_sd0/PLAN.md" ]; then
-    it_t="$(sed -n '1{s/^#[[:space:]]*//; s/^PLAN[[:space:]]*-[[:space:]]*//; s/[[:space:]]*-[[:space:]]*[0-9]\{4\}-[0-9][0-9]-[0-9][0-9][[:space:]]*$//; p;}' "$pi_wt/$pi_sd0/PLAN.md")"
-  fi
-  printf '%s\n' "${it_t:-$pi_item}"
-}
 
-# slack_escape: stdin to stdout with &, < and > escaped for Slack (no mentions, no broken text).
-slack_escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+def slack_md(text):
+    """slack_escape, then Markdown bold and links in Slack's form."""
+    return re.sub(r"\[([^]]*)\]\(([^)]*)\)", r"<\2|\1>", slack_escape(text).replace("**", "*"))
 
-# slack_md: slack_escape, then Markdown bold and links in Slack's form.
-slack_md() { slack_escape | sed 's/\*\*/*/g; s/\[\([^]]*\)\](\([^)]*\))/<\2|\1>/g'; }
 
-# cut_chars <n>: each stdin line cut to n characters (not bytes, so an umlaut stays whole).
-cut_chars() { LC_ALL=en_US.UTF-8 cut -c "1-$1"; }
+def item_title(it):
+    """A short title of the item: the PR's title, else the topic in the first line of its
+    PLAN.md ("# PLAN - <topic> - <date>"), else the item itself."""
+    title = ""
+    if it.pr_number and it.gh_dir:
+        title = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "title", "--jq", ".title")[1]
+    plan = f"{it.wt}/{it.sd0}/PLAN.md"
+    if not title and it.sd0 and os.path.isfile(plan):
+        title = re.sub(r"^#\s*", "", first_line(plan))
+        title = re.sub(r"^PLAN\s*-\s*", "", title)
+        title = re.sub(r"\s*-\s*\d{4}-\d\d-\d\d\s*$", "", title)
+    return title or it.item
 
-# plan_destination <PLAN.md>: the first paragraph under "## Destination", at most 300
-# characters, ready for Slack.
-plan_destination() {
-  awk '{ sub(/\r$/, "") } /^## Destination/ { f = 1; next } f && /^## / { exit }
-       f && NF { printf "%s%s", (n++ ? " " : ""), $0; next } f && n { exit }
-       END { if (n) printf "\n" }' "$1" 2>/dev/null | cut_chars 300 | slack_md
-}
 
-# report_section <REPORT.md> <heading> [max lines]: the non-empty lines under the heading
-# ("## <heading>", any case, a trailing colon allowed), at most max (default 8), each cut to
-# 220 characters and ready for Slack, a note when there are more, a note when the report has
-# no such section.
-report_section() {
-  awk -v h="$2" -v max="${3:-8}" '
-    { sub(/\r$/, "") }
-    f && /^## / { exit }
-    !f && tolower($0) ~ ("^## +" tolower(h) "[[:space:]:]*$") { f = 1; next }
-    f && NF { if (++n <= max) print }
-    END { if (n > max) print "(" n - max " more in REPORT.md)"; if (!f) print "(no \"" h "\" section in REPORT.md)" }' "$1" 2>/dev/null \
-    | cut_chars 220 | slack_md
-}
+def plan_destination(plan):
+    """The first paragraph under "## Destination", at most 300 characters, ready for Slack."""
+    words, found = [], False
+    for line in read_lines(plan):
+        line = line.rstrip("\r")
+        if line.startswith("## Destination"):
+            found = True
+        elif found and line.startswith("## "):
+            break
+        elif found and line.strip():
+            words.append(line)
+        elif found and words:
+            break
+    return slack_md(" ".join(words)[:300])
 
-# item_cost: the summed total_cost_usd of every attempt in the item log, as "$N.NN", or nothing.
-item_cost() {
-  grep -o '"total_cost_usd":[0-9.]*' "$ITEM_LOG" 2>/dev/null | LC_ALL=C awk -F: '{ s += $2 } END { if (NR) printf "$%.2f", s }'
-}
 
-# notify_start: the Slack message when an item's first attempt starts: title, what it is
-# about, model and effort, PR link.
-notify_start() {
-  ns_what=""
-  [ -n "${pi_sd0:-}" ] && ns_what="$(plan_destination "$pi_wt/$pi_sd0/PLAN.md")"
-  ns_link="$pi_pr_url"; [ "$ns_link" != "-" ] || ns_link="$(printf '%s' "$pi_item" | slack_escape)"
-  notify "" "" "$(printf '*Autopilot started* on %s: %s - %s\n%s%sModel %s, effort %s · %s' \
-    "$(hostname -s)" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$ns_what" "${ns_what:+
-}" "$RUN_MODEL" "$RUN_EFFORT" "$ns_link")"
-}
+def report_section(report, heading, limit=8):
+    """The non-empty lines under the heading ("## <heading>", any case, a trailing colon
+    allowed), at most the limit, each cut to 220 characters and ready for Slack, a note when
+    there are more, a note when the report has no such section."""
+    start = re.compile(r"^## +" + re.escape(heading.lower()) + r"[\s:]*$")
+    lines, count, found = [], 0, False
+    for line in read_lines(report):
+        line = line.rstrip("\r")
+        if found and line.startswith("## "):
+            break
+        if not found:
+            found = bool(start.match(line.lower()))
+            continue
+        if line.strip():
+            count += 1
+            if count <= limit:
+                lines.append(line)
+    if count > limit:
+        lines.append(f"({count - limit} more in REPORT.md)")
+    if not found:
+        lines.append(f'(no "{heading}" section in REPORT.md)')
+    return "\n".join(slack_md(line[:220]) for line in lines)
 
-# slack_end: the Slack message when an item ends: status, title, PR link, minutes, cost,
-# restarts; for done "What shipped" and "Open items" from REPORT.md, otherwise the reason and
-# the open items when there is a report.
-slack_end() {
-  [ -n "$pi_title" ] || pi_title="$(item_title)"
-  se_report=""; [ -n "${pi_wt:-}" ] && [ -n "${pi_sd:-}" ] && se_report="$pi_wt/$pi_sd/REPORT.md"
-  se_cost="$(item_cost)"
-  case "$pi_status:${RUN_RESULT:-}" in timeout:*|*:stalled) se_cost="${se_cost:-\$0.00} + a stopped attempt" ;; esac
-  se_facts="$(( ($(date +%s) - pi_began) / 60 )) min${se_cost:+ · $se_cost}"
-  [ "$pi_restarts" -gt 0 ] && se_facts="$se_facts · $pi_restarts restart(s)"
-  se_link="$pi_pr_url"; [ "$se_link" != "-" ] || se_link="log $ITEM_LOG"
-  printf '*Autopilot %s*: %s - %s\n%s · %s\n' "$pi_shown" "$pi_rb" "$(printf '%s' "$pi_title" | slack_escape)" "$se_link" "$se_facts"
-  [ "$pi_status" = "done" ] || printf 'Reason: %s\n' "$(printf '%s' "$pi_reason" | slack_escape)"
-  if [ -n "${pi_pushed:-}" ]; then
-    printf 'Branch: %s (on GitHub)\n' "$(printf '%s' "$pi_pushed" | slack_escape)"
-  elif [ -n "${pi_push_failed:-}" ]; then
-    printf 'Branch NOT pushed - the work is only in %s\n' "$(printf '%s' "${pi_wt:--}" | slack_escape)"
-  fi
-  if [ -n "$se_report" ] && [ -f "$se_report" ]; then
-    se_shipped="$(report_section "$se_report" "What shipped")"
-    se_open="$(report_section "$se_report" "Open items")"
-    [ "$pi_status" = "done" ] && printf '*What shipped*\n%s\n' "${se_shipped:-none}"
-    printf '*Open items*\n%s\n' "${se_open:-none}"
-  fi
-}
 
-# slack_json <text>: {"text": <text>} as JSON, newlines kept (jq when present; without it
-# control characters other than tab and newline are dropped).
-slack_json() {
-  if command -v "${JQ_BIN:-jq}" >/dev/null 2>&1; then
-    "${JQ_BIN:-jq}" -cn --arg t "$1" '{text: $t}'
-  else
-    printf '{"text":"%s"}' "$(printf '%s' "$1" | tr -d '\001-\010\013\014\016-\037' | awk 'BEGIN { ORS = "" }
-      { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, ""); if (NR > 1) printf "\\n"; print }')"
-  fi
-}
+def item_cost():
+    """The summed total_cost_usd of every attempt in the item log, as "$N.NN", or nothing."""
+    costs = re.findall(r'"total_cost_usd":([0-9.]*)', read_text(State.item_log))
+    if not costs:
+        return ""
+    total = 0.0
+    for cost in costs:
+        try:
+            total += float(cost)
+        except ValueError:
+            pass
+    return "$%.2f" % total
 
-# notify <text> [sound] [slack text]: macOS notification with <text> (and the named sound:
-# Glass for done, Sosumi for anything that needs a look) and the Slack message (<slack text>,
-# else <text>). A Slack error status (for example a rejected payload) is logged.
-notify() {
-  [ "${MISSION_CONTROL_NO_NOTIFY:-0}" = 1 ] && return 0
-  n_text="$1"; n_sound="${2:-}"; n_slack="${3:-$1}"
-  if [ -n "$n_sound" ] && command -v osascript >/dev/null 2>&1; then
-    n_esc="$(json_escape "$n_text")"
-    osascript -e "display notification \"$n_esc\" with title \"mission-control\" sound name \"$n_sound\"" >/dev/null 2>&1 \
-      || log "notification: osascript failed"
-  fi
-  if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
-    n_json="$(slack_json "$n_slack")"
-    # stderr is dropped on purpose: curl error messages can quote the URL.
-    curl -sS --fail --max-time 20 -X POST -H 'Content-type: application/json' --data "$n_json" \
-      "$SLACK_WEBHOOK_URL" >/dev/null 2>&1
-    n_rc=$?
-    [ "$n_rc" -eq 0 ] || log "notification: Slack webhook failed (curl exit $n_rc)"
-  fi
-  return 0
-}
+
+def notify_start(it):
+    """The Slack message when an item's first attempt starts: title, what it is about, model
+    and effort, PR link."""
+    what = plan_destination(f"{it.wt}/{it.sd0}/PLAN.md") if it.sd0 else ""
+    link = it.pr_url if it.pr_url != "-" else slack_escape(it.item)
+    notify("", "", f"*Autopilot started* on {host()}: {it.rb} - {slack_escape(it.title)}\n"
+           f"{what}{chr(10) if what else ''}Model {it.model}, effort {it.effort} · {link}")
+
+
+def slack_end(it):
+    """The Slack message when an item ends: status, title, PR link, minutes, cost, restarts;
+    for done "What shipped" and "Open items" from REPORT.md, otherwise the reason and the open
+    items when there is a report."""
+    if not it.title:
+        it.title = item_title(it)
+    report = f"{it.wt}/{it.sd}/REPORT.md" if it.wt and it.sd else ""
+    cost = item_cost()
+    if it.status == "timeout" or it.result == "stalled":
+        cost = f"{cost or '$0.00'} + a stopped attempt"
+    facts = f"{(int(time.time()) - it.began) // 60} min"
+    if cost:
+        facts += f" · {cost}"
+    if it.restarts > 0:
+        facts += f" · {it.restarts} restart(s)"
+    link = it.pr_url if it.pr_url != "-" else f"log {State.item_log}"
+    lines = [f"*Autopilot {it.shown}*: {it.rb} - {slack_escape(it.title)}", f"{link} · {facts}"]
+    if it.status != "done":
+        lines.append(f"Reason: {slack_escape(it.reason)}")
+    if it.pushed:
+        lines.append(f"Branch: {slack_escape(it.pushed)} (on GitHub)")
+    elif it.push_failed:
+        lines.append(f"Branch NOT pushed - the work is only in {slack_escape(it.wt or '-')}")
+    if report and os.path.isfile(report):
+        if it.status == "done":
+            lines += ["*What shipped*", report_section(report, "What shipped") or "none"]
+        lines += ["*Open items*", report_section(report, "Open items") or "none"]
+    return "\n".join(lines)
+
+
+def slack_json(text):
+    """{"text": <text>} as JSON, newlines kept; control characters other than tab and newline
+    are dropped."""
+    text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
+    return json.dumps({"text": text}, ensure_ascii=False, separators=(",", ":"))
+
+
+def notify(text, sound="", slack=""):
+    """macOS notification with the text (and the named sound: Glass for done, Sosumi for
+    anything that needs a look) and the Slack message (the slack text, else the text). A Slack
+    error status (for example a rejected payload) is logged."""
+    if setting("MISSION_CONTROL_NO_NOTIFY", "0") == "1":
+        return
+    if sound and shutil.which("osascript"):
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'display notification "{escaped}" with title "mission-control" sound name "{sound}"'
+        if quiet(["osascript", "-e", script]) != 0:
+            log("notification: osascript failed")
+    url = Config.values.get("SLACK_WEBHOOK_URL")
+    if url:
+        # the output is dropped on purpose: curl error messages can quote the URL
+        rc = quiet(["curl", "-sS", "--fail", "--max-time", "20", "-X", "POST", "-H", "Content-type: application/json",
+                    "--data", slack_json(slack or text), url])
+        if rc == 0:
+            log("notification: Slack message sent")
+        else:
+            log(f"notification: Slack webhook failed (curl exit {rc})")
+
 
 # ---------- run ----------
 
-acquire_lock() {
-  mkdir -p "$QHOME"
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    al_pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-    if [ -n "$al_pid" ] && kill -0 "$al_pid" 2>/dev/null; then
-      die "another run is active (pid $al_pid, lock $LOCK)"
-    fi
-    rm -rf "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || die "cannot take the lock $LOCK"
-  fi
-  echo "$$" >"$LOCK/pid"
-  trap 'release_lock' EXIT
-  trap 'on_signal' INT TERM
-}
+class Item:
+    """One queue item on its way through process_item."""
 
-on_signal() {
-  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
-  kill_run
-  release_lock
-  exit 130
-}
+    def __init__(self, repo_in, kind, ref, line, branch):
+        self.repo_in, self.kind, self.ref, self.line, self.branch = repo_in, kind, ref, line, branch
+        self.rb = os.path.basename(repo_in.rstrip("/"))
+        self.item = f"#{ref}" if kind == "pr" else ref
+        self.began = int(time.time())
+        self.repo = self.gh_dir = self.wt = self.base = self.target = ""
+        self.pr_number = self.noplan = self.sd = self.sd0 = self.title = self.ticket = self.draft = ""
+        self.pr_url = "-"
+        self.status = self.reason = self.shown = ""
+        self.restarts = 0
+        self.gh_failed = self.jira_failed = self.pushed = self.push_failed = ""
+        self.model = self.effort = self.fallback = self.budget = ""
+        self.result = ""   # of the last attempt: exited, stalled or timeout
+        self.exit = 0      # the claude exit code of the last attempt
+        self.recorded = False  # its line is in done.txt
 
-release_lock() { rm -rf "$LOCK"; }
+    @property
+    def who(self):
+        return f"{self.rb} {self.item}"
 
-# kill_run: SIGTERM to the claude pid, SIGKILL after 10 s. Children of a tool call may survive.
-kill_run() {
-  [ -n "$RUN_PIDFILE" ] && [ -f "$RUN_PIDFILE" ] || return 0
-  kr_pid="$(cat "$RUN_PIDFILE")"
-  kill "$kr_pid" 2>/dev/null || return 0
-  kr_n=0
-  while kill -0 "$kr_pid" 2>/dev/null && [ "$kr_n" -lt 10 ]; do nap 1; kr_n=$((kr_n + 1)); done
-  kill -9 "$kr_pid" 2>/dev/null || true
-}
+    def block(self, reason, status="blocked"):
+        self.status, self.reason = status, reason
 
-# refresh_worktree <worktree>: fetch and fast-forward the checked-out branch (a developer may
-# have pushed a fix). Not fast-forwardable: say so and continue on the local state.
-refresh_worktree() {
-  rw_wt="$1"; rw_b="$(current_branch "$rw_wt")"
-  [ -n "$rw_b" ] || return 0
-  git -C "$rw_wt" fetch -q origin "$rw_b" >>"$ITEM_LOG" 2>&1 || { log "fetch of $rw_b failed, using the local state"; return 0; }
-  if git -C "$rw_wt" merge -q --ff-only "origin/$rw_b" >>"$ITEM_LOG" 2>&1; then
-    log "$rw_b fast-forwarded to origin/$rw_b"
-  else
-    say "$rw_b is not fast-forwardable to origin/$rw_b, continuing on the local state"
-  fi
-}
 
-# prepare_worktree <repo> <worktree> [branch]: a worktree on the branch (fetched first), or
-# detached from the default branch when no branch is given. An existing worktree is reused
-# and refreshed.
-prepare_worktree() {
-  pw_repo="$1"; pw_wt="$2"; pw_branch="${3:-}"
-  if [ -e "$pw_wt/.git" ]; then log "reusing worktree $pw_wt"; refresh_worktree "$pw_wt"; return 0; fi
-  mkdir -p "$(dirname "$pw_wt")"
-  git -C "$pw_repo" worktree prune >>"$ITEM_LOG" 2>&1
-  if [ -n "$pw_branch" ]; then
-    git -C "$pw_repo" fetch -q origin "$pw_branch" >>"$ITEM_LOG" 2>&1 || log "fetch of $pw_branch failed"
-    pw_local=""; pw_remote=""
-    git -C "$pw_repo" show-ref --verify --quiet "refs/heads/$pw_branch" && pw_local=1
-    git -C "$pw_repo" show-ref --verify --quiet "refs/remotes/origin/$pw_branch" && pw_remote=1
-    if [ -z "$pw_local" ] && [ -z "$pw_remote" ]; then log "branch $pw_branch exists neither locally nor on origin"; return 1; fi
-    if [ -n "$pw_local" ] && git -C "$pw_repo" worktree list --porcelain | grep -qx "branch refs/heads/$pw_branch"; then
-      pw_other="$(git -C "$pw_repo" worktree list --porcelain | awk -v b="branch refs/heads/$pw_branch" '/^worktree /{w=$2} $0==b{print w; exit}')"
-      say "branch $pw_branch is also checked out in $pw_other; the run works on $pw_branch here, do not commit there until it is done"
-      git -C "$pw_repo" worktree add --detach "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
-      git -C "$pw_wt" checkout --ignore-other-worktrees "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
-    elif [ -n "$pw_local" ]; then
-      git -C "$pw_repo" worktree add "$pw_wt" "$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
-      if [ -n "$pw_remote" ]; then
-        git -C "$pw_wt" merge -q --ff-only "origin/$pw_branch" >>"$ITEM_LOG" 2>&1 \
-          || say "$pw_branch is not fast-forwardable to origin/$pw_branch, continuing on the local state"
-      fi
-    else
-      git -C "$pw_repo" worktree add -b "$pw_branch" "$pw_wt" "origin/$pw_branch" >>"$ITEM_LOG" 2>&1 || return 1
-    fi
-  else
-    git -C "$pw_repo" fetch -q origin >>"$ITEM_LOG" 2>&1 || log "fetch failed, using the local default branch"
-    pw_start="$(default_ref "$pw_repo")" || { log "no default branch found"; return 1; }
-    git -C "$pw_repo" worktree add --detach "$pw_wt" "$pw_start" >>"$ITEM_LOG" 2>&1 || return 1
-  fi
-}
+def refresh_worktree(wt):
+    """Fetch and fast-forward the checked-out branch (a developer may have pushed a fix). Not
+    fast-forwardable: say so and continue on the local state."""
+    branch = current_branch(wt)
+    if not branch:
+        return
+    if git_log(wt, "fetch", "-q", "origin", branch) != 0:
+        log(f"fetch of {branch} failed, using the local state")
+        return
+    if git_log(wt, "merge", "-q", "--ff-only", f"origin/{branch}") == 0:
+        log(f"{branch} fast-forwarded to origin/{branch}")
+    else:
+        say(f"{branch} is not fast-forwardable to origin/{branch}, continuing on the local state")
 
-# is_base_branch <worktree> <branch>: true for main, master, preview, develop, dev and the
-# repo's default branch. The runner never commits on such a branch and never pushes to it.
-is_base_branch() {
-  ib_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null || true)"
-  case "$2" in
-    "$ib_def"|main|master|preview|develop|dev) return 0 ;;
-  esac
-  return 1
-}
 
-# ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or old
-# (autopilot-hooks check), installs them and, on a branch, commits only the hook files,
-# .claude/settings.json and .gitignore (no git hooks of the project run) and pushes the
-# commit when the branch is on origin, so the run has the hooks, a later fast-forward still
-# works and the PR carries them into the project. Without a branch (a detached worktree) and
-# on a base branch they stay uncommitted for this run. A failure is said and the run goes
-# ahead.
-ensure_hooks() {
-  eh_wt="$1"
-  command -v "$HOOKS_BIN" >/dev/null 2>&1 || { log "autopilot-hooks not found, hooks not checked"; return 0; }
-  eh_why="$("$HOOKS_BIN" check "$eh_wt" 2>&1)" && { log "autopilot hooks current"; return 0; }
-  if ! eh_out="$("$HOOKS_BIN" install "$eh_wt" 2>&1)"; then
-    say "$pi_rb $pi_item: autopilot hooks could not be installed: $eh_out"; return 0
-  fi
-  case "$eh_out" in "nothing to do"*) say "$pi_rb $pi_item: autopilot hooks: $eh_why (nothing to install)"; return 0 ;; esac
-  eh_branch="$(current_branch "$eh_wt")"
-  if [ -z "$eh_branch" ]; then
-    say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (no branch yet): $eh_out"; return 0
-  fi
-  if is_base_branch "$eh_wt" "$eh_branch"; then
-    say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (base branch $eh_branch): $eh_out"; return 0
-  fi
-  set -- .claude/hooks/autopilot-gate.sh .claude/hooks/autopilot-gate-filter.sh .claude/hooks/autopilot-context-budget.sh \
-    .claude/hooks/autopilot-session-start.sh .claude/settings.json .gitignore
-  git -C "$eh_wt" add -f -- "$@" >>"$ITEM_LOG" 2>&1
-  if git -C "$eh_wt" diff --cached --quiet -- "$@"; then log "autopilot hooks: nothing to commit"; return 0; fi
-  if ! git -C "$eh_wt" commit -q --no-verify -m "chore(autopilot): install or update the autopilot hooks" -m "$eh_why" -- "$@" >>"$ITEM_LOG" 2>&1; then
-    say "$pi_rb $pi_item: autopilot hooks installed for this run, but the commit failed (see $ITEM_LOG)"; return 0
-  fi
-  say "$pi_rb $pi_item: autopilot hooks installed or updated and committed on $eh_branch ($eh_out)"
-  git -C "$eh_wt" show-ref --verify --quiet "refs/remotes/origin/$eh_branch" || return 0
-  if git -C "$eh_wt" push -q origin "HEAD:refs/heads/$eh_branch" >>"$ITEM_LOG" 2>&1; then
-    log "autopilot hooks commit pushed to origin/$eh_branch"
-  else
-    say "$pi_rb $pi_item: the autopilot hooks commit could not be pushed to origin/$eh_branch (see $ITEM_LOG)"
-  fi
-}
+def prepare_worktree(repo, wt, branch=""):
+    """A worktree on the branch (fetched first), or detached from the default branch when no
+    branch is given. An existing worktree is reused and refreshed. False when it cannot be
+    created."""
+    if os.path.exists(wt + "/.git"):
+        log(f"reusing worktree {wt}")
+        refresh_worktree(wt)
+        return True
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+    except OSError as e:
+        log(f"cannot create {os.path.dirname(wt)}: {e}")
+        return False
+    git_log(repo, "worktree", "prune")
+    if not branch:
+        if git_log(repo, "fetch", "-q", "origin") != 0:
+            log("fetch failed, using the local default branch")
+        start = default_ref(repo)
+        if not start:
+            log("no default branch found")
+            return False
+        return git_log(repo, "worktree", "add", "--detach", wt, start) == 0
+    if git_log(repo, "fetch", "-q", "origin", branch) != 0:
+        log(f"fetch of {branch} failed")
+    local = git_ok(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    remote = git_ok(repo, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}")
+    if not local and not remote:
+        log(f"branch {branch} exists neither locally nor on origin")
+        return False
+    if not local:
+        return git_log(repo, "worktree", "add", "-b", branch, wt, f"origin/{branch}") == 0
+    other = worktree_of_branch(repo, branch)
+    if other:
+        say(f"branch {branch} is also checked out in {other}; the run works on {branch} here, "
+            "do not commit there until it is done")
+        return (git_log(repo, "worktree", "add", "--detach", wt, branch) == 0
+                and git_log(wt, "checkout", "--ignore-other-worktrees", branch) == 0)
+    if git_log(repo, "worktree", "add", wt, branch) != 0:
+        return False
+    if remote and git_log(wt, "merge", "-q", "--ff-only", f"origin/{branch}") != 0:
+        say(f"{branch} is not fast-forwardable to origin/{branch}, continuing on the local state")
+    return True
 
-# node_path <worktree>: the bin directory of the installed nvm Node version the project's
-# .nvmrc names (the highest matching one), else of nvm's default alias; nothing without nvm
-# or without a numeric version. The runner's schedule has no nvm on its PATH.
-node_path() {
-  np_nvm="${NVM_DIR:-$HOME/.nvm}"
-  [ -d "$np_nvm/versions/node" ] || return 0
-  np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$1/.nvmrc" 2>/dev/null)"
-  [ -n "$np_want" ] || np_want="$(sed -n '1s/^[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' "$np_nvm/alias/default" 2>/dev/null)"
-  [ -n "$np_want" ] || return 0
-  np_hit="$(ls "$np_nvm/versions/node" 2>/dev/null | grep -E "^v$(printf '%s' "$np_want" | sed 's/\./\\./g')(\.|$)" \
-    | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)"
-  [ -n "$np_hit" ] && [ -d "$np_nvm/versions/node/$np_hit/bin" ] && printf '%s\n' "$np_nvm/versions/node/$np_hit/bin"
-}
 
-# stop_compose <worktree>: stops the Docker Compose projects whose working directory lies in
-# the worktree (a run's dev stack); containers and networks go, volumes stay.
-stop_compose() {
-  command -v "$DOCKER_BIN" >/dev/null 2>&1 || return 0
-  sc_projects="$("$DOCKER_BIN" ps -a --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
-    | awk -F '|' -v wt="$1" '$1 != "" && ($2 == wt || index($2, wt "/") == 1) { print $1 }' | sort -u)"
-  for sc_p in $sc_projects; do
-    # from / so that no compose file in the current directory is read
-    if (cd / && "$DOCKER_BIN" compose -p "$sc_p" down --remove-orphans) >>"$ITEM_LOG" 2>&1; then
-      log "docker compose project $sc_p stopped"
-    else
-      say "$pi_rb $pi_item: docker compose project $sc_p could not be stopped (see $ITEM_LOG)"
-    fi
-  done
-}
+def worktree_of_branch(repo, branch):
+    """The worktree that has the branch checked out, or nothing."""
+    worktree = ""
+    for line in git(repo, "worktree", "list", "--porcelain")[1].splitlines():
+        if line.startswith("worktree "):
+            worktree = line.split()[1]
+        elif line == f"branch refs/heads/{branch}":
+            return worktree
+    return ""
 
-# run_attempt <worktree> <item> <item start epoch> <watchdog state>: sets RUN_RESULT to
-# exited|stalled|timeout and RUN_EXIT to the claude exit code.
-run_attempt() {
-  ra_wt="$1"; ra_item="$2"; ra_start="$3"; ra_state="$4"
-  ra_exit="$ITEM_LOG.exit"; RUN_PIDFILE="$ITEM_LOG.pid"
-  rm -f "$ra_exit" "$RUN_PIDFILE"
-  # The sentinel tells the autopilot skill it is the run (an interactive /autopilot
-  # enqueues instead); the run removes it at its end and on a hand-off.
-  mkdir -p "$ra_wt/.claude" && : >"$ra_wt/.claude/.autopilot-active"
-  ra_node="$(node_path "$ra_wt")"
-  [ -n "$ra_node" ] && log "node for the run: $ra_node"
-  (
-    cd "$ra_wt" || exit 1
-    [ -n "$ra_node" ] && PATH="$ra_node:$PATH" && export PATH
-    set -- -p "/autopilot $ra_item" --model "$RUN_MODEL" --effort "$RUN_EFFORT" --advisor "$ADVISOR"
-    [ -n "$RUN_FALLBACK" ] && set -- "$@" --fallback-model "$RUN_FALLBACK"
-    "$CLAUDE_BIN" "$@" --permission-mode auto --max-budget-usd "$RUN_BUDGET" --output-format json \
-      >>"$ITEM_LOG" 2>&1 &
-    echo "$!" >"$RUN_PIDFILE"
-    wait "$!"
-    echo "$?" >"$ra_exit"
-  ) 2>>"$ITEM_LOG" &
-  RUN_RESULT=exited
-  # Poll step: the watch interval, at most 30 s; 0.2 s when the stall check is off (tests).
-  ra_step="$WATCH_S"; [ "$ra_step" -le 30 ] || ra_step=30; [ "$ra_step" -gt 0 ] || ra_step=0.2
-  ra_tick="$(date +%s)"
-  while [ ! -f "$ra_exit" ]; do
-    nap "$ra_step"
-    ra_now="$(date +%s)"
-    if [ $((ra_now - ra_start)) -ge "$TIMEOUT_S" ]; then
-      RUN_RESULT=timeout; log "timeout after $TIMEOUT_MIN min, killing the run"; kill_run; break
-    fi
-    if [ "$WATCH_S" -gt 0 ] && [ $((ra_now - ra_tick)) -ge "$WATCH_S" ]; then
-      ra_tick="$ra_now"
-      ra_branch="$(current_branch "$ra_wt")"; [ -n "$ra_branch" ] || ra_branch=HEAD
-      ra_verdict="$("$WATCHDOG" "$ra_wt" "$ra_branch" "$ra_state" 2>&1)"
-      log "watchdog: $ra_verdict"
-      ra_stalls="${ra_verdict##*stalls=}"
-      case "$ra_verdict" in
-        STALL*) if [ "${ra_stalls:-0}" -ge 4 ] 2>/dev/null; then
-                  RUN_RESULT=stalled; log "stalled (stalls=$ra_stalls), killing the run"; kill_run; break
-                fi ;;
-      esac
-    fi
-  done
-  wait
-  RUN_EXIT="$(cat "$ra_exit" 2>/dev/null || echo 137)"
-  rm -f "$RUN_PIDFILE"; RUN_PIDFILE=""
-  log "claude exited with $RUN_EXIT ($RUN_RESULT)"
-}
 
-# report_status <REPORT.md>: sets pi_status and pi_reason from the first line of the report:
-# "Status: done" -> done, "Status: blocked - <reason>" -> blocked, anything else -> blocked.
-report_status() {
-  rs_line="$(head -n 1 "$1" 2>/dev/null | sed 's/[[:space:]]*$//')"
-  case "$rs_line" in
-    "Status: done"|"Status: done "*) pi_status="done"; pi_reason="" ;;
-    "Status: blocked"*)
-      pi_status=blocked
-      pi_reason="$(printf '%s' "${rs_line#Status: blocked}" | sed 's/^[[:space:]]*-*[[:space:]]*//')"
-      [ -n "$pi_reason" ] || pi_reason="blocked by the run, no reason given in REPORT.md" ;;
-    *) pi_status=blocked; pi_reason="report without status line (first line of REPORT.md: '${rs_line:-empty}')" ;;
-  esac
-}
+def is_base_branch(tree, branch):
+    """True for main, master, preview, develop, dev and the repo's default branch. The runner
+    never commits on such a branch and never pushes to it."""
+    return branch in BASE_BRANCHES or branch == default_branch(tree)
 
-# rename_item_log <new name part>: the item log carries the resolved item in its name.
-# PR items start as <ts>-_<n>.log and become <ts>-_<n>-<resolved item>.log.
-rename_item_log() {
-  ril_new="${ITEM_LOG%.log}-$(safe_name "$1").log"
-  [ "$ril_new" != "$ITEM_LOG" ] || return 0
-  mv -f "$ITEM_LOG" "$ril_new" 2>/dev/null || return 0
-  ITEM_LOG="$ril_new"
-}
 
-# process_item <repo> <text|pr> <item or PR number> [queue line] [branch]
-process_item() {
-  pi_repo_in="$1"; pi_kind="$2"; pi_ref="$3"; pi_line="${4:-}"; pi_branch="${5:-}"
-  pi_rb="$(basename "$pi_repo_in")"
-  pi_item="$pi_ref"; pi_pr_number=""; pi_pr_url="-"; pi_noplan=""; pi_sd=""; pi_target=""; pi_base=""; pi_title=""; pi_sd0=""
-  pi_status=""; pi_reason=""; pi_restarts=0; pi_wt=""; pi_gh_failed=""; pi_jira_failed=""; pi_ticket=""
-  pi_pushed=""; pi_push_failed=""
-  [ "$pi_kind" = pr ] && pi_item="#$pi_ref"
-  pi_began="$(date +%s)"
-  mkdir -p "$LOGDIR"
-  ITEM_LOG="$LOGDIR/$(date +%Y%m%d-%H%M%S)-$(safe_name "$pi_item").log"
-  : >"$ITEM_LOG"
-  note_current 1
-  say "$pi_rb $pi_item: resolving"
+def ensure_hooks(it):
+    """When the autopilot hooks in the worktree are missing or old (autopilot-hooks check),
+    installs them and, on a branch, commits only the hook files, .claude/settings.json and
+    .gitignore (no git hooks of the project run) and pushes the commit when the branch is on
+    origin, so the run has the hooks, a later fast-forward still works and the PR carries them
+    into the project. Without a branch (a detached worktree) and on a base branch they stay
+    uncommitted for this run. A failure is said and the run goes ahead."""
+    wt = it.wt
+    if not shutil.which(HOOKS_BIN):
+        log("autopilot-hooks not found, hooks not checked")
+        return
+    rc, why = capture([HOOKS_BIN, "check", wt], err="merge")
+    if rc == 0:
+        log("autopilot hooks current")
+        return
+    rc, installed = capture([HOOKS_BIN, "install", wt], err="merge")
+    if rc != 0:
+        say(f"{it.who}: autopilot hooks could not be installed: {installed}")
+        return
+    if installed.startswith("nothing to do"):
+        say(f"{it.who}: autopilot hooks: {why} (nothing to install)")
+        return
+    branch = current_branch(wt)
+    if not branch:
+        say(f"{it.who}: autopilot hooks installed for this run, not committed (no branch yet): {installed}")
+        return
+    if is_base_branch(wt, branch):
+        say(f"{it.who}: autopilot hooks installed for this run, not committed (base branch {branch}): {installed}")
+        return
+    git_log(wt, "add", "-f", "--", *HOOK_FILES)
+    if git_ok(wt, "diff", "--cached", "--quiet", "--", *HOOK_FILES):
+        log("autopilot hooks: nothing to commit")
+        return
+    if git_log(wt, "commit", "-q", "--no-verify", "-m", "chore(autopilot): install or update the autopilot hooks",
+               "-m", why, "--", *HOOK_FILES) != 0:
+        say(f"{it.who}: autopilot hooks installed for this run, but the commit failed (see {State.item_log})")
+        return
+    say(f"{it.who}: autopilot hooks installed or updated and committed on {branch} ({installed})")
+    if not git_ok(wt, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"):
+        return
+    if git_log(wt, "push", "-q", "origin", f"HEAD:refs/heads/{branch}") == 0:
+        log(f"autopilot hooks commit pushed to origin/{branch}")
+    else:
+        say(f"{it.who}: the autopilot hooks commit could not be pushed to origin/{branch} (see {State.item_log})")
 
-  pi_repo="$(resolve_repo "$pi_repo_in")" || { pi_status=blocked; pi_reason="$pi_repo_in is not a git repository"; }
-  pi_gh_dir="${pi_repo:-}"
 
-  if [ -z "$pi_status" ] && [ "$pi_kind" = pr ]; then
-    pi_view="$(gh_in "$pi_repo" pr view "$pi_ref" --json number,headRefName,baseRefName,url --jq '"\(.number) \(.headRefName) \(.baseRefName) \(.url)"' 2>>"$ITEM_LOG")"
-    if [ -z "$pi_view" ]; then
-      pi_status=blocked; pi_reason="gh pr view $pi_ref failed"
-    else
-      pi_pr_number="${pi_view%% *}"
-      pi_rest="${pi_view#* }"; pi_branch="${pi_rest%% *}"
-      pi_rest="${pi_rest#* }"; pi_target="${pi_rest%% *}"; pi_pr_url="${pi_rest#* }"
-    fi
-  fi
+def node_path(wt):
+    """The bin directory of the installed nvm Node version the project's .nvmrc names (the
+    highest matching one), else of nvm's default alias; nothing without nvm or without a
+    numeric version. The runner's schedule has no nvm on its PATH."""
+    nvm = env("NVM_DIR", HOME + "/.nvm")
+    versions = nvm + "/versions/node"
+    if not os.path.isdir(versions):
+        return ""
+    want = ""
+    for source in (wt + "/.nvmrc", nvm + "/alias/default"):
+        hit = re.match(r"\s*v?([0-9][0-9.]*)", first_line(source))
+        if hit:
+            want = hit.group(1)
+            break
+    if not want:
+        return ""
+    fits = re.compile(r"^v" + re.escape(want) + r"(\.|$)")
 
-  if [ -z "$pi_status" ]; then
-    pi_wt="$(wt_path "$pi_repo" "$pi_item")"
-    ensure_excluded "$pi_repo"
-    move_legacy_worktree "$pi_repo" "$(legacy_wt_path "$pi_rb" "$pi_item")" "$pi_wt"
-    if prepare_worktree "$pi_repo" "$pi_wt" "$pi_branch"; then
-      pi_gh_dir="$pi_wt"
-    else
-      pi_status=blocked; pi_reason="worktree could not be created (see $ITEM_LOG)"
-    fi
-  fi
+    def number(name):
+        return [int(part) if part.isdigit() else 0 for part in (name[1:].split(".") + ["0", "0"])[:3]]
 
-  if [ -z "$pi_status" ]; then
-    pi_base="$(base_sha "$pi_wt" "$pi_target")"
-    if [ "$pi_kind" = pr ]; then
-      pi_sd0="$(find_session_dir "$pi_wt" "$pi_branch" "$pi_base" plan "$pi_branch" || true)"
-      if [ -n "$pi_sd0" ]; then
-        pi_item="$pi_sd0"
-        # A plan written for another branch is never run on this PR.
-        pi_pb="$(plan_branch "$pi_wt/$pi_sd0/PLAN.md")"
-        if [ -n "$pi_pb" ] && ! plan_is_for_branch "$pi_wt/$pi_sd0/PLAN.md" "$pi_branch"; then
-          pi_status=blocked
-          pi_reason="plan $pi_sd0 belongs to branch $pi_pb, not to the PR branch $pi_branch; commit this PR's own PLAN.md (or fix its Branch: line), then set $LABEL_READY again"
-        fi
-      else
-        pi_noplan=no-plan
-        pi_item="$(ticket_from "$pi_branch")"; [ -n "$pi_item" ] || pi_item="$pi_branch"
-      fi
-      rename_item_log "$pi_item"
-      note_current 1
-      say "$pi_rb #$pi_ref: item $pi_item${pi_noplan:+ ($pi_noplan)}"
-    else
-      pi_sd0="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" plan || true)"
-      [ -n "$pi_sd0" ] || pi_noplan=no-plan
-    fi
-    say "$pi_rb $pi_item: worktree ready ($pi_wt)"
-    if [ -z "$pi_status" ] && ! resolve_launch "${pi_sd0:+$pi_wt/$pi_sd0/PLAN.md}" "${pi_sd0:+$pi_sd0/PLAN.md}"; then
-      pi_status=blocked; pi_reason="$RL_REASON"
-    fi
-  fi
+    hits = sorted((name for name in os.listdir(versions) if fits.match(name)), key=number)
+    if hits and os.path.isdir(f"{versions}/{hits[-1]}/bin"):
+        return f"{versions}/{hits[-1]}/bin"
+    return ""
 
-  if [ -z "$pi_status" ]; then
-    if [ -n "$pi_sd0" ]; then
-      pi_ticket="$(plan_ticket "$pi_wt/$pi_sd0/PLAN.md")"
-      if [ -n "$pi_ticket" ] && jira_ready; then
-        jira_start "$pi_ticket"
-      elif [ -n "$pi_ticket" ]; then
-        log "jira: $pi_ticket not updated (no jira script or no $JIRA_ENV on this machine)"
-      fi
-    fi
-    if [ -n "$pi_pr_number" ]; then
-      gh_step "gh pr comment (start)" pr comment "$pi_pr_number" --body \
-        "Autopilot started on $(hostname -s) at $(date +%H:%M) (model $RUN_MODEL, effort $RUN_EFFORT). Please do not push to this branch until the result comment arrives."
-      log "start comment on PR #$pi_pr_number"
-    fi
 
-    ensure_hooks "$pi_wt"
-    pi_title="$(item_title)"
-    notify_start
-    pi_state="$LOGDIR/$(safe_name "$pi_item").watchdog"; rm -f "$pi_state"
-    [ -x "$pi_wt/.claude/hooks/autopilot-context-budget.sh" ] \
-      || say "$pi_rb $pi_item: no context-budget hook in the worktree; the watchdog sees commits and plan changes only"
-    while :; do
-      note_current $((pi_restarts + 1))
-      say "$pi_rb $pi_item: run (attempt $((pi_restarts + 1)), model $RUN_MODEL, effort $RUN_EFFORT)"
-      run_attempt "$pi_wt" "$pi_item" "$(date +%s)" "$pi_state"
-      rm -f "$pi_wt/.claude/.autopilot-active" "$pi_wt/.claude/.autopilot-status" "$pi_wt/.claude/.autopilot-gate-blocks"
-      if [ "$RUN_RESULT" = timeout ]; then
-        pi_status=timeout; pi_reason="wall-clock timeout of $TIMEOUT_MIN min for one attempt"; break
-      fi
-      pi_sd="$(find_session_dir "$pi_wt" "$pi_item" "$pi_base" || true)"
-      if [ -z "$pi_sd" ]; then
-        pi_status=blocked; pi_reason="no session directory for this item under $SESSIONS/ (claude exit $RUN_EXIT)"; break
-      fi
-      # A REPORT.md written after the HANDOFF.md (an abort in a continuation) ends the item;
-      # a HANDOFF.md alone, or a newer one, restarts it.
-      if [ -f "$pi_wt/$pi_sd/REPORT.md" ] && [ -f "$pi_wt/$pi_sd/HANDOFF.md" ] \
-         && [ "$pi_wt/$pi_sd/REPORT.md" -nt "$pi_wt/$pi_sd/HANDOFF.md" ]; then
-        log "REPORT.md is newer than HANDOFF.md, the report decides"
-        report_status "$pi_wt/$pi_sd/REPORT.md"; break
-      fi
-      if [ -f "$pi_wt/$pi_sd/HANDOFF.md" ]; then
-        if [ "$pi_restarts" -ge "$MAX_RESTARTS" ]; then
-          pi_status=handoff-limit; pi_reason="HANDOFF.md still present after $MAX_RESTARTS restarts"; break
-        fi
-        pi_restarts=$((pi_restarts + 1))
-        say "$pi_rb $pi_item: hand-off found, restart $pi_restarts/$MAX_RESTARTS"
-        refresh_worktree "$pi_wt"
-        continue
-      fi
-      if [ -f "$pi_wt/$pi_sd/REPORT.md" ]; then
-        report_status "$pi_wt/$pi_sd/REPORT.md"; break
-      fi
-      # A clean exit without REPORT.md or HANDOFF.md: the run ended its turn early (waited
-      # for something that never comes in headless mode). Its commits are in the worktree;
-      # start it again like a hand-off, up to MAX_RESTARTS.
-      if [ "$RUN_RESULT" = exited ] && [ "$RUN_EXIT" = 0 ] && ! tail -n 5 "$ITEM_LOG" 2>/dev/null | grep -q 'max_budget'; then
-        if [ "$pi_restarts" -lt "$MAX_RESTARTS" ]; then
-          pi_restarts=$((pi_restarts + 1))
-          say "$pi_rb $pi_item: ended without REPORT.md or HANDOFF.md, restart $pi_restarts/$MAX_RESTARTS"
-          refresh_worktree "$pi_wt"
-          continue
-        fi
-        pi_status=handoff-limit; pi_reason="no REPORT.md or HANDOFF.md after $MAX_RESTARTS restarts"; break
-      fi
-      pi_status=blocked
-      if [ "$RUN_RESULT" = stalled ]; then
-        pi_reason="run stalled (no tool call, commit or plan change for 4 watchdog ticks), killed"
-      elif tail -n 5 "$ITEM_LOG" 2>/dev/null | grep -q 'max_budget'; then
-        pi_reason="budget of $RUN_BUDGET USD exhausted before REPORT.md or HANDOFF.md was written in $pi_sd"
-      else
-        pi_reason="no REPORT.md or HANDOFF.md in $pi_sd (claude exit $RUN_EXIT)"
-      fi
-      break
-    done
-    rm -f "$pi_state"
-    pi_branch_now="$(current_branch "$pi_wt")"; [ -n "$pi_branch_now" ] && pi_branch="$pi_branch_now"
-  fi
+def stop_compose(it):
+    """Stops the Docker Compose projects whose working directory lies in the worktree (a run's
+    dev stack); containers and networks go, volumes stay."""
+    if not shutil.which(DOCKER_BIN):
+        return
+    listing = capture([DOCKER_BIN, "ps", "-a", "--format",
+                       '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}'])[1]
+    projects = set()
+    for line in listing.splitlines():
+        fields = line.split("|")
+        if len(fields) > 1 and fields[0] and (fields[1] == it.wt or fields[1].startswith(it.wt + "/")):
+            projects.add(fields[0])
+    for project in sorted(projects):
+        # from / so that no compose file in the current directory is read
+        if to_log([DOCKER_BIN, "compose", "-p", project, "down", "--remove-orphans"], cwd="/") == 0:
+            log(f"docker compose project {project} stopped")
+        else:
+            say(f"{it.who}: docker compose project {project} could not be stopped (see {State.item_log})")
 
-  finish_item
-  ITEM_LOG=""
-}
 
-# gh_step <description> <gh args...>: runs gh in the item's directory; a failure is said and
-# remembered as labels-failed.
-gh_step() {
-  gs_what="$1"; shift
-  if ! gh_in "$pi_gh_dir" "$@" >>"$ITEM_LOG" 2>&1; then
-    say "$pi_rb $pi_item: $gs_what failed (see $ITEM_LOG)"; pi_gh_failed=labels-failed
-  fi
-}
+def run_attempt(it, state_file):
+    """One claude run in the worktree, watched until it ends. Sets the item's result (exited,
+    stalled or timeout) and exit code."""
+    started = time.time()
+    # The sentinel tells the autopilot skill it is the run (an interactive /autopilot
+    # enqueues instead); the run removes it at its end and on a hand-off.
+    os.makedirs(it.wt + "/.claude", exist_ok=True)
+    open(it.wt + "/.claude/.autopilot-active", "w").close()
+    run_env = dict(os.environ)
+    node = node_path(it.wt)
+    if node:
+        log(f"node for the run: {node}")
+        run_env["PATH"] = node + ":" + run_env.get("PATH", "")
+    cmd = [CLAUDE_BIN, "-p", f"/autopilot {it.item}", "--model", it.model, "--effort", it.effort,
+           "--advisor", Config.advisor]
+    if it.fallback:
+        cmd += ["--fallback-model", it.fallback]
+    cmd += ["--permission-mode", "auto", "--max-budget-usd", it.budget, "--output-format", "json"]
+    it.result = "exited"
+    with sink() as f:
+        try:
+            State.proc = subprocess.Popen(cmd, cwd=it.wt, env=run_env, stdout=f, stderr=subprocess.STDOUT,
+                                          stdin=subprocess.DEVNULL)
+        except OSError as e:
+            f.write(f"{e}\n".encode("utf-8"))
+            it.exit = 127
+            log(f"claude exited with {it.exit} ({it.result})")
+            return
+    # Poll step: one second, so a stop request is seen at once; 0.2 s when the stall check is
+    # off (tests).
+    step = 1 if Config.watch_s > 0 else 0.2
+    tick = time.time()
+    while True:
+        try:
+            State.proc.wait(timeout=step)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        check_stop()
+        now = time.time()
+        if now - started >= Config.timeout_s:
+            it.result = "timeout"
+            log(f"timeout after {Config.timeout_min} min, killing the run")
+            kill_run()
+            break
+        if Config.watch_s > 0 and now - tick >= Config.watch_s:
+            tick = now
+            verdict = capture([WATCHDOG, it.wt, current_branch(it.wt) or "HEAD", state_file], err="merge")[1]
+            log(f"watchdog: {verdict}")
+            stalls = verdict.rsplit("stalls=", 1)[-1]
+            if verdict.startswith("STALL") and stalls.isdigit() and int(stalls) >= 4:
+                it.result = "stalled"
+                log(f"stalled (stalls={stalls}), killing the run")
+                kill_run()
+                break
+    it.exit = exit_code(State.proc.wait())
+    State.proc = None
+    log(f"claude exited with {it.exit} ({it.result})")
 
-# push_branch: pushes the run's branch to origin, whatever the item's outcome, and sets
-# pi_pushed (the branch) or pi_push_failed. A blocked or timed-out run used to leave its
-# commits in the worktree only - on one Mac, invisible to the developer who queued the plan
-# (2026-09-28: WEB-1111 ended blocked with 113 commits that existed nowhere else). No PR is
-# opened here; done runs open their own. Never a base branch, never forced (a developer may
-# have pushed meanwhile), and --no-verify: a red gate is often why the run was blocked, and
-# the project's pre-push hook must not keep the work off GitHub for that reason.
-push_branch() {
-  [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ] || return 0
-  pb_b="$(current_branch "$pi_wt")"
-  if [ -z "$pb_b" ]; then
-    # detached: only commits of its own need a branch
-    [ -n "$(git -C "$pi_wt" rev-list --max-count=1 HEAD --not --remotes 2>/dev/null)" ] || return 0
-    pb_b="autopilot/$(safe_name "$pi_item")"
-    if ! git -C "$pi_wt" checkout -q -b "$pb_b" >>"$ITEM_LOG" 2>&1; then
-      say "$pi_rb $pi_item: could not create the branch $pb_b for the run's commits (see $ITEM_LOG); they stay in $pi_wt"
-      pi_push_failed=push-failed; return 0
-    fi
-    pi_branch="$pb_b"
-  fi
-  if is_base_branch "$pi_wt" "$pb_b"; then
-    say "$pi_rb $pi_item: the run ended on the base branch $pb_b; not pushed, its commits stay in $pi_wt"
-    pi_push_failed=push-failed; return 0
-  fi
-  if git -C "$pi_wt" push -q --no-verify -u origin "HEAD:refs/heads/$pb_b" >>"$ITEM_LOG" 2>&1 \
-     && [ "$(git -C "$pi_wt" ls-remote origin "refs/heads/$pb_b" 2>/dev/null | cut -f1)" = "$(git -C "$pi_wt" rev-parse HEAD)" ]; then
-    pi_pushed="$pb_b"
-    say "$pi_rb $pi_item: branch $pb_b pushed to origin"
-  else
-    say "$pi_rb $pi_item: pushing $pb_b to origin failed (see $ITEM_LOG); its commits are only in $pi_wt"
-    pi_push_failed=push-failed
-  fi
-}
 
-# finish_item: uses the pi_* variables of process_item. Pushes the branch, labels the PR,
-# records, notifies.
-finish_item() {
-  push_branch
-  pi_draft=""
-  if [ -n "$pi_branch" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
-    pi_found="$(gh_in "$pi_gh_dir" pr list --head "$pi_branch" --state open --json url,number,isDraft \
-      --jq '.[0] // empty | "\(.number) \(.isDraft) \(.url)"' 2>>"$ITEM_LOG" || true)"
-    if [ -n "$pi_found" ]; then
-      pi_pr_number="${pi_found%% *}"
-      pi_rest="${pi_found#* }"; pi_draft="${pi_rest%% *}"; pi_pr_url="${pi_rest#* }"
-    fi
-  fi
+def report_status(it, report):
+    """Sets status and reason from the first line of the report: "Status: done" -> done,
+    "Status: blocked - <reason>" -> blocked, anything else -> blocked."""
+    line = first_line(report).rstrip()
+    if line == "Status: done" or line.startswith("Status: done "):
+        it.status, it.reason = "done", ""
+    elif line.startswith("Status: blocked"):
+        reason = re.sub(r"^\s*-*\s*", "", line[len("Status: blocked"):])
+        it.block(reason or "blocked by the run, no reason given in REPORT.md")
+    else:
+        it.block(f"report without status line (first line of REPORT.md: '{line or 'empty'}')")
 
-  if [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ]; then
-    pi_body="$(mktemp "${TMPDIR:-/tmp}/mission-control.XXXXXX")"
-    if [ "$pi_status" = "done" ]; then
-      if [ "$pi_draft" = true ]; then gh_step "gh pr ready" pr ready "$pi_pr_number"; fi
-      gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_DONE"
-      {
-        printf '## Autopilot report\n\n'
-        head -n 60 "$pi_wt/$pi_sd/REPORT.md"
-      } >"$pi_body"
-    else
-      gh_step "gh pr edit (labels)" pr edit "$pi_pr_number" --remove-label "$LABEL_READY" --add-label "$LABEL_BLOCKED"
-      # shellcheck disable=SC2016
-      {
-        printf '## Autopilot queue: %s\n\n%s\n\n' "$pi_status" "$pi_reason"
-        if [ -n "$pi_pushed" ]; then printf 'Branch `%s` pushed to origin with the work so far.\n' "$pi_pushed"
-        elif [ -n "$pi_push_failed" ]; then printf 'The branch could NOT be pushed; the work is only in the worktree below.\n'; fi
-        printf 'Log: `%s`\nWorktree kept at `%s`. Add the label `%s` again to retry.\n' "$ITEM_LOG" "${pi_wt:--}" "$LABEL_READY"
-      } >"$pi_body"
-    fi
-    gh_step "gh pr comment" pr comment "$pi_pr_number" --body-file "$pi_body"
-    rm -f "$pi_body"
-  fi
 
-  if [ -n "$pi_ticket" ] && jira_ready; then
-    jira_comment "$pi_ticket" "$pi_status" "$pi_pr_url" "${pi_wt:+$pi_wt/${pi_sd:-}/REPORT.md}"
-  fi
-  pi_review=""
-  if [ "$pi_status" = "done" ] && [ -n "$pi_pr_number" ] && [ -n "$pi_gh_dir" ] && [ -d "$pi_gh_dir" ] \
-     && [ -f "$pi_gh_dir/.github/workflows/claude-code-review.yml" ]; then
-    pi_counts="$(review_bot_comments "$pi_pr_number")"
-    if [ -n "$pi_counts" ]; then
-      pi_review="review-comments=${pi_counts%% *}"
-      pi_open="${pi_counts#* }"
-      [ "${pi_counts%% *}" = 0 ] && say "$pi_rb $pi_item: no review-bot comment on the PR yet, check it"
-      if [ "$pi_open" != 0 ]; then
-        pi_review="$pi_review unanswered-review-comments=$pi_open"
-        say "$pi_rb $pi_item: $pi_open review-bot comment(s) on the PR have no reply from the run (fixed or not changed), check them"
-      fi
-    fi
-  fi
+def rename_item_log(name):
+    """The item log carries the resolved item in its name. PR items start as <ts>-_<n>.log and
+    become <ts>-_<n>-<resolved item>.log."""
+    new = f"{State.item_log[:-len('.log')]}-{safe_name(name)}.log"
+    try:
+        os.replace(State.item_log, new)
+        State.item_log = new
+    except OSError:
+        pass
 
-  pi_extra=""
-  [ "$pi_restarts" -gt 0 ] && pi_extra=" restarts=$pi_restarts"
-  [ -n "$pi_noplan" ] && pi_extra="$pi_extra $pi_noplan"
-  [ -n "$pi_gh_failed" ] && pi_extra="$pi_extra $pi_gh_failed"
-  [ -n "$pi_jira_failed" ] && pi_extra="$pi_extra $pi_jira_failed"
-  [ -n "$pi_push_failed" ] && pi_extra="$pi_extra $pi_push_failed"
-  [ -n "$pi_review" ] && pi_extra="$pi_extra $pi_review"
-  printf '%s %s %s %s %s%s\n' "$(now_iso)" "${pi_repo:-$pi_repo_in}" "$(quote_item "$pi_item")" "$pi_status" "$pi_pr_url" "$pi_extra" >>"$DONE"
-  [ -n "$pi_line" ] && remove_queue_line "$pi_line"
 
-  pi_shown="$pi_status${pi_gh_failed:+ $pi_gh_failed}"
-  if [ "$pi_status" = "done" ]; then
-    say "$pi_rb $pi_item: $pi_shown (PR $pi_pr_url${pi_extra:+,$pi_extra})"
-  else
-    say "$pi_rb $pi_item: $pi_shown: $pi_reason (log $ITEM_LOG)"
-  fi
-  pi_slack="$(slack_end)"
-  if [ "$pi_status" = "done" ]; then
-    notify "$pi_rb $pi_item: $pi_shown $pi_pr_url" Glass "$pi_slack"
-  else
-    notify "$pi_rb $pi_item: $pi_shown: $pi_reason $pi_pr_url" Sosumi "$pi_slack"
-  fi
+def budget_hit():
+    """The claude output at the end of the item log names an exhausted budget."""
+    return any("max_budget" in line for line in read_lines(State.item_log)[-5:])
 
-  [ -n "${pi_wt:-}" ] && stop_compose "$pi_wt"
-  # A done run's worktree goes - unless its branch could not be pushed: then the worktree
-  # holds the only copy of the commits, and removing it (--force) would destroy them.
-  if [ "$pi_status" = "done" ] && [ -n "$pi_push_failed" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
-    say "$pi_rb $pi_item: worktree kept at $pi_wt because its branch is not on origin"
-  elif [ "$pi_status" = "done" ] && [ -n "${pi_wt:-}" ] && [ -e "$pi_wt/.git" ]; then
-    if git -C "$pi_repo" worktree remove --force "$pi_wt" >>"$ITEM_LOG" 2>&1; then
-      say "$pi_rb $pi_item: worktree removed"
-    else
-      log "worktree remove failed, kept at $pi_wt"
-    fi
-  fi
-}
 
-# live_repos <outfile>: the repo paths of repos.txt without comments and blank lines.
-live_repos() {
-  : >"$1"
-  [ -f "$REPOS" ] && grep -v -E '^[[:space:]]*(#|$)' "$REPOS" >"$1"
-  return 0
-}
+def process_item(repo_in, kind, ref, line="", branch=""):
+    """One item from start to finish: worktree, plan, run and restarts, then finish_item.
+    kind: text (a queue line) or pr (a labelled PR, ref = its number). A failure of the runner
+    itself never leaves the item at the head of the queue: while the item is prepared or run,
+    it ends the item as blocked; while the item is finished, drop_failed_item takes over."""
+    it = Item(repo_in, kind, ref, line, branch)
+    try:
+        os.makedirs(LOGDIR, exist_ok=True)
+        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-{safe_name(it.item)}.log"
+        open(State.item_log, "w").close()
+        note_current(it, 1)
+        say(f"{it.who}: resolving")
+        try:
+            prepare_and_run(it)
+        except Exception as e:
+            kill_run()
+            log(traceback.format_exc().rstrip())
+            it.block(f"runner error, {type(e).__name__}: {e} (traceback in {State.item_log})")
+        finish_item(it)
+    except Exception as e:
+        drop_failed_item(it, e)
+    finally:
+        State.item_log = ""
 
-# scheduled_gate: for "run --scheduled" only. A force-once file (kickstart) is consumed and
-# overrides a pause once; a valid pause skips the run before the lock or the queue is
-# touched; an expired pause file is removed; an unreadable one (empty, no date) is removed
-# and said, the run goes ahead.
-scheduled_gate() {
-  if [ -e "$FORCE" ]; then
-    rm -f "$FORCE"
-    log "force-once consumed: scheduled run goes ahead${1:+ (pause until $1 kept)}"
+
+def drop_failed_item(it, error):
+    """The runner itself failed while an item was started or finished. The traceback goes to
+    queue.log, the failure is said, and a queue line that is still there is removed with a
+    blocked line in done.txt, so the next run does not begin with the same failure."""
+    State.item_log = ""
+    State.item_failed = True
+    log(traceback.format_exc().rstrip())
+    say(f"FAIL - {it.who}: runner error, {type(error).__name__}: {error} (traceback in {LOGDIR}/queue.log)")
+    if it.line and first_queue_line() == it.line:
+        if not it.recorded:
+            with open(DONE, "a", encoding="utf-8") as f:
+                f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} blocked {it.pr_url} runner-error\n")
+        remove_queue_line(it.line)
+
+
+def prepare_and_run(it):
+    """Worktree, plan and launch settings, ticket and start comment, hooks, then the attempts.
+    Leaves the item with a status."""
+    kind, ref = it.kind, it.ref
+    it.repo = resolve_repo(it.repo_in)
+    if not it.repo:
+        it.block(f"{it.repo_in} is not a git repository")
+    it.gh_dir = it.repo
+
+    if not it.status and kind == "pr":
+        view = gh_in(it.repo, "pr", "view", ref, "--json", "number,headRefName,baseRefName,url", "--jq",
+                     r'"\(.number) \(.headRefName) \(.baseRefName) \(.url)"', err="log")[1].split(" ", 3)
+        if len(view) < 4:
+            it.block(f"gh pr view {ref} failed")
+        else:
+            it.pr_number, it.branch, it.target, it.pr_url = view
+
+    if not it.status:
+        it.wt = wt_path(it.repo, it.item)
+        ensure_excluded(it.repo)
+        move_legacy_worktree(it, legacy_wt_path(it.rb, it.item), it.wt)
+        if prepare_worktree(it.repo, it.wt, it.branch):
+            it.gh_dir = it.wt
+        else:
+            it.block(f"worktree could not be created (see {State.item_log})")
+
+    if not it.status:
+        it.base = base_sha(it.wt, it.target)
+        if kind == "pr":
+            it.sd0 = find_session_dir(it.wt, it.branch, it.base, True, it.branch)
+            if it.sd0:
+                it.item = it.sd0
+                # A plan written for another branch is never run on this PR.
+                plan = f"{it.wt}/{it.sd0}/PLAN.md"
+                named = plan_branch(plan)
+                if named and not plan_is_for_branch(plan, it.branch):
+                    it.block(f"plan {it.sd0} belongs to branch {named}, not to the PR branch {it.branch}; commit "
+                             f"this PR's own PLAN.md (or fix its Branch: line), then set {LABEL_READY} again")
+            else:
+                it.noplan = "no-plan"
+                it.item = ticket_from(it.branch) or it.branch
+            rename_item_log(it.item)
+            note_current(it, 1)
+            say(f"{it.rb} #{ref}: item {it.item}{' (no-plan)' if it.noplan else ''}")
+        else:
+            it.sd0 = find_session_dir(it.wt, it.item, it.base, True)
+            if not it.sd0:
+                it.noplan = "no-plan"
+        say(f"{it.who}: worktree ready ({it.wt})")
+        if not it.status:
+            reason = resolve_launch(it, f"{it.wt}/{it.sd0}/PLAN.md" if it.sd0 else "",
+                                    f"{it.sd0}/PLAN.md" if it.sd0 else "")
+            if reason:
+                it.block(reason)
+
+    if not it.status:
+        if it.sd0:
+            it.ticket = plan_ticket(f"{it.wt}/{it.sd0}/PLAN.md")
+            if it.ticket and jira_ready():
+                jira_start(it, it.ticket)
+            elif it.ticket:
+                log(f"jira: {it.ticket} not updated (no jira script or no {JIRA_ENV} on this machine)")
+        if it.pr_number:
+            gh_step(it, "gh pr comment (start)", "pr", "comment", it.pr_number, "--body",
+                    f"Autopilot started on {host()} at {time.strftime('%H:%M')} (model {it.model}, effort "
+                    f"{it.effort}). Please do not push to this branch until the result comment arrives.")
+
+        ensure_hooks(it)
+        it.title = item_title(it)
+        notify_start(it)
+        state_file = f"{LOGDIR}/{safe_name(it.item)}.watchdog"
+        remove_file(state_file)
+        if not is_executable(it.wt + "/.claude/hooks/autopilot-context-budget.sh"):
+            say(f"{it.who}: no context-budget hook in the worktree; the watchdog sees commits and plan changes only")
+        run_until_settled(it, state_file)
+        remove_file(state_file)
+        it.branch = current_branch(it.wt) or it.branch
+
+
+def run_until_settled(it, state_file):
+    """Attempts until the item has a status: a hand-off or an early exit restarts it, up to
+    the restart limit."""
+    limit = Config.max_restarts
+    while True:
+        note_current(it, it.restarts + 1)
+        say(f"{it.who}: run (attempt {it.restarts + 1}, model {it.model}, effort {it.effort})")
+        run_attempt(it, state_file)
+        remove_file(*(f"{it.wt}/.claude/{name}" for name in (".autopilot-active", ".autopilot-status", ".autopilot-gate-blocks")))
+        if it.result == "timeout":
+            return it.block(f"wall-clock timeout of {Config.timeout_min} min for one attempt", "timeout")
+        it.sd = find_session_dir(it.wt, it.item, it.base)
+        if not it.sd:
+            return it.block(f"no session directory for this item under {SESSIONS}/ (claude exit {it.exit})")
+        report, handoff = f"{it.wt}/{it.sd}/REPORT.md", f"{it.wt}/{it.sd}/HANDOFF.md"
+        # A REPORT.md written after the HANDOFF.md (an abort in a continuation) ends the item;
+        # a HANDOFF.md alone, or a newer one, restarts it.
+        if os.path.isfile(report) and os.path.isfile(handoff) and os.path.getmtime(report) > os.path.getmtime(handoff):
+            log("REPORT.md is newer than HANDOFF.md, the report decides")
+            return report_status(it, report)
+        if os.path.isfile(handoff):
+            if it.restarts >= limit:
+                return it.block(f"HANDOFF.md still present after {limit} restarts", "handoff-limit")
+            it.restarts += 1
+            say(f"{it.who}: hand-off found, restart {it.restarts}/{limit}")
+            refresh_worktree(it.wt)
+            continue
+        if os.path.isfile(report):
+            return report_status(it, report)
+        # A clean exit without REPORT.md or HANDOFF.md: the run ended its turn early (waited
+        # for something that never comes in headless mode). Its commits are in the worktree;
+        # start it again like a hand-off, up to the restart limit.
+        if it.result == "exited" and it.exit == 0 and not budget_hit():
+            if it.restarts < limit:
+                it.restarts += 1
+                say(f"{it.who}: ended without REPORT.md or HANDOFF.md, restart {it.restarts}/{limit}")
+                refresh_worktree(it.wt)
+                continue
+            return it.block(f"no REPORT.md or HANDOFF.md after {limit} restarts", "handoff-limit")
+        if it.result == "stalled":
+            return it.block("run stalled (no tool call, commit or plan change for 4 watchdog ticks), killed")
+        if budget_hit():
+            return it.block(f"budget of {it.budget} USD exhausted before REPORT.md or HANDOFF.md was written in {it.sd}")
+        return it.block(f"no REPORT.md or HANDOFF.md in {it.sd} (claude exit {it.exit})")
+
+
+def gh_step(it, what, *args):
+    """Runs gh in the item's directory and logs the outcome; a failure is said and remembered
+    as labels-failed."""
+    if to_log([GH_BIN, *args], cwd=it.gh_dir) == 0:
+        log(f"{what} on PR #{it.pr_number}: ok")
+    else:
+        say(f"{it.who}: {what} failed (see {State.item_log})")
+        it.gh_failed = "labels-failed"
+
+
+def push_branch(it):
+    """Pushes the run's branch to origin, whatever the item's outcome, and notes the pushed
+    branch or the failure. No PR is opened here; done runs open their own. Never a base branch,
+    never forced (a developer may have pushed meanwhile), and without the project's git hooks:
+    a red gate is often why the run was blocked, and the project's pre-push hook must not keep
+    the work off GitHub for that reason."""
+    wt = it.wt
+    if not wt or not os.path.exists(wt + "/.git"):
+        return
+    branch = current_branch(wt)
+    if not branch:
+        # detached: only commits of its own need a branch
+        if not git(wt, "rev-list", "--max-count=1", "HEAD", "--not", "--remotes")[1]:
+            return
+        branch = f"autopilot/{safe_name(it.item)}"
+        if git_log(wt, "checkout", "-q", "-b", branch) != 0:
+            say(f"{it.who}: could not create the branch {branch} for the run's commits (see {State.item_log}); "
+                f"they stay in {wt}")
+            it.push_failed = "push-failed"
+            return
+        it.branch = branch
+    if is_base_branch(wt, branch):
+        say(f"{it.who}: the run ended on the base branch {branch}; not pushed, its commits stay in {wt}")
+        it.push_failed = "push-failed"
+        return
+    pushed = git_log(wt, "push", "-q", "--no-verify", "-u", "origin", f"HEAD:refs/heads/{branch}") == 0
+    on_origin = git(wt, "ls-remote", "origin", f"refs/heads/{branch}")[1].split("\t")[0]
+    if pushed and on_origin == git(wt, "rev-parse", "HEAD")[1]:
+        it.pushed = branch
+        say(f"{it.who}: branch {branch} pushed to origin")
+    else:
+        say(f"{it.who}: pushing {branch} to origin failed (see {State.item_log}); its commits are only in {wt}")
+        it.push_failed = "push-failed"
+
+
+def pr_comment(it):
+    """The result comment on the PR: the report's head when done, else status, reason, branch,
+    log and worktree."""
+    if it.status == "done":
+        return "## Autopilot report\n\n" + "".join(line + "\n" for line in read_lines(f"{it.wt}/{it.sd}/REPORT.md")[:60])
+    body = f"## Autopilot queue: {it.status}\n\n{it.reason}\n\n"
+    if it.pushed:
+        body += f"Branch `{it.pushed}` pushed to origin with the work so far.\n"
+    elif it.push_failed:
+        body += "The branch could NOT be pushed; the work is only in the worktree below.\n"
+    return body + (f"Log: `{State.item_log}`\nWorktree kept at `{it.wt or '-'}`. "
+                   f"Add the label `{LABEL_READY}` again to retry.\n")
+
+
+def finish_item(it):
+    """Pushes the branch, labels the PR, records the outcome, notifies."""
+    push_branch(it)
+    gh_usable = bool(it.gh_dir) and os.path.isdir(it.gh_dir)
+    if it.branch and gh_usable:
+        found = gh_in(it.gh_dir, "pr", "list", "--head", it.branch, "--state", "open", "--json", "url,number,isDraft",
+                      "--jq", r'.[0] // empty | "\(.number) \(.isDraft) \(.url)"', err="log")[1].split(" ", 2)
+        if len(found) == 3:
+            it.pr_number, it.draft, it.pr_url = found
+
+    if it.pr_number and gh_usable:
+        if it.status == "done":
+            if it.draft == "true":
+                gh_step(it, "gh pr ready", "pr", "ready", it.pr_number)
+            gh_step(it, "gh pr edit (labels)", "pr", "edit", it.pr_number, "--remove-label", LABEL_READY,
+                    "--add-label", LABEL_DONE)
+        else:
+            gh_step(it, "gh pr edit (labels)", "pr", "edit", it.pr_number, "--remove-label", LABEL_READY,
+                    "--add-label", LABEL_BLOCKED)
+        handle, body_file = tempfile.mkstemp(prefix="mission-control.")
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
+            f.write(pr_comment(it))
+        gh_step(it, "gh pr comment", "pr", "comment", it.pr_number, "--body-file", body_file)
+        remove_file(body_file)
+
+    if it.ticket and jira_ready():
+        jira_comment(it, f"{it.wt}/{it.sd}/REPORT.md" if it.wt else "")
+    review = ""
+    if (it.status == "done" and it.pr_number and gh_usable
+            and os.path.isfile(it.gh_dir + "/.github/workflows/claude-code-review.yml")):
+        counts = review_bot_comments(it)
+        if counts:
+            review = f"review-comments={counts[0]}"
+            if counts[0] == 0:
+                say(f"{it.who}: no review-bot comment on the PR yet, check it")
+            if counts[1] != 0:
+                review += f" unanswered-review-comments={counts[1]}"
+                say(f"{it.who}: {counts[1]} review-bot comment(s) on the PR have no reply from the run "
+                    "(fixed or not changed), check them")
+
+    notes = [f"restarts={it.restarts}"] if it.restarts > 0 else []
+    notes += [note for note in (it.noplan, it.gh_failed, it.jira_failed, it.push_failed, review) if note]
+    extra = "".join(" " + note for note in notes)
+    with open(DONE, "a", encoding="utf-8") as f:
+        f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} {it.status} {it.pr_url}{extra}\n")
+    it.recorded = True
+    if it.line:
+        remove_queue_line(it.line)
+
+    it.shown = it.status + (f" {it.gh_failed}" if it.gh_failed else "")
+    if it.status == "done":
+        say(f"{it.who}: {it.shown} (PR {it.pr_url}{',' + extra if extra else ''})")
+    else:
+        say(f"{it.who}: {it.shown}: {it.reason} (log {State.item_log})")
+    slack = slack_end(it)
+    if it.status == "done":
+        notify(f"{it.who}: {it.shown} {it.pr_url}", "Glass", slack)
+    else:
+        notify(f"{it.who}: {it.shown}: {it.reason} {it.pr_url}", "Sosumi", slack)
+
+    if it.wt:
+        stop_compose(it)
+    # A done run's worktree goes - unless its branch could not be pushed: then the worktree
+    # holds the only copy of the commits, and removing it (--force) would destroy them.
+    if it.status == "done" and it.wt and os.path.exists(it.wt + "/.git"):
+        if it.push_failed:
+            say(f"{it.who}: worktree kept at {it.wt} because its branch is not on origin")
+        elif git_log(it.repo, "worktree", "remove", "--force", it.wt) == 0:
+            say(f"{it.who}: worktree removed")
+        else:
+            log(f"worktree remove failed, kept at {it.wt}")
+
+
+def scheduled_gate():
+    """For "run --scheduled" only. A force-once file (start) is consumed and overrides a pause
+    once; a valid pause skips the run before the lock or the queue is touched; an expired pause
+    file is removed; an unreadable one (empty, no date) is removed and said, the run goes ahead."""
+    until = pause_date()
+    if os.path.exists(FORCE):
+        remove_file(FORCE)
+        log(f"force-once consumed: scheduled run goes ahead{f' (pause until {until} kept)' if until else ''}")
+        return
+    if not os.path.isfile(PAUSE):
+        return
+    if until:
+        say(f"paused until {until}: scheduled run skipped (manual runs still work)")
+        sys.exit(0)
+    old = "".join(first_line(PAUSE).split())
+    remove_file(PAUSE)
+    if valid_date(old):
+        log(f"pause expired ({old}), file removed")
+    else:
+        say(f"pause file unreadable ({old or 'empty'}), removed, run goes ahead")
+
+
+def cmd_run(args):
+    scheduled = False
+    for arg in args:
+        if arg != "--scheduled":
+            die_usage(f"usage: mission-control run [--scheduled] (unknown argument: {arg})")
+        scheduled = True
+    load_env()
+    warn_env_mode()
+    if scheduled:
+        scheduled_gate()
+    acquire_lock()
+    try:
+        signal.signal(signal.SIGINT, on_signal)
+        signal.signal(signal.SIGTERM, on_signal)
+        os.makedirs(LOGDIR, exist_ok=True)
+        while True:
+            line = first_queue_line()
+            if line is None:
+                break
+            parsed = parse_line(line)
+            if not parsed:
+                say(f"removed unparsable line from queue.txt: {line}")
+                remove_queue_line(line)
+                continue
+            process_item(parsed[0], "text", parsed[1], line, parsed[2])
+        repos = live_lines(REPOS)
+        if repos_pollable(repos, in_run=True):
+            for repo in repos:
+                repo = expand_tilde(repo)
+                path = resolve_repo(repo)
+                if not path:
+                    say(f"{repo}: not a git repository, skipped")
+                    continue
+                for number, _, _ in list_ready_prs(path) or ():
+                    process_item(path, "pr", number)
+        if scheduled:
+            remove_file(FORCE)
+    except Stopped:
+        return 130
+    finally:
+        # whatever ends the run, no claude process outlives it
+        kill_run()
+        release_lock()
+    if State.item_failed:
+        out("[mission-control] run finished, a runner error occurred (see above)")
+        return 1
+    if State.source_failed:
+        out("[mission-control] run finished, one source failed (see above)")
+        return 1
+    out("[mission-control] run finished")
     return 0
-  fi
-  if [ -f "$PAUSE" ]; then
-    sg_until="$(pause_date || true)"
-    if [ -n "$sg_until" ]; then
-      say "paused until $sg_until: scheduled run skipped (manual runs still work)"
-      exit 0
-    fi
-    sg_old="$(head -n 1 "$PAUSE" 2>/dev/null | tr -d '[:space:]')"
-    rm -f "$PAUSE"
-    if valid_date "$sg_old"; then
-      log "pause expired ($sg_old), file removed"
-    else
-      say "pause file unreadable (${sg_old:-empty}), removed, run goes ahead"
-    fi
-  fi
-}
 
-cmd_run() {
-  r_scheduled=""
-  for r_arg in "$@"; do
-    case "$r_arg" in
-      --scheduled) r_scheduled=1 ;;
-      *) die_usage "usage: mission-control run [--scheduled] (unknown argument: $r_arg)" ;;
-    esac
-  done
-  load_env
-  warn_env_mode
-  [ -n "$r_scheduled" ] && scheduled_gate "$(pause_date || true)"
-  acquire_lock
-  mkdir -p "$LOGDIR"
-  while r_line="$(first_queue_line)"; do
-    if ! parse_line "$r_line"; then
-      say "removed unparsable line from queue.txt: $r_line"
-      remove_queue_line "$r_line"; continue
-    fi
-    process_item "$P_REPO" text "$P_ITEM" "$r_line" "$P_BRANCH"
-  done
-  r_repos="$LOGDIR/.repos.$$"; r_prs="$LOGDIR/.prs.$$"
-  live_repos "$r_repos"
-  repos_pollable "$r_repos" run || true
-  while IFS= read -r r_repo || [ -n "$r_repo" ]; do
-    r_repo="$(expand_tilde "$r_repo")"
-    r_abs="$(resolve_repo "$r_repo")" || { say "$r_repo: not a git repository, skipped"; continue; }
-    list_ready_prs "$r_abs" "$r_prs" || continue
-    while read -r r_num _; do
-      [ -n "$r_num" ] || continue
-      process_item "$r_abs" pr "$r_num"
-    done <"$r_prs"
-  done <"$r_repos"
-  rm -f "$r_repos" "$r_prs"
-  [ -n "$r_scheduled" ] && rm -f "$FORCE"
-  if [ "$SOURCE_FAILED" -ne 0 ]; then
-    echo "[mission-control] run finished, one source failed (see above)"; exit 1
-  fi
-  echo "[mission-control] run finished"
-}
 
-cmd_list() {
-  load_env
-  warn_env_mode
-  if [ -f "$QUEUE" ]; then
-    while IFS= read -r l_line || [ -n "$l_line" ]; do
-      parse_line "$l_line" || continue
-      l_mark=""
-      if l_abs="$(resolve_repo "$P_REPO")"; then
-        item_has_plan "$l_abs" "$P_ITEM" "$P_BRANCH" || l_mark=" (no plan)"
-      else
-        l_mark=" (not a git repository)"
-      fi
-      printf 'queue  %s  %s%s%s\n' "$P_REPO" "$(quote_item "$P_ITEM")" "${P_BRANCH:+ $P_BRANCH}" "$l_mark"
-    done <"$QUEUE"
-  fi
-  l_repos="$LOGDIR/.repos.list.$$"; l_prs="$LOGDIR/.prs.list.$$"
-  mkdir -p "$LOGDIR"
-  live_repos "$l_repos"
-  repos_pollable "$l_repos" || true
-  while IFS= read -r l_repo || [ -n "$l_repo" ]; do
-    l_repo="$(expand_tilde "$l_repo")"
-    l_abs="$(resolve_repo "$l_repo")" || { printf 'pr     %s  (not a git repository)\n' "$l_repo"; continue; }
-    list_ready_prs "$l_abs" "$l_prs" || continue
-    while read -r l_num l_branch l_url; do
-      [ -n "$l_num" ] || continue
-      printf 'pr     %s  #%s %s %s\n' "$l_abs" "$l_num" "$l_branch" "$l_url"
-    done <"$l_prs"
-  done <"$l_repos"
-  rm -f "$l_repos" "$l_prs"
-  [ "$SOURCE_FAILED" -eq 0 ]
-}
+# ---------- list, add, labels, doctor ----------
 
-cmd_add() {
-  [ $# -ge 2 ] || die "usage: mission-control add <repo> <item> [<branch>]"
-  a_repo="$(resolve_repo "$(expand_tilde "$1")")" || die "$1 is not a git repository"
-  shift
-  a_item="$1"; a_branch=""
-  case "$a_item" in
-    "$SESSIONS"/*)
-      [ $# -le 2 ] || die "usage: mission-control add <repo> <session dir> [<branch>]"
-      a_item="${a_item%/}"
-      a_branch="${2:-}"
-      [ -n "$a_branch" ] || a_branch="$(branch_of_dir "$a_repo" "$a_item")" || die "no branch found for $a_item in $a_repo" ;;
-    *) a_item="$*" ;;
-  esac
-  mkdir -p "$QHOME"
-  printf '%s %s%s\n' "$a_repo" "$(quote_item "$a_item")" "${a_branch:+ $a_branch}" >>"$QUEUE"
-  echo "added: $a_repo $(quote_item "$a_item")${a_branch:+ $a_branch}"
-}
+def cmd_list(args):
+    load_env()
+    warn_env_mode()
+    for line in read_lines(QUEUE):
+        parsed = parse_line(line)
+        if not parsed:
+            continue
+        repo, item, branch = parsed
+        path = resolve_repo(repo)
+        if not path:
+            mark = " (not a git repository)"
+        else:
+            mark = "" if item_has_plan(path, item, branch) else " (no plan)"
+        out(f"queue  {repo}  {quote_item(item)}{' ' + branch if branch else ''}{mark}")
+    os.makedirs(LOGDIR, exist_ok=True)
+    repos = live_lines(REPOS)
+    if repos_pollable(repos):
+        for repo in repos:
+            repo = expand_tilde(repo)
+            path = resolve_repo(repo)
+            if not path:
+                out(f"pr     {repo}  (not a git repository)")
+                continue
+            for number, branch, url in list_ready_prs(path) or ():
+                out(f"pr     {path}  #{number} {branch} {url}")
+    return 1 if State.source_failed else 0
 
-cmd_labels() {
-  lb_repo="$(resolve_repo "$(expand_tilde "${1:-.}")")" || die "${1:-.} is not a git repository"
-  ensure_labels "$lb_repo"
-}
 
-cmd_doctor() {
-  load_env
-  d_fail=0
-  ok() { echo "ok   - $*"; }
-  bad() { echo "FAIL - $*"; d_fail=1; }
-
-  if command -v git >/dev/null 2>&1; then ok "git $(git --version | cut -d' ' -f3)"; else bad "git not found"; fi
-
-  d_out="$("$CLAUDE_BIN" -p "reply with the single word OK" --model haiku --max-budget-usd 0.05 2>&1)"
-  if printf '%s' "$d_out" | grep -qw OK && ! printf '%s' "$d_out" | grep -qi "not logged in"; then
-    ok "claude -p answers (logged in)"
-  else
-    bad "claude -p did not answer OK: $(printf '%s' "$d_out" | head -n 3 | tr '\n' ' ')"
-    echo "       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd"
-    echo "       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although"
-    echo "       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session"
-    echo "       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'."
-  fi
-
-  if "$GH_BIN" auth status >/dev/null 2>&1; then ok "gh auth status"; else bad "gh auth status failed (run: gh auth login)"; fi
-
-  if [ -f "$ENVFILE" ]; then
-    d_mode="$(file_mode "$ENVFILE")"
-    if [ "$d_mode" = 600 ]; then ok "env file mode 600"; else bad "env file mode is $d_mode, want 600 (chmod 600 $ENVFILE)"; fi
-  fi
-
-  d_repos="$LOGDIR/.doctor-repos.$$"; mkdir -p "$LOGDIR"; : >"$d_repos"
-  if [ -f "$QUEUE" ]; then
-    while IFS= read -r d_line || [ -n "$d_line" ]; do parse_line "$d_line" && printf '%s\n' "$P_REPO"; done <"$QUEUE" >>"$d_repos"
-  fi
-  if [ -f "$REPOS" ]; then grep -v -E '^[[:space:]]*(#|$)' "$REPOS" >>"$d_repos"; fi
-  sort -u "$d_repos" >"$d_repos.sorted"
-  echo "repos in the queue: $(grep -c . "$d_repos.sorted")"
-  while IFS= read -r d_repo || [ -n "$d_repo" ]; do
-    d_repo="$(expand_tilde "$d_repo")"
-    if ! d_abs="$(resolve_repo "$d_repo")"; then bad "$d_repo is not a git repository"; continue; fi
-    ok "repo $d_abs"
-    ensure_labels "$d_abs" || d_fail=1
-  done <"$d_repos.sorted"
-  rm -f "$d_repos" "$d_repos.sorted"
-
-  [ "$d_fail" -eq 0 ] && echo "doctor: all checks passed"
-  return "$d_fail"
-}
-
-# ---------- status, stop, retry, log, kickstart ----------
-
-# item_logs: item log files, newest first (queue.log and launchd.log excluded).
-item_logs() {
-  [ -d "$LOGDIR" ] || return 0
-  # Log names are made by safe_name (no spaces or newlines), so ls -t is safe here.
-  # shellcheck disable=SC2012,SC2010
-  ls -t "$LOGDIR"/*.log 2>/dev/null | grep -v -e '/queue\.log$' -e '/launchd\.log$'
-}
-
-# last_phase <item log> <repo basename> <item>: the last progress line of the log without
-# its timestamp and "<repo> <item>: " prefix.
-last_phase() {
-  lp_line="$(grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z ' "$1" 2>/dev/null | tail -n 1 | cut -d' ' -f2-)"
-  lp_prefix="$2 $3: "
-  case "$lp_line" in "$lp_prefix"*) lp_line="${lp_line#"$lp_prefix"}" ;; esac
-  printf '%s\n' "${lp_line:-starting}"
-}
-
-cmd_status() {
-  load_env
-  s_pid="$(lock_pid)"
-  if [ -n "$s_pid" ] && [ -f "$LOCK/current" ]; then
-    s_rb="$(sed -n 1p "$LOCK/current")"; s_item="$(sed -n 2p "$LOCK/current")"
-    s_att="$(sed -n 3p "$LOCK/current")"; s_began="$(sed -n 4p "$LOCK/current")"
-    s_log="$(sed -n 5p "$LOCK/current")"; s_wt="$(sed -n 6p "$LOCK/current")"
-    s_elapsed=$((($(date +%s) - s_began) / 60))
-    echo "running: $s_rb $s_item (attempt $s_att, since $(hhmm_of_epoch "$s_began"), $s_elapsed min, phase: $(last_phase "$s_log" "$s_rb" "$s_item"))"
-    if [ -n "$s_wt" ] && [ -d "$s_wt" ]; then
-      case "$s_item" in "$SESSIONS"/*) s_pkg="$(current_package "$s_wt" "$s_item")" ;; *) s_pkg="" ;; esac
-      echo "  package: ${s_pkg:-none marked [~]}"
-      # the line the run's context-budget hook rewrites after every tool call
-      s_sf="$s_wt/.claude/.autopilot-status"
-      if [ -f "$s_sf" ]; then echo "  run: $(tail -n 1 "$s_sf")"; else echo "  run: no status line yet"; fi
-      s_base="$(sed -n 7p "$LOCK/current")"
-      [ -n "$s_base" ] || s_base="$(base_sha "$s_wt" 2>/dev/null || true)"
-      s_diff="$(git -C "$s_wt" diff --shortstat "${s_base:-HEAD}" 2>/dev/null | sed 's/^ *//')"
-      echo "  diff since base: ${s_diff:-none}"
-    fi
-  elif [ -n "$s_pid" ]; then
-    echo "running: pid $s_pid, no item yet"
-  else
-    echo "running: none"
-  fi
-
-  s_n=0
-  [ -f "$QUEUE" ] && s_n="$(grep -c -v -E '^[[:space:]]*(#|$)' "$QUEUE")"
-  echo "queue: $s_n items"
-  [ "$s_n" -gt 0 ] && grep -v -E '^[[:space:]]*(#|$)' "$QUEUE" | head -n 3 | sed 's/^/  /'
-
-  s_repos="$LOGDIR/.repos.status.$$"; s_prs="$LOGDIR/.prs.status.$$"
-  mkdir -p "$LOGDIR"
-  live_repos "$s_repos"
-  s_total=0; s_per=""
-  if repos_pollable "$s_repos"; then
-    while IFS= read -r s_repo || [ -n "$s_repo" ]; do
-      s_repo="$(expand_tilde "$s_repo")"
-      s_abs="$(resolve_repo "$s_repo")" || { echo "FAIL - $s_repo: not a git repository"; continue; }
-      list_ready_prs "$s_abs" "$s_prs" || continue
-      s_c="$(grep -c . "$s_prs")"
-      s_total=$((s_total + s_c)); s_per="${s_per:+$s_per, }$(basename "$s_abs") $s_c"
-    done <"$s_repos"
-    echo "labelled PRs: $s_total${s_per:+ ($s_per)}"
-  else
-    echo "labelled PRs: unknown (gh not authenticated in this session)"
-  fi
-  rm -f "$s_repos" "$s_prs"
-
-  echo "last done:"
-  if [ -f "$DONE" ]; then tail -n 5 "$DONE" | sed 's/^/  /'; else echo "  none"; fi
-
-  if plist_legacy; then
-    echo "schedule: installed at $(plist_time) (legacy, ignores pause)"
-    warn_legacy_plist
-  elif plist_on_demand; then
-    echo "schedule: on demand only (\"mission-control start\"), no nightly run"
-  elif [ -f "$PLIST" ]; then
-    s_until="$(pause_date || true)"
-    if [ -n "$s_until" ]; then
-      echo "schedule: installed at $(plist_time), paused until $s_until"
-    else
-      echo "schedule: installed at $(plist_time), active"
-    fi
-  else
-    echo "schedule: not installed"
-  fi
-
-  if [ -n "$s_pid" ]; then echo "lock: held by pid $s_pid"
-  elif [ -d "$LOCK" ]; then echo "lock: stale (pid $(cat "$LOCK/pid" 2>/dev/null || echo '?') is dead, the next run takes it over)"
-  else echo "lock: free"; fi
-  return 0
-}
-
-# cmd_stop: TERM to the run; its trap kills claude (SIGTERM, SIGKILL after 10 s) and
-# releases the lock. Waits up to 45 s. The item stays in queue.txt or keeps its label.
-cmd_stop() {
-  st_pid="$(lock_pid)"
-  [ -n "$st_pid" ] || { echo "nothing running"; return 0; }
-  st_rb="$(sed -n 1p "$LOCK/current" 2>/dev/null)"; st_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
-  kill -TERM "$st_pid" 2>/dev/null || { echo "nothing running"; return 0; }
-  st_n=0
-  while kill -0 "$st_pid" 2>/dev/null && [ "$st_n" -lt 90 ]; do sleep 0.5; st_n=$((st_n + 1)); done
-  if kill -0 "$st_pid" 2>/dev/null; then echo "still running (pid $st_pid)"; return 1; fi
-  echo "stopped${st_rb:+ $st_rb}${st_item:+ $st_item}"
-}
-
-# cmd_retry: "#N" or an all-digit argument is a PR number; a session dir is re-added with
-# the branch its kept worktree is on; anything else is re-added as given.
-cmd_retry() {
-  [ $# -ge 2 ] || die "usage: mission-control retry <repo> <#pr | item>"
-  rt_repo="$(resolve_repo "$(expand_tilde "$1")")" || die "$1 is not a git repository"
-  rt_rb="$(basename "$rt_repo")"; shift
-  rt_n="${1#\#}"
-  case "$rt_n" in ''|*[!0-9]*) rt_is_pr="" ;; *) rt_is_pr=1 ;; esac
-  if [ -n "$rt_is_pr" ]; then
-    [ $# -eq 1 ] || die "usage: mission-control retry <repo> <#pr>"
-    rt_err="$(gh_in "$rt_repo" pr edit "$rt_n" --remove-label "$LABEL_BLOCKED" --add-label "$LABEL_READY" 2>&1 >/dev/null)" \
-      || die "gh pr edit $rt_n failed in $rt_rb: $(printf '%s' "$rt_err" | head -n 1)"
-    echo "retry: PR #$rt_n in $rt_rb labelled $LABEL_READY again (the next run picks it up)"
+def cmd_add(args):
+    if len(args) < 2:
+        die("usage: mission-control add <repo> <item> [<branch>]")
+    repo = resolve_repo(expand_tilde(args[0]))
+    if not repo:
+        die(f"{args[0]} is not a git repository")
+    item, branch = args[1], ""
+    if item.startswith(SESSIONS + "/"):
+        if len(args) > 3:
+            die("usage: mission-control add <repo> <session dir> [<branch>]")
+        if item.endswith("/"):
+            item = item[:-1]
+        branch = (args[2] if len(args) > 2 else "") or branch_of_dir(repo, item)
+        if not branch:
+            die(f"no branch found for {item} in {repo}")
+    else:
+        item = " ".join(args[1:])
+    os.makedirs(QHOME, exist_ok=True)
+    entry = f"{repo} {quote_item(item)}{' ' + branch if branch else ''}"
+    with open(QUEUE, "a", encoding="utf-8") as f:
+        f.write(entry + "\n")
+    out(f"added: {entry}")
     return 0
-  fi
-  case "$1" in
-    "$SESSIONS"/*)
-      rt_item="${1%/}"
-      rt_wt="$(wt_path "$rt_repo" "$rt_item")"
-      [ -e "$rt_wt/.git" ] || rt_wt="$(legacy_wt_path "$rt_rb" "$rt_item")"
-      rt_branch="$(current_branch "$rt_wt")"
-      cmd_add "$rt_repo" "$rt_item" ${rt_branch:+"$rt_branch"} ;;
-    *) cmd_add "$rt_repo" "$@" ;;
-  esac
-}
 
-# log_item_part <log path>: the file name without directory, ".log" and the leading
-# <timestamp>- (YYYYMMDD-HHMMSS-), so a number never matches the timestamp.
-log_item_part() {
-  lip="${1##*/}"; lip="${lip%.log}"
-  printf '%s\n' "$lip" | sed -E 's/^[0-9]{8}-[0-9]{6}-//'
-}
 
-# find_item_log <key>: the newest item log whose item part contains the key.
-find_item_log() {
-  item_logs | while IFS= read -r fil_f; do
-    fil_part="$(log_item_part "$fil_f")"
-    case "$fil_part" in *"$1"*) printf '%s\n' "$fil_f"; break ;; esac
-  done
-}
+def cmd_labels(args):
+    target = args[0] if args else "."
+    repo = resolve_repo(expand_tilde(target))
+    if not repo:
+        die(f"{target} is not a git repository")
+    return 0 if ensure_labels(repo) else 1
 
-# cmd_log [<item>]: the newest item log, or the newest one whose item part contains the
-# argument after safe_name ("#12" -> "_12", a session dir -> its basename).
-cmd_log() {
-  lg_sub="${1:-}"
-  if [ -n "$lg_sub" ]; then
-    lg_file="$(find_item_log "$(safe_name "$lg_sub")")"
-    [ -n "$lg_file" ] || die "no item log with '$lg_sub' in its name under $LOGDIR"
-  else
-    lg_file="$(item_logs | head -n 1)"
-    [ -n "$lg_file" ] || die "no item log under $LOGDIR"
-  fi
-  echo "log: $lg_file"
-  tail -n 40 "$lg_file"
-}
 
-# cmd_start: start a run now on this machine, inside the GUI session (the Keychain login is
-# readable there). Installs the LaunchAgent without a schedule when none is installed, then
-# kickstarts it. Refuses while a run is active. "kickstart" is the old name.
-cmd_start() {
-  [ "$(uname)" = Darwin ] || die "start needs macOS (launchd)"
-  sta_pid="$(lock_pid)"
-  if [ -n "$sta_pid" ]; then
-    sta_item="$(sed -n 2p "$LOCK/current" 2>/dev/null)"
-    die "a run is active (pid $sta_pid, ${sta_item:-no item yet}), stop it first"
-  fi
-  [ -f "$PLIST" ] || cmd_install_schedule
-  sta_bin="$(sed -n 's/.*<string>\(.*mission-control\)<\/string><string>run<\/string>.*/\1/p' "$PLIST" | head -n 1)"
-  if [ -n "$sta_bin" ] && [ "$sta_bin" != "$script_dir/mission-control" ] && ! cmp -s "$sta_bin" "$script_dir/mission-control"; then
-    echo "warning: the LaunchAgent runs $sta_bin, which differs from $script_dir/mission-control (plugin not updated yet?)"
-  fi
-  # The agent runs "run --scheduled"; force-once makes that run ignore a pause, once.
-  : >"$FORCE" || die "cannot write $FORCE"
-  launchctl kickstart "gui/$(id -u)/de.evelan.mission-control" || { rm -f "$FORCE"; die "launchctl kickstart failed"; }
-  sta_until="$(pause_date || true)"
-  echo "started: de.evelan.mission-control runs now in the GUI session (output in $LOGDIR/launchd.log, then \"mission-control status\")${sta_until:+; the pause until $sta_until is overridden for this run only}"
-}
+def cmd_doctor(args):
+    load_env()
+    failed = False
 
-# cmd_install_schedule [HH:MM]: the LaunchAgent. With a time it runs daily at that time;
-# without one it only runs when "start" kickstarts it.
-cmd_install_schedule() {
-  [ "$(uname)" = Darwin ] || die "install-schedule needs macOS (launchd)"
-  is_time="${1:-}"
-  is_cal=""
-  case "$is_time" in
-    "") ;;
-    [0-2][0-9]:[0-5][0-9])
-      is_h="${is_time%%:*}"; is_m="${is_time#*:}"
-      is_h="${is_h#0}"; is_m="${is_m#0}"; [ -n "$is_h" ] || is_h=0; [ -n "$is_m" ] || is_m=0
-      is_cal="  <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>$is_h</integer><key>Minute</key><integer>$is_m</integer></dict>" ;;
-    *) die "usage: mission-control install-schedule [HH:MM]" ;;
-  esac
-  if [ -x "$MARKETPLACE_BIN/mission-control" ]; then
-    is_bin="$MARKETPLACE_BIN"
-  else
-    is_bin="$script_dir"
-    echo "warning: $MARKETPLACE_BIN/mission-control not found, the LaunchAgent points at $script_dir/mission-control;"
-    echo "         that path changes with plugin versions, re-run install-schedule after a plugin update"
-  fi
-  mkdir -p "$(dirname "$PLIST")" "$LOGDIR"
-  cat >"$PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
+    def ok(msg):
+        out(f"ok   - {msg}")
+
+    def bad(msg):
+        nonlocal failed
+        out(f"FAIL - {msg}")
+        failed = True
+
+    if shutil.which("git"):
+        ok("git " + (capture(["git", "--version"])[1].split(" ") + ["", "", ""])[2])
+    else:
+        bad("git not found")
+
+    answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", "0.05"],
+                     err="merge")[1]
+    if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
+        ok("claude -p answers (logged in)")
+    else:
+        lines = answer.splitlines()
+        bad("claude -p did not answer OK: " + " ".join(lines[:3]) + (" " if len(lines) > 3 else ""))
+        out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
+        out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
+        out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")
+        out("       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'.")
+
+    if quiet([GH_BIN, "auth", "status"]) == 0:
+        ok("gh auth status")
+    else:
+        bad("gh auth status failed (run: gh auth login)")
+
+    if os.path.isfile(ENVFILE):
+        mode = file_mode(ENVFILE)
+        if mode == "600":
+            ok("env file mode 600")
+        else:
+            bad(f"env file mode is {mode}, want 600 (chmod 600 {ENVFILE})")
+
+    os.makedirs(LOGDIR, exist_ok=True)
+    repos = {parsed[0] for parsed in map(parse_line, read_lines(QUEUE)) if parsed} | set(live_lines(REPOS))
+    out(f"repos in the queue: {len(repos)}")
+    for repo in sorted(repos):
+        repo = expand_tilde(repo)
+        path = resolve_repo(repo)
+        if not path:
+            bad(f"{repo} is not a git repository")
+            continue
+        ok(f"repo {path}")
+        if not ensure_labels(path):
+            failed = True
+
+    if not failed:
+        out("doctor: all checks passed")
+    return 1 if failed else 0
+
+
+# ---------- status, stop, retry, log, start ----------
+
+def item_logs():
+    """Item log files, newest first (queue.log and launchd.log excluded)."""
+    def changed(path):
+        try:
+            return os.path.getmtime(path)
+        except OSError:  # renamed or removed by a run meanwhile
+            return 0
+
+    logs = [path for path in glob.glob(f"{glob.escape(LOGDIR)}/*.log")
+            if os.path.basename(path) not in ("queue.log", "launchd.log")]
+    return sorted(logs, key=changed, reverse=True)
+
+
+def last_phase(logfile, repo_base, item):
+    """The last progress line of the log without its timestamp and "<repo> <item>: " prefix."""
+    stamped = [line for line in read_lines(logfile) if re.match(r"\d{4}-\d{2}-\d{2}T[0-9:]{8}Z ", line)]
+    if not stamped:
+        return "starting"
+    line = stamped[-1].split(" ", 1)[1]
+    prefix = f"{repo_base} {item}: "
+    return (line[len(prefix):] if line.startswith(prefix) else line) or "starting"
+
+
+def schedule_line():
+    if plist_legacy():
+        return f"schedule: installed at {plist_time()} (legacy, ignores pause)"
+    if plist_on_demand():
+        return 'schedule: on demand only ("mission-control start"), no nightly run'
+    if os.path.isfile(PLIST):
+        until = pause_date()
+        return f"schedule: installed at {plist_time()}, " + (f"paused until {until}" if until else "active")
+    return "schedule: not installed"
+
+
+def cmd_status(args):
+    load_env()
+    pid = lock_pid()
+    current = read_lines(LOCK + "/current") if pid and os.path.isfile(LOCK + "/current") else None
+    if current is not None:
+        repo_base, item, attempt, began, logfile, wt, base = (current + [""] * 7)[:7]
+        try:
+            elapsed = (int(time.time()) - int(began)) // 60
+        except ValueError:
+            elapsed = 0
+        out(f"running: {repo_base} {item} (attempt {attempt}, since {hhmm_of_epoch(began)}, {elapsed} min, "
+            f"phase: {last_phase(logfile, repo_base, item)})")
+        if wt and os.path.isdir(wt):
+            package = current_package(wt, item) if item.startswith(SESSIONS + "/") else ""
+            out(f"  package: {package or 'none marked [~]'}")
+            # the line the run's context-budget hook rewrites after every tool call
+            status_file = wt + "/.claude/.autopilot-status"
+            out(f"  run: {last_line(read_text(status_file))}" if os.path.isfile(status_file) else "  run: no status line yet")
+            base = base or base_sha(wt)
+            diff = git(wt, "diff", "--shortstat", base or "HEAD")[1].lstrip(" ")
+            out(f"  diff since base: {diff or 'none'}")
+    elif pid:
+        out(f"running: pid {pid}, no item yet")
+    else:
+        out("running: none")
+
+    queued = live_lines(QUEUE)
+    out(f"queue: {len(queued)} items")
+    for line in queued[:3]:
+        out(f"  {line}")
+
+    os.makedirs(LOGDIR, exist_ok=True)
+    repos = live_lines(REPOS)
+    if repos_pollable(repos):
+        total, per_repo = 0, []
+        for repo in repos:
+            repo = expand_tilde(repo)
+            path = resolve_repo(repo)
+            if not path:
+                out(f"FAIL - {repo}: not a git repository")
+                continue
+            prs = list_ready_prs(path)
+            if prs is None:
+                continue
+            total += len(prs)
+            per_repo.append(f"{os.path.basename(path)} {len(prs)}")
+        out(f"labelled PRs: {total}" + (f" ({', '.join(per_repo)})" if per_repo else ""))
+    else:
+        out("labelled PRs: unknown (gh not authenticated in this session)")
+
+    out("last done:")
+    if os.path.isfile(DONE):
+        for line in read_lines(DONE)[-5:]:
+            out(f"  {line}")
+    else:
+        out("  none")
+
+    out(schedule_line())
+    if plist_legacy():
+        warn_legacy_plist()
+
+    if pid:
+        out(f"lock: held by pid {pid}")
+    elif os.path.isdir(LOCK):
+        out(f"lock: stale (pid {first_line(LOCK + '/pid').strip() or '?'} is dead, the next run takes it over)")
+    else:
+        out("lock: free")
+    return 0
+
+
+def cmd_stop(args):
+    """TERM to the run; it kills claude (SIGTERM, SIGKILL after 10 s) and releases the lock.
+    Waits up to 45 s. The item stays in queue.txt or keeps its label."""
+    pid = lock_pid()
+    if not pid:
+        out("nothing running")
+        return 0
+    current = (read_lines(LOCK + "/current") + ["", ""])[:2]
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+    except OSError:
+        out("nothing running")
+        return 0
+    for _ in range(90):
+        if not pid_alive(pid):
+            break
+        time.sleep(0.5)
+    if pid_alive(pid):
+        out(f"still running (pid {pid})")
+        return 1
+    out("stopped" + "".join(f" {part}" for part in current if part))
+    return 0
+
+
+def cmd_retry(args):
+    """"#N" or an all-digit argument is a PR number; a session dir is re-added with the branch
+    its kept worktree is on; anything else is re-added as given."""
+    if len(args) < 2:
+        die("usage: mission-control retry <repo> <#pr | item>")
+    repo = resolve_repo(expand_tilde(args[0]))
+    if not repo:
+        die(f"{args[0]} is not a git repository")
+    repo_base = os.path.basename(repo)
+    number = args[1][1:] if args[1].startswith("#") else args[1]
+    if number.isdigit():
+        if len(args) != 2:
+            die("usage: mission-control retry <repo> <#pr>")
+        rc, _, err = capture_both([GH_BIN, "pr", "edit", number, "--remove-label", LABEL_BLOCKED,
+                                   "--add-label", LABEL_READY], cwd=repo)
+        if rc != 0:
+            die(f"gh pr edit {number} failed in {repo_base}: {err.splitlines()[0] if err.splitlines() else ''}")
+        out(f"retry: PR #{number} in {repo_base} labelled {LABEL_READY} again (the next run picks it up)")
+        return 0
+    if args[1].startswith(SESSIONS + "/"):
+        item = args[1].rstrip("/")
+        wt = wt_path(repo, item)
+        if not os.path.exists(wt + "/.git"):
+            wt = legacy_wt_path(repo_base, item)
+        branch = current_branch(wt)
+        return cmd_add([repo, item] + ([branch] if branch else []))
+    return cmd_add([repo] + args[1:])
+
+
+def log_item_part(path):
+    """The file name without directory, ".log" and the leading <timestamp>- (YYYYMMDD-HHMMSS-),
+    so a number never matches the timestamp."""
+    name = os.path.basename(path)
+    if name.endswith(".log"):
+        name = name[:-4]
+    return re.sub(r"^[0-9]{8}-[0-9]{6}-", "", name)
+
+
+def cmd_log(args):
+    """The newest item log, or the newest one whose item part contains the argument after
+    safe_name ("#12" -> "_12", a session dir -> its basename)."""
+    logs = item_logs()
+    if args and args[0]:
+        key = safe_name(args[0])
+        logs = [path for path in logs if key in log_item_part(path)]
+        if not logs:
+            die(f"no item log with '{args[0]}' in its name under {LOGDIR}")
+    elif not logs:
+        die(f"no item log under {LOGDIR}")
+    out(f"log: {logs[0]}")
+    for line in read_lines(logs[0])[-40:]:
+        out(line)
+    return 0
+
+
+def launchctl(*args, silent=False):
+    """Exit code of launchctl; its output goes to the terminal unless silent."""
+    try:
+        sys.stdout.flush()
+        return subprocess.run(["launchctl", *args], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL if silent else None,
+                              stderr=subprocess.DEVNULL if silent else None).returncode
+    except OSError:
+        return 127
+
+
+def cmd_start(args):
+    """Start a run now on this machine, inside the GUI session (the Keychain login is readable
+    there). Installs the LaunchAgent without a schedule when none is installed, then kickstarts
+    it. Refuses while a run is active. "kickstart" is the old name."""
+    if platform.system() != "Darwin":
+        die("start needs macOS (launchd)")
+    pid = lock_pid()
+    if pid:
+        item = (read_lines(LOCK + "/current") + ["", ""])[1]
+        die(f"a run is active (pid {pid}, {item or 'no item yet'}), stop it first")
+    if not os.path.isfile(PLIST):
+        cmd_install_schedule([])
+    here = SCRIPT_DIR + "/mission-control"
+    hit = re.search(r"<string>(.*mission-control)</string><string>run</string>", read_text(PLIST))
+    runs = hit.group(1) if hit else ""
+    if runs and runs != here and not (os.path.isfile(runs) and filecmp.cmp(runs, here, shallow=False)):
+        out(f"warning: the LaunchAgent runs {runs}, which differs from {here} (plugin not updated yet?)")
+    # The agent runs "run --scheduled"; force-once makes that run ignore a pause, once.
+    try:
+        open(FORCE, "w").close()
+    except OSError:
+        die(f"cannot write {FORCE}")
+    if launchctl("kickstart", f"gui/{os.getuid()}/{LAUNCHD_LABEL}") != 0:
+        remove_file(FORCE)
+        die("launchctl kickstart failed")
+    until = pause_date()
+    out(f"started: {LAUNCHD_LABEL} runs now in the GUI session (output in {LOGDIR}/launchd.log, then "
+        f"\"mission-control status\")" + (f"; the pause until {until} is overridden for this run only" if until else ""))
+    return 0
+
+
+def cmd_install_schedule(args):
+    """The LaunchAgent. With a time it runs daily at that time; without one it only runs when
+    "start" kickstarts it."""
+    if platform.system() != "Darwin":
+        die("install-schedule needs macOS (launchd)")
+    at = args[0] if args else ""
+    calendar = ""
+    if at:
+        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", at):
+            die("usage: mission-control install-schedule [HH:MM]")
+        hour, minute = (int(part) for part in at.split(":"))
+        calendar = ("  <key>StartCalendarInterval</key>\n"
+                    f"  <dict><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict>\n")
+    if is_executable(MARKETPLACE_BIN + "/mission-control"):
+        bin_dir = MARKETPLACE_BIN
+    else:
+        bin_dir = SCRIPT_DIR
+        out(f"warning: {MARKETPLACE_BIN}/mission-control not found, the LaunchAgent points at {SCRIPT_DIR}/mission-control;")
+        out("         that path changes with plugin versions, re-run install-schedule after a plugin update")
+    os.makedirs(os.path.dirname(PLIST), exist_ok=True)
+    os.makedirs(LOGDIR, exist_ok=True)
+    with open(PLIST, "w", encoding="utf-8") as f:
+        f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>de.evelan.mission-control</string>
+  <key>Label</key><string>{LAUNCHD_LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>$is_bin/mission-control</string><string>run</string><string>--scheduled</string></array>
-${is_cal:+$is_cal
-}  <key>WorkingDirectory</key><string>$HOME</string>
+  <array><string>{bin_dir}/mission-control</string><string>run</string><string>--scheduled</string></array>
+{calendar}  <key>WorkingDirectory</key><string>{HOME}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$is_bin:/usr/bin:/bin</string>
-    <key>HOME</key><string>$HOME</string>
-    <key>MISSION_CONTROL_HOME</key><string>$QHOME</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:{bin_dir}:/usr/bin:/bin</string>
+    <key>HOME</key><string>{HOME}</string>
+    <key>MISSION_CONTROL_HOME</key><string>{QHOME}</string>
   </dict>
-  <key>StandardOutPath</key><string>$LOGDIR/launchd.log</string>
-  <key>StandardErrorPath</key><string>$LOGDIR/launchd.log</string>
+  <key>StandardOutPath</key><string>{LOGDIR}/launchd.log</string>
+  <key>StandardErrorPath</key><string>{LOGDIR}/launchd.log</string>
 </dict>
 </plist>
-EOF
-  launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" || die "launchctl bootstrap failed for $PLIST"
-  if [ -n "$is_time" ]; then
-    echo "installed: $PLIST (daily at $is_time, runs $is_bin/mission-control in the GUI session so the Keychain login is readable)"
-  else
-    echo "installed: $PLIST (no schedule, runs on \"mission-control start\" in the GUI session so the Keychain login is readable)"
-  fi
+""")
+    launchctl("bootout", f"gui/{os.getuid()}", PLIST, silent=True)
+    if launchctl("bootstrap", f"gui/{os.getuid()}", PLIST) != 0:
+        die(f"launchctl bootstrap failed for {PLIST}")
+    if at:
+        out(f"installed: {PLIST} (daily at {at}, runs {bin_dir}/mission-control in the GUI session so the "
+            "Keychain login is readable)")
+    else:
+        out(f"installed: {PLIST} (no schedule, runs on \"mission-control start\" in the GUI session so the "
+            "Keychain login is readable)")
+    return 0
+
+
+def cmd_pause(args):
+    """No argument pauses today only. The file holds the last paused day; the scheduled run
+    skips through that day inclusive. A date before today is refused (exit 2): it would be a
+    pause that is over before it starts."""
+    if not args:
+        until = today()
+    elif len(args) == 2 and args[0] == "until":
+        until = args[1]
+        if not valid_date(until):
+            die_usage(f"not a date: '{until}' (want YYYY-MM-DD, e.g. pause until {date_plus_days(1)})")
+        if until < today():
+            die_usage(f"date is in the past: {until}")
+    elif len(args) == 1:
+        if not re.fullmatch(r"[0-9]+d", args[0]):
+            die_usage(f"usage: mission-control pause [until <YYYY-MM-DD> | <N>d] (got: {args[0]})")
+        try:
+            until = date_plus_days(args[0][:-1])
+        except OverflowError:
+            die_usage(f"usage: mission-control pause [until <YYYY-MM-DD> | <N>d] (got: {args[0]})")
+    else:
+        die_usage("usage: mission-control pause [until <YYYY-MM-DD> | <N>d]")
+    os.makedirs(QHOME, exist_ok=True)
+    try:
+        with open(PAUSE, "w") as f:
+            f.write(until + "\n")
+    except OSError:
+        die(f"cannot write {PAUSE}")
+    log(f"paused until {until}")
+    out(f"paused until {until}")
+    warn_legacy_plist()
+    return 0
+
+
+def cmd_resume(args):
+    if os.path.exists(PAUSE):
+        try:
+            os.remove(PAUSE)
+        except OSError:
+            die(f"cannot remove {PAUSE}")
+        log("resumed")
+        out("resumed")
+    else:
+        out("not paused")
+    warn_legacy_plist()
+    return 0
+
+
+def cmd_uninstall_schedule(args):
+    if platform.system() != "Darwin":
+        die("uninstall-schedule needs macOS (launchd)")
+    if not os.path.isfile(PLIST):
+        die(f"nothing installed at {PLIST}")
+    launchctl("bootout", f"gui/{os.getuid()}", PLIST, silent=True)
+    remove_file(PLIST)
+    out(f"removed: {PLIST}")
+    return 0
+
+
+def not_set_up():
+    """A machine without the queue home directory has no queue: the queue commands are refused
+    with the pointer to the machine that runs it, so a developer's session never creates a
+    local list by accident. doctor, labels, install-schedule and help stay available (they
+    create the directory)."""
+    print(f"mission-control is not set up on this machine ({QHOME} does not exist).", file=sys.stderr)
+    print("The queue runs on the office Mini. Hand work over with /autopilot-plan (draft PR with the label "
+          "autopilot-ready); results arrive on the PR and in Slack #mission-control.", file=sys.stderr)
+    print("To set this machine up: mission-control doctor, then repos.txt and install-schedule HH:MM.", file=sys.stderr)
+    return 3
+
+
+COMMANDS = {
+    "run": cmd_run, "list": cmd_list, "add": cmd_add, "labels": cmd_labels, "doctor": cmd_doctor,
+    "status": cmd_status, "stop": cmd_stop, "retry": cmd_retry, "log": cmd_log, "start": cmd_start,
+    "kickstart": cmd_start, "pause": cmd_pause, "resume": cmd_resume,
+    "install-schedule": cmd_install_schedule, "uninstall-schedule": cmd_uninstall_schedule,
 }
 
-# cmd_pause [until <YYYY-MM-DD> | <N>d]: no argument pauses today only. The file holds the
-# last paused day; the scheduled run skips through that day inclusive. A date before today
-# is refused (exit 2): it would be a pause that is over before it starts.
-cmd_pause() {
-  case "$#:${1:-}" in
-    0:) p_until="$(today)" ;;
-    2:until)
-      p_until="$2"
-      valid_date "$p_until" || die_usage "not a date: '$p_until' (want YYYY-MM-DD, e.g. pause until $(date_plus_days 1))"
-      [ "$(printf '%s' "$p_until" | tr -d -)" -ge "$(today | tr -d -)" ] || die_usage "date is in the past: $p_until" ;;
-    1:*)
-      p_n="${1%d}"
-      case "$1" in *d) ;; *) p_n="" ;; esac
-      case "$p_n" in ''|*[!0-9]*) die_usage "usage: mission-control pause [until <YYYY-MM-DD> | <N>d] (got: $1)" ;; esac
-      p_until="$(date_plus_days "$p_n")"
-      [ -n "$p_until" ] || die "date arithmetic failed (neither date -v nor date -d works here)" ;;
-    *) die_usage "usage: mission-control pause [until <YYYY-MM-DD> | <N>d]" ;;
-  esac
-  mkdir -p "$QHOME"
-  printf '%s\n' "$p_until" >"$PAUSE" || die "cannot write $PAUSE"
-  log "paused until $p_until"
-  echo "paused until $p_until"
-  warn_legacy_plist
-}
 
-cmd_resume() {
-  if [ -e "$PAUSE" ]; then
-    rm -f "$PAUSE" || die "cannot remove $PAUSE"
-    log "resumed"
-    echo "resumed"
-  else
-    echo "not paused"
-  fi
-  warn_legacy_plist
-}
+def main(argv):
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    command, args = (argv[0] if argv else ""), argv[1:]
+    if command in ("", "-h", "--help", "help"):
+        out(USAGE)
+        return 2
+    if command not in COMMANDS:
+        die(f"unknown command: {command} ({COMMANDS_HINT})")
+    if command in QUEUE_COMMANDS and not os.path.isdir(QHOME):
+        return not_set_up()
+    return COMMANDS[command](args)
 
-cmd_uninstall_schedule() {
-  [ "$(uname)" = Darwin ] || die "uninstall-schedule needs macOS (launchd)"
-  [ -f "$PLIST" ] || die "nothing installed at $PLIST"
-  launchctl bootout "gui/$(id -u)" "$PLIST" >/dev/null 2>&1 || true
-  rm -f "$PLIST"
-  echo "removed: $PLIST"
-}
 
-# A machine without the queue home directory has no queue: refuse the queue commands with the
-# pointer to the machine that runs it, so a developer's session never creates a local list by
-# accident. doctor, labels, install-schedule and help stay available (they create the directory).
-not_set_up() {
-  echo "mission-control is not set up on this machine ($QHOME does not exist)." >&2
-  echo "The queue runs on the office Mini. Hand work over with /autopilot-plan (draft PR with the label autopilot-ready); results arrive on the PR and in Slack #mission-control." >&2
-  echo "To set this machine up: mission-control doctor, then repos.txt and install-schedule HH:MM." >&2
-  exit 3
-}
-queue_set_up() { [ -d "$QHOME" ]; }
-
-cmd="${1:-}"; [ $# -gt 0 ] && shift
-case "$cmd" in
-  run|list|add|status|stop|retry|log|start|kickstart|pause|resume) queue_set_up || not_set_up ;;
-esac
-case "$cmd" in
-  run) cmd_run "$@" ;;
-  list) cmd_list ;;
-  add) cmd_add "$@" ;;
-  labels) cmd_labels "$@" ;;
-  doctor) cmd_doctor ;;
-  status) cmd_status ;;
-  stop) cmd_stop ;;
-  retry) cmd_retry "$@" ;;
-  log) cmd_log "$@" ;;
-  start|kickstart) cmd_start ;;
-  pause) cmd_pause "$@" ;;
-  resume) cmd_resume ;;
-  install-schedule) cmd_install_schedule "$@" ;;
-  uninstall-schedule) cmd_uninstall_schedule ;;
-  -h|--help|help|'') usage ;;
-  *) die "unknown command: $cmd (run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | install-schedule | uninstall-schedule)" ;;
-esac
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,132 +1,165 @@
-#!/bin/sh
-# codex-snapshot - record the working tree before a Codex run and show what
-# changed afterwards, isolated from edits that were already there.
-#
-# `save` writes the whole working tree (tracked edits, deletions, untracked
-# files; .gitignore'd files excluded) as a git tree object through a temporary
-# index, so the real index and working tree are untouched. The id is
-# "<HEAD sha>:<tree id>". `diff <id>` compares that tree with a fresh one and
-# lists commits made since, so the output is exactly what changed in between,
-# even when the tree was already dirty or HEAD moved.
-#
-# Usage:
-#   codex-snapshot save          # prints the snapshot id
-#   codex-snapshot diff <id>     # files changed since the snapshot (name-status)
-#   codex-snapshot patch <id>    # the full patch since the snapshot
-#
-# Exit codes: 0 ok | 1 not a git repo or bad id | 64 usage error
+#!/usr/bin/env python3
+"""codex-snapshot - record the working tree before a Codex run and show what changed
+afterwards, isolated from edits that were already there.
 
-usage() {
-  echo "usage: codex-snapshot save" >&2
-  echo "       codex-snapshot diff <id>" >&2
-  echo "       codex-snapshot patch <id>" >&2
-  exit 64
-}
+usage: codex-snapshot save
+       codex-snapshot diff <id>
+       codex-snapshot patch <id>
 
-require_repo() {
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "codex-snapshot: not inside a git repository." >&2
-    exit 1
-  fi
-}
+`save` prints the snapshot id, `diff <id>` the files changed since the snapshot
+(name-status), `patch <id>` the full patch since the snapshot.
 
-# Temporary index directory; removed on every exit path (normal, error, signal).
-snap_dir=""
-cleanup() {
-  if [ -n "$snap_dir" ]; then
-    rm -rf "$snap_dir"
-  fi
-}
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+`save` writes the whole working tree (tracked edits, deletions, untracked files; .gitignore'd
+files excluded) as a git tree object through a temporary index (GIT_INDEX_FILE of the git
+calls), so the real index and working tree are untouched. The id is "<HEAD sha>:<tree id>",
+with "none" as the sha in a repository without a commit. `diff <id>` compares that tree with
+a fresh one and lists commits made since, so the output is exactly what changed in between,
+even when the tree was already dirty or HEAD moved.
 
-fail() {
-  echo "codex-snapshot: $1" >&2
-  exit 1
-}
+The temporary index lives in a directory under $TMPDIR (default /tmp) that is removed on
+every exit path: normal, error, and the signals HUP, INT and TERM (exit 1).
 
-is_tree_id() { # 40 lowercase hex chars
-  case "$1" in
-    *[!0-9a-f]*|'') return 1 ;;
-  esac
-  [ "${#1}" -eq 40 ]
-}
+Python 3 standard library only.
+Exit codes: 0 ok | 1 not a git repo or bad id | 64 usage error
+"""
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
 
-# Build a tree object for the current working tree; sets $tree. Runs in the
-# main shell (no subshell) so every failure ends the command with exit 1.
-snapshot_tree() {
-  snap_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-snapshot-XXXXXX")" \
-    || fail "cannot create a temporary directory under ${TMPDIR:-/tmp}."
-  idx="$snap_dir/index"
-  if git rev-parse --verify --quiet HEAD >/dev/null; then
-    GIT_INDEX_FILE="$idx" git read-tree HEAD || fail "git read-tree HEAD failed."
-  else
-    GIT_INDEX_FILE="$idx" git read-tree --empty || fail "git read-tree --empty failed."
-  fi
-  GIT_INDEX_FILE="$idx" git add -A || fail "git add -A into the temporary index failed."
-  tree="$(GIT_INDEX_FILE="$idx" git write-tree)" || fail "git write-tree failed."
-  is_tree_id "$tree" || fail "git write-tree returned no tree id ('$tree')."
-  rm -rf "$snap_dir"
-  snap_dir=""
-}
+USAGE = __doc__.split("\n\n")[1]
+DEVNULL, PIPE = subprocess.DEVNULL, subprocess.PIPE
 
-head_sha() {
-  git rev-parse --verify --quiet HEAD 2>/dev/null || printf 'none\n'
-}
 
-parse_id() {
-  id="$1"
-  [ -n "$id" ] || usage
-  case "$id" in
-    *:*) ;;
-    *) fail "bad id '$id' (expected <head>:<tree>)." ;;
-  esac
-  old_head="${id%%:*}"
-  old_tree="${id#*:}"
-  is_tree_id "$old_tree" || fail "bad id '$id' (tree part must be a 40-char hex id)."
-  if ! git cat-file -e "$old_tree" 2>/dev/null; then
-    echo "codex-snapshot: snapshot tree '$old_tree' not found in this repository." >&2
-    exit 1
-  fi
-}
+def usage():
+    print(USAGE, file=sys.stderr)
+    sys.exit(64)
 
-report_commits() {
-  new_head="$(head_sha)"
-  [ "$old_head" = "$new_head" ] && return 0
-  if [ "$old_head" = "none" ]; then
-    echo "commits since snapshot:"
-    git log --oneline HEAD
+
+def fail(message):
+    print(f"codex-snapshot: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def on_signal(signum, frame):
+    """End with exit 1; the cleanup of the temporary directory still runs."""
+    sys.exit(1)
+
+
+def catch_signals():
+    """Route HUP, INT and TERM through on_signal, unless the caller had them ignored."""
+    for name in ("SIGHUP", "SIGINT", "SIGTERM"):
+        number = getattr(signal, name, None)
+        if number is not None and signal.getsignal(number) != signal.SIG_IGN:
+            signal.signal(number, on_signal)
+
+
+def git(args, index=None, stdout=None, stderr=None):
+    """Run git and return (exit code, captured stdout). Output that is not redirected goes
+    straight to this command's stdout and stderr; `index` is the temporary index to use."""
+    env = dict(os.environ, GIT_INDEX_FILE=index) if index else None
+    sys.stdout.flush()
+    try:
+        done = subprocess.run(["git"] + args, env=env, stdout=stdout, stderr=stderr)
+    except OSError:
+        return 127, ""
+    return done.returncode, (done.stdout or b"").decode("utf-8", errors="replace").rstrip("\n")
+
+
+def require_repo():
+    if git(["rev-parse", "--is-inside-work-tree"], stdout=DEVNULL, stderr=DEVNULL)[0] != 0:
+        fail("not inside a git repository.")
+
+
+def is_tree_id(text):
+    """40 lowercase hex chars."""
+    return re.fullmatch(r"[0-9a-f]{40}", text) is not None
+
+
+def snapshot_tree():
+    """Write the current working tree as a tree object through a temporary index and return
+    its id. Every failure ends the command with exit 1."""
+    base = os.environ.get("TMPDIR") or "/tmp"
+    try:
+        snap_dir = tempfile.mkdtemp(prefix="codex-snapshot-", dir=base)
+    except OSError:
+        fail(f"cannot create a temporary directory under {base}.")
+    try:
+        index = os.path.join(snap_dir, "index")
+        if git(["rev-parse", "--verify", "--quiet", "HEAD"], stdout=DEVNULL)[0] == 0:
+            if git(["read-tree", "HEAD"], index=index)[0] != 0:
+                fail("git read-tree HEAD failed.")
+        elif git(["read-tree", "--empty"], index=index)[0] != 0:
+            fail("git read-tree --empty failed.")
+        if git(["add", "-A"], index=index)[0] != 0:
+            fail("git add -A into the temporary index failed.")
+        code, tree = git(["write-tree"], index=index, stdout=PIPE)
+        if code != 0:
+            fail("git write-tree failed.")
+        if not is_tree_id(tree):
+            fail(f"git write-tree returned no tree id ('{tree}').")
+        return tree
+    finally:
+        shutil.rmtree(snap_dir, ignore_errors=True)
+
+
+def head_sha():
+    """The sha of HEAD, "none" in a repository without a commit."""
+    code, sha = git(["rev-parse", "--verify", "--quiet", "HEAD"], stdout=PIPE, stderr=DEVNULL)
+    return sha if code == 0 else "none"
+
+
+def parse_id(snapshot_id):
+    """Split "<head>:<tree>" into its two parts; the tree must exist in this repository."""
+    if not snapshot_id:
+        usage()
+    if ":" not in snapshot_id:
+        fail(f"bad id '{snapshot_id}' (expected <head>:<tree>).")
+    old_head, old_tree = snapshot_id.split(":", 1)
+    if not is_tree_id(old_tree):
+        fail(f"bad id '{snapshot_id}' (tree part must be a 40-char hex id).")
+    if git(["cat-file", "-e", old_tree], stderr=DEVNULL)[0] != 0:
+        fail(f"snapshot tree '{old_tree}' not found in this repository.")
+    return old_head, old_tree
+
+
+def report_commits(old_head):
+    """List the commits made since the snapshot, nothing while HEAD is where it was. Returns
+    the exit code of the command."""
+    new_head = head_sha()
+    if old_head == new_head:
+        return 0
+    if old_head == "none":
+        print("commits since snapshot:")
+        git(["log", "--oneline", "HEAD"])
+        return 0
+    if git(["cat-file", "-e", old_head], stderr=DEVNULL)[0] == 0:
+        print("commits since snapshot:")
+        return git(["log", "--oneline", f"{old_head}..HEAD"])[0]
+    print(f"commits since snapshot: HEAD moved from {old_head} to {new_head}")
     return 0
-  fi
-  if git cat-file -e "$old_head" 2>/dev/null; then
-    echo "commits since snapshot:"
-    git log --oneline "$old_head..HEAD"
-  else
-    echo "commits since snapshot: HEAD moved from $old_head to $new_head"
-  fi
-}
 
-case "${1:-}" in
-  save)
-    require_repo
-    snapshot_tree
-    printf '%s:%s\n' "$(head_sha)" "$tree"
-    ;;
-  diff)
-    require_repo
-    parse_id "${2:-}"
-    snapshot_tree
-    git diff --name-status "$old_tree" "$tree" || fail "git diff failed."
-    report_commits
-    ;;
-  patch)
-    require_repo
-    parse_id "${2:-}"
-    snapshot_tree
-    git diff "$old_tree" "$tree" || fail "git diff failed."
-    report_commits
-    ;;
-  *)
-    usage
-    ;;
-esac
+
+def main(argv):
+    command = argv[0] if argv else ""
+    if command not in ("save", "diff", "patch"):
+        usage()
+    catch_signals()
+    require_repo()
+    if command == "save":
+        tree = snapshot_tree()
+        print(f"{head_sha()}:{tree}")
+        return 0
+    old_head, old_tree = parse_id(argv[1] if len(argv) > 1 else "")
+    tree = snapshot_tree()
+    name_status = ["--name-status"] if command == "diff" else []
+    if git(["diff"] + name_status + [old_tree, tree])[0] != 0:
+        fail("git diff failed.")
+    return report_commits(old_head)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

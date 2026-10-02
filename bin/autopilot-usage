@@ -1,81 +1,148 @@
-#!/bin/sh
-# autopilot-usage - where did the tokens of one Claude Code session go?
-#
-# usage: autopilot-usage <main-session-transcript.jsonl>
-#
-# Reads the main transcript and every subagent transcript next to it
-# (<transcript without .jsonl>/subagents/**/agent-*.jsonl) and prints one line per agent:
-#
-#   agent  type  calls  first_ctx  last_ctx  max_ctx  cache_read_M  cache_write_M  output_k
-#
-# followed by a session total. The first row, labelled "main", is the run's own session;
-# every further row is a subagent it dispatched (reviewers, explorers).
-#
-# One API response is written to the transcript as several assistant lines (thinking, text,
-# each tool use) that share one message.id and repeat the same usage; they are collapsed to
-# one record per message.id, so "calls" counts API requests. ctx = input + cache_creation +
-# cache_read tokens of a request (the context it carried). cache_read_M / cache_write_M = the
-# sums over all requests in millions (cache reads are the billing driver of a long session;
-# cache writes are what a fresh agent pays to load its base once). output_k = output tokens
-# in thousands. The agent type comes from the sidecar <agent>.meta.json when present.
-#
-# Needs jq. Always exits 0 with a table, or 2 on usage errors. Never touches the transcripts.
-set -u
+#!/usr/bin/env python3
+"""autopilot-usage - where did the tokens of one Claude Code session go?
 
-main="${1:-}"
-if [ -z "$main" ] || [ ! -f "$main" ]; then
-  echo "usage: autopilot-usage <main-session-transcript.jsonl>" >&2
-  exit 2
-fi
-if ! command -v jq >/dev/null 2>&1; then
-  echo "autopilot-usage: jq is required" >&2
-  exit 2
-fi
+usage: autopilot-usage <main-session-transcript.jsonl>
 
-session_dir="${main%.jsonl}"
+Reads the main transcript and every subagent transcript next to it
+(<transcript without .jsonl>/subagents/**/agent-*.jsonl) and prints one line per agent:
 
-# Shared jq prelude: assistant records with usage, one per message.id, in transcript order.
-dedupe='
-  def requests:
-    [ .[] | select(.type=="assistant") | select(.message.usage != null) ]
-    | reduce .[] as $r ({seen: {}, out: []};
-        ($r.message.id // ("line-" + (.out | length | tostring))) as $k
-        | if .seen[$k] then . else .seen[$k] = true | .out += [$r] end)
-    | .out;
-  def ctx: ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0));
-'
+  agent  type  calls  first_ctx  last_ctx  max_ctx  cache_read_M  cache_write_M  output_k
 
-usage_jq="$dedupe"'
-  [ requests[] | .message.usage
-    | { ctx: ctx, cr: (.cache_read_input_tokens // 0), cw: (.cache_creation_input_tokens // 0), out: (.output_tokens // 0) } ]
-  | if length == 0 then "0\t0\t0\t0\t0\t0\t0"
-    else [ length, .[0].ctx, .[-1].ctx, (map(.ctx) | max), (map(.cr) | add), (map(.cw) | add), (map(.out) | add) ] | map(tostring) | join("\t")
-    end'
+followed by a session total. The first row, labelled "main", is the run's own session;
+every further row is a subagent it dispatched (reviewers, explorers).
 
-row() {
-  # $1 label  $2 type  $3 transcript
-  stats="$(jq -s -r "$usage_jq" "$3" 2>/dev/null || printf '0\t0\t0\t0\t0\t0\t0')"
-  printf '%s\t%s\t%s\n' "$1" "$2" "$stats"
-}
+One API response is written to the transcript as several assistant lines (thinking, text,
+each tool use) that share one message.id and repeat the same usage; they are collapsed to
+one record per message.id, so "calls" counts API requests. ctx = input + cache_creation +
+cache_read tokens of a request (the context it carried). cache_read_M / cache_write_M = the
+sums over all requests in millions (cache reads are the billing driver of a long session;
+cache writes are what a fresh agent pays to load its base once). output_k = output tokens
+in thousands. The agent type comes from the sidecar <agent>.meta.json when present.
 
-{
-  row main main "$main"
-  if [ -d "$session_dir/subagents" ]; then
-    find "$session_dir/subagents" -type f -name 'agent-*.jsonl' | sort | while IFS= read -r f; do
-      id="$(basename "$f" .jsonl)"
-      meta="${f%.jsonl}.meta.json"
-      agent_type="?"
-      if [ -f "$meta" ]; then
-        agent_type="$(jq -r '(.agentType // "?") + (if .name then " (" + .name + ")" else "" end)' "$meta" 2>/dev/null || echo "?")"
-      fi
-      row "$id" "$agent_type" "$f"
-    done
-  fi
-} | awk -F'\t' '
-  BEGIN { printf "%-26s %-40s %6s %10s %9s %9s %13s %14s %9s\n", "agent", "type", "calls", "first_ctx", "last_ctx", "max_ctx", "cache_read_M", "cache_write_M", "output_k" }
-  {
-    printf "%-26s %-40s %6d %10d %9d %9d %13.1f %14.2f %9.1f\n", $1, substr($2,1,40), $3, $4, $5, $6, $7/1000000, $8/1000000, $9/1000
-    calls += $3; cr += $7; cw += $8; out += $9
-  }
-  END { printf "%-26s %-40s %6d %10s %9s %9s %13.1f %14.2f %9.1f\n", "TOTAL", "", calls, "", "", "", cr/1000000, cw/1000000, out/1000 }'
-exit 0
+Transcript lines that are empty or not valid JSON are skipped; a transcript that cannot be
+read counts as zeros. Always exits 0 with a table, or 2 on usage errors. Never touches the
+transcripts. Python 3 standard library only.
+"""
+import fnmatch
+import json
+import os
+import sys
+
+USAGE = "usage: autopilot-usage <main-session-transcript.jsonl>"
+HEADER = ("agent", "type", "calls", "first_ctx", "last_ctx", "max_ctx", "cache_read_M", "cache_write_M", "output_k")
+HEADER_FORMAT = "%-26s %-40s %6s %10s %9s %9s %13s %14s %9s"
+ROW_FORMAT = "%-26s %-40s %6d %10d %9d %9d %13.1f %14.2f %9.1f"
+TOTAL_FORMAT = "%-26s %-40s %6d %10s %9s %9s %13.1f %14.2f %9.1f"
+
+
+def records(path):
+    """The JSON objects of a transcript in file order; unreadable lines are skipped."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            out.append(record)
+    return out
+
+
+def requests(path):
+    """The usage objects of the assistant records, one per message.id, in transcript order."""
+    seen, out = set(), []
+    for record in records(path):
+        message = record.get("message")
+        if record.get("type") != "assistant" or not isinstance(message, dict):
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        key = message.get("id")
+        if not isinstance(key, str):
+            key = f"line-{len(out)}"  # no message id: every such line is its own request
+        if key not in seen:
+            seen.add(key)
+            out.append(usage)
+    return out
+
+
+def tokens(usage, field):
+    """A token count of a usage object, 0 when it is missing or not a number."""
+    value = usage.get(field)
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def stats(path):
+    """calls, first ctx, last ctx, max ctx, cache-read sum, cache-write sum, output sum of one transcript."""
+    reqs = requests(path)
+    if not reqs:
+        return (0, 0, 0, 0, 0, 0, 0)
+    read = [tokens(u, "cache_read_input_tokens") for u in reqs]
+    write = [tokens(u, "cache_creation_input_tokens") for u in reqs]
+    ctx = [tokens(u, "input_tokens") + w + r for u, w, r in zip(reqs, write, read)]
+    return (len(reqs), ctx[0], ctx[-1], max(ctx), sum(read), sum(write), sum(tokens(u, "output_tokens") for u in reqs))
+
+
+def agent_type(meta_path):
+    """agentType plus the name in brackets from the sidecar meta.json, "?" when it cannot be read."""
+    try:
+        with open(meta_path, encoding="utf-8", errors="replace") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return "?"
+    if not isinstance(meta, dict):
+        return "?"
+    kind, name = meta.get("agentType"), meta.get("name")
+    if kind is None or kind is False:
+        kind = "?"
+    if name is None or name is False:
+        name = None
+    if not isinstance(kind, str) or not (name is None or isinstance(name, str)):
+        return "?"
+    return kind if name is None else f"{kind} ({name})"
+
+
+def subagent_transcripts(session_dir):
+    """Every agent-*.jsonl file below <session dir>/subagents, sorted by path."""
+    found = []
+    for folder, _, names in os.walk(os.path.join(session_dir, "subagents")):
+        for name in names:
+            path = os.path.join(folder, name)
+            if fnmatch.fnmatchcase(name, "agent-*.jsonl") and os.path.isfile(path) and not os.path.islink(path):
+                found.append(path)
+    return sorted(found)
+
+
+def rows(main):
+    """(label, type, stats) for the main transcript and each subagent transcript."""
+    out = [("main", "main", stats(main))]
+    session_dir = main[:-len(".jsonl")] if main.endswith(".jsonl") else main
+    for path in subagent_transcripts(session_dir):
+        label = os.path.basename(path)[:-len(".jsonl")]
+        meta = path[:-len(".jsonl")] + ".meta.json"
+        out.append((label, agent_type(meta) if os.path.isfile(meta) else "?", stats(path)))
+    return out
+
+
+def main(argv):
+    main_transcript = argv[0] if argv else ""
+    if not main_transcript or not os.path.isfile(main_transcript):
+        print(USAGE, file=sys.stderr)
+        return 2
+    print(HEADER_FORMAT % HEADER)
+    calls = read = write = output = 0
+    for label, kind, (n, first, last, top, r, w, o) in rows(main_transcript):
+        print(ROW_FORMAT % (label, kind[:40], n, first, last, top, r / 1000000, w / 1000000, o / 1000))
+        calls, read, write, output = calls + n, read + r, write + w, output + o
+    print(TOTAL_FORMAT % ("TOTAL", "", calls, "", "", "", read / 1000000, write / 1000000, output / 1000))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -18,19 +18,19 @@ claude-code-plugins/
 ├── commands/                 # User-invoked slash commands (optional)
 │   └── <command-name>.md
 ├── bin/                      # Helper executables on PATH for skills
-│   ├── <tool>                # Python 3 stdlib (older ones POSIX sh)
-│   ├── <tool>_test.py        # unittest suite (Python helpers)
-│   └── <tool>.test.sh        # run: bash bin/<tool>.test.sh
+│   ├── <tool>                # Python 3 stdlib, no file extension
+│   ├── <tool>_test.py        # unittest suite
+│   └── <tool>.test.sh        # wrapper, run: bash bin/<tool>.test.sh
 ├── docs/                     # Documentation and diagrams
 └── README.md
 ```
 
 Anything in `bin/` is on PATH when the plugin is installed, so skills call the
 helper by bare name (`codex-cli`, `jira`) instead of hardcoding paths.
-New helpers are Python 3, standard library only (`#!/usr/bin/env python3`, no pip), with
-a `<tool>_test.py` unittest file and a `<tool>.test.sh` wrapper that runs it; the older
-POSIX `sh` helpers keep their bash test suites until they are ported. No other
-dependencies - they run on teammates' machines, not just yours.
+Helpers are Python 3, standard library only (`#!/usr/bin/env python3`, no pip), and run on
+Python 3.9, the system Python of macOS. Each has a `<tool>_test.py` unittest file and a
+`<tool>.test.sh` wrapper that runs it. No shell helpers, no other dependencies - they run on
+teammates' machines, not just yours.
 
 ## Plugin Configuration
 
@@ -67,7 +67,7 @@ See `README.md` for full installation instructions including auto-prompt setup f
 
 ## Before every release
 
-Run `sh bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
+Run `bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
 README coverage, removed concepts) and every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh`;
 all must pass. Then `claude plugin validate .` and the version bump in `.claude-plugin/plugin.json`.
 
