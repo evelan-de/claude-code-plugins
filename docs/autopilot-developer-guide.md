@@ -130,7 +130,7 @@ project has the Claude review workflow). Commit and merge this like any other ch
 The hooks keep themselves current: before every run the runner checks them and, when they
 are missing or older than the plugin's, installs them on your branch. You then see a commit
 "chore(autopilot): install or update the autopilot hooks" in your PR. On a base branch
-(`main`, `master`, `preview`, `develop`, the repo's default) the runner commits and pushes
+(`main`, `master`, `preview`, `develop`, `dev`, the repo's default) the runner commits and pushes
 nothing: the hooks are installed for that run, and the run commits them on its own branch.
 
 The run works in a fresh copy of the repo on the Mini: it installs the dependencies itself,
@@ -345,7 +345,7 @@ The PR comment and the Slack message carry the reason; `REPORT.md` (if written) 
 Whatever the outcome - done, blocked, timeout, too many hand-offs - the queue pushes the run's
 branch to origin at the end, without opening a PR. So the work of a blocked run is on GitHub
 right away: look at the branch, the PR comment and the Slack message name it. The queue never
-pushes to a base branch (`main`, `master`, `preview`, `develop`, the repo's default) and never
+pushes to a base branch (`main`, `master`, `preview`, `develop`, `dev`, the repo's default) and never
 forces; it skips the project's git hooks for this push, because a red gate is often the very
 reason the run was blocked. `push-failed` in the message means the branch could not be pushed
 (someone pushed to it meanwhile, or the run ended on a base branch): the commits are then only

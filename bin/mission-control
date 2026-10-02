@@ -860,12 +860,12 @@ prepare_worktree() {
   fi
 }
 
-# is_base_branch <worktree> <branch>: true for main, master, preview, develop and the repo's
-# default branch. The runner never commits on such a branch and never pushes to it.
+# is_base_branch <worktree> <branch>: true for main, master, preview, develop, dev and the
+# repo's default branch. The runner never commits on such a branch and never pushes to it.
 is_base_branch() {
   ib_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null || true)"
   case "$2" in
-    "$ib_def"|main|master|preview|develop) return 0 ;;
+    "$ib_def"|main|master|preview|develop|dev) return 0 ;;
   esac
   return 1
 }

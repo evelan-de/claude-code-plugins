@@ -1541,5 +1541,20 @@ check "(y5) hooks on the default branch: said" \
 check "(y5) the run's work is not pushed there" has "ended on the base branch trunk; not pushed" "$out"
 git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-91-trunk"
 
+# (y6) dev is a base branch too
+git -C "$proj" checkout -q -b dev main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-27-PAUL-92-dev"
+printf '# PLAN\nBranch: dev   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-27-PAUL-92-dev/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan on dev"; git -C "$proj" push -q origin dev
+git -C "$proj" checkout -q main
+printf '%s docs/autopilot/sessions/2026-09-27-PAUL-92-dev dev\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+check "(y6) origin's dev did not move" \
+  [ "$(git -C "$tmp/origin.git" log -1 --format=%s dev)" = "plan on dev" ]
+check "(y6) hooks on dev: said" \
+  has "2026-09-27-PAUL-92-dev: autopilot hooks installed for this run, not committed (base branch dev)" "$out"
+check "(y6) the run's work is not pushed there" has "ended on the base branch dev; not pushed" "$out"
+git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-92-dev"
+
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
