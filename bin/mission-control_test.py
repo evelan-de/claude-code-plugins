@@ -2404,6 +2404,53 @@ class MissionControl(unittest.TestCase):
         check("(z4) lock released", not exists(f"{qh}/run.lock"))
         git("-C", S.proj, "worktree", "remove", "--force", wt)
 
+    def test_550_z5_lock_of_another_users_process(self):
+        """(z5) a lock whose pid now belongs to a process of another user is taken over"""
+        qh, rec = fresh_home("z5")
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", "1\n")
+        out, got = mc("status")
+        check("(z5) status calls the lock stale", has("lock: stale (pid 1 is dead", out))
+        queue("PAUL-305")
+        out, got = mc("run")
+        check("(z5) the run takes the lock over", got == 0 and grep_q(" PAUL-305 done ", f"{qh}/done.txt"))
+        check("(z5) lock released after the run", not exists(f"{qh}/run.lock"))
+
+    def test_560_z6_env_file_lines(self):
+        """(z6) env file: a comment after a value, an exported name, a name the runner does not use"""
+        qh, rec = fresh_home("z6")
+        ENV["MISSION_CONTROL_TIMEOUT_MIN"] = ""
+        write(f"{qh}/env", "# settings\n"
+              "MISSION_CONTROL_TIMEOUT_MIN=5 # minutes per attempt\n"
+              'MISSION_CONTROL_BUDGET_USD="7"   # quoted\n'
+              "export FAKE_SCENARIO=report-blocked\n"
+              "CLAUDE_BIN=/nonexistent/claude\n"
+              "SOMETHING_ELSE=1\n")
+        os.chmod(f"{qh}/env", 0o600)
+        queue("PAUL-306")
+        out, got = mc("run")
+        ENV["MISSION_CONTROL_TIMEOUT_MIN"] = "5"
+        check("(z6) the comment after the value is not part of it (no timeout)",
+              lacks("timeout", read(f"{qh}/done.txt")))
+        check("(z6) a quoted value followed by a comment", has("--max-budget-usd 7 ", read(f"{rec}/claude.args")))
+        check("(z6) an exported name reaches the run", grep_q(" PAUL-306 blocked ", f"{qh}/done.txt"))
+        check("(z6) names the runner does not use are said, without their values",
+              has("CLAUDE_BIN, SOMETHING_ELSE not used", out) and lacks("/nonexistent/claude", out))
+        check("(z6) the exported name is not in the warning", lacks("FAKE_SCENARIO", out))
+        git("-C", S.proj, "worktree", "remove", "--force", f"{S.proj}/.claude/worktrees/autopilot-PAUL-306")
+
+    def test_570_z7_item_name_with_umlauts(self):
+        """(z7) a topic with umlauts: two underscores per umlaut in the worktree and log name"""
+        qh, rec = fresh_home("z7")
+        ENV["FAKE_SCENARIO"] = "report-blocked"
+        write(f"{qh}/queue.txt", f'{S.proj} "Größe ändern"\n')
+        out, got = mc("run")
+        wt = f"{S.proj}/.claude/worktrees/autopilot-Gr____e___ndern"
+        check("(z7) worktree named byte by byte", exists(f"{wt}/.git"))
+        check("(z7) log named the same way", len(ls(f"{qh}/logs/*-Gr____e___ndern.log")) == 1)
+        git("-C", S.proj, "worktree", "remove", "--force", wt)
+        ENV["FAKE_SCENARIO"] = "report"
+
 
 if __name__ == "__main__":
     unittest.main()

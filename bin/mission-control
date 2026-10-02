@@ -12,8 +12,9 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
               only, `add` fills it in); processed top to bottom
   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
-              [push-failed]
-  env         optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings
+              [push-failed] [runner-error]
+  env        optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
+              a line starting with "export" also reaches the run's environment
   logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
               renamed once the session dir or ticket key is known), queue.log for lines
               outside an item
@@ -48,7 +49,8 @@ for sonnet, 400 for opus, unless MISSION_CONTROL_BUDGET_USD is set. Wall clock p
 
 Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then SIGKILL after
 10 s. A child process of a tool call (a dev server, a test runner) may survive that KILL.
-INT and TERM end every wait on the run path at once (stop).
+INT and TERM (stop) end the run within a second while it waits for claude; a git or gh
+command that is running finishes first.
 
 Dependencies: git, gh, curl (Slack), osascript (macOS notification).
 Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, NVM_DIR,
@@ -94,6 +96,9 @@ CONFIG_VARS = (
     "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
     "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN",
 )
+# what the env file may hold besides the launch settings, and what is read before it
+ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
+READ_AT_START = ("HOME", "MISSION_CONTROL_HOME", "CLAUDE_BIN", "GH_BIN", "DOCKER_BIN", "JIRA_BIN", "JIRA_HOME")
 LAUNCHD_LABEL = "de.evelan.mission-control"
 QUEUE_COMMANDS = ("run", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause", "resume")
 COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
@@ -157,6 +162,7 @@ class State:
 class Config:
     """Launch settings, filled by load_env."""
     values = {}
+    unused = []   # names in the env file the runner does not use
     model = effort = advisor = fallback_model = budget = ""
     model_from_env = effort_from_env = False
     max_restarts = 5
@@ -394,10 +400,10 @@ def warn_legacy_plist():
 # ---------- lock and current item ----------
 
 def pid_alive(pid):
+    """A process of this user has the pid. A pid that belongs to someone else's process (a
+    number reused after a reboot) counts as gone, so a lock left behind is taken over."""
     try:
         os.kill(int(pid), 0)
-        return True
-    except PermissionError:
         return True
     except (OSError, ValueError):
         return False
@@ -475,35 +481,47 @@ def kill_run():
 # ---------- settings ----------
 
 def parse_env_file(path):
-    """KEY=VALUE lines of the env file (comments, blank lines and a leading "export" skipped,
-    surrounding quotes removed). The file is read, never executed."""
-    values = {}
+    """(values, exported names) of the env file's KEY=VALUE lines. Blank lines, comment lines
+    and a comment after a value are skipped, surrounding quotes removed, a leading "export"
+    noted. The file is read, never executed."""
+    values, exported = {}, set()
     for line in read_lines(path):
         line = line.strip()
-        if line.startswith("export "):
+        export = line.startswith("export ")
+        if export:
             line = line[7:].lstrip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key, value = key.strip(), value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key] = value
-    return values
+        quoted = re.match(r"""(["'])(.*?)\1\s*(#.*)?$""", value)
+        values[key] = quoted.group(2) if quoted else re.sub(r"\s+#.*$", "", value)
+        if export:
+            exported.add(key)
+    return values, exported
 
 
 def to_seconds(minutes):
+    """Minutes as whole seconds, from the number the text begins with; 0 without one."""
+    number = re.match(r"\s*[-+]?(\d+\.?\d*|\.\d+)", minutes)
     try:
-        return int(float(minutes) * 60)
-    except (ValueError, OverflowError):
+        return int(float(number.group(0)) * 60) if number else 0
+    except OverflowError:
         return 0
 
 
 def load_env():
-    """The environment wins over the env file; the env file wins over the defaults."""
+    """The environment wins over the env file; the env file wins over the defaults. A line of
+    the env file that starts with "export" also reaches the environment of the run (a token,
+    a PATH). Any other name the runner does not read is kept for the warning."""
     Config.effort_from_env = bool(os.environ.get("MISSION_CONTROL_EFFORT"))
     Config.model_from_env = bool(os.environ.get("MISSION_CONTROL_MODEL"))
-    values = parse_env_file(ENVFILE)
+    values, exported = parse_env_file(ENVFILE)
+    Config.unused = sorted(name for name in values
+                           if name not in ENV_FILE_SETTINGS and (name not in exported or name in READ_AT_START))
+    for name in exported:
+        if name not in ENV_FILE_SETTINGS and name not in READ_AT_START:
+            os.environ[name] = values[name]
     for name in CONFIG_VARS:
         if os.environ.get(name):
             values[name] = os.environ[name]
@@ -540,8 +558,13 @@ def file_mode(path):
 
 
 def warn_env_mode():
+    """Says when the env file is readable by others, and which of its names are not used."""
     if os.path.isfile(ENVFILE) and file_mode(ENVFILE) != "600":
         say(f"warning: {ENVFILE} has mode {file_mode(ENVFILE)}, want 600 (chmod 600 {ENVFILE})")
+    if Config.unused:
+        say(f"warning: {ENVFILE}: {', '.join(Config.unused)} not used (the runner reads its own settings from "
+            "this file; a line starting with \"export\" reaches the run's environment; the binaries and "
+            "directories of the runner itself are set in its own environment)")
 
 
 # ---------- queue file helpers ----------
@@ -603,18 +626,31 @@ def resolve_repo(path):
         path = setting("MISSION_CONTROL_PROJECTS", HOME + "/dev/projects") + "/" + path
     if not os.path.isdir(path):
         return ""
-    path = os.path.abspath(path)
+    path = os.path.normpath(os.path.join(working_dir(), path))
     return path if git_ok(path, "rev-parse", "--is-inside-work-tree") else ""
 
 
+def working_dir():
+    """The current directory as the caller's shell names it ($PWD, symlinks kept) when that
+    is this directory, else as the system names it."""
+    here, named = os.getcwd(), os.environ.get("PWD", "")
+    try:
+        if named.startswith("/") and os.path.samefile(named, here):
+            return named
+    except OSError:
+        pass
+    return here
+
+
 def safe_name(name):
-    """The item as a file name part: a session dir by its last component, other characters
-    than letters, digits, dot, underscore and hyphen replaced, at most 60 characters."""
+    """The item as a file name part: a session dir by its last component, every byte that is
+    not a letter, digit, dot, underscore or hyphen replaced by an underscore (an umlaut is two
+    bytes, so two underscores), at most 60 characters."""
     if name.startswith(SESSIONS + "/"):
         if name.endswith("/"):
             name = name[:-1]
         name = name.rsplit("/", 1)[-1]
-    return re.sub(r"[^A-Za-z0-9._-]", "_", name)[:60]
+    return re.sub(rb"[^A-Za-z0-9._-]", b"_", name.encode("utf-8", "surrogateescape"))[:60].decode("ascii")
 
 
 def ticket_from(text):
@@ -1938,7 +1974,8 @@ def cmd_doctor(args):
     if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
         ok("claude -p answers (logged in)")
     else:
-        bad("claude -p did not answer OK: " + "".join(line + " " for line in answer.splitlines()[:3]))
+        lines = answer.splitlines()
+        bad("claude -p did not answer OK: " + " ".join(lines[:3]) + (" " if len(lines) > 3 else ""))
         out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
         out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
         out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")

@@ -15,8 +15,8 @@ time.
 |---|---|
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
-| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
-| `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
+| `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `runner-error` when the runner itself failed while it finished the item (traceback in `logs/queue.log`), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. A line starting with `export` also reaches the run's environment (a token, a `PATH`); any other name the runner does not use is named in a warning. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
@@ -55,7 +55,7 @@ mission-control add <repo> <item> [<branch>]   # append a line; a topic with spa
 mission-control list                      # what run would process, no side effects
 mission-control run [--scheduled]         # process queue.txt, then the labelled PRs of repos.txt; --scheduled honours a pause
 mission-control status                    # one screen: running item, queue, labelled PRs, last done, schedule, lock
-mission-control stop                      # TERM the active run (its trap kills claude), wait up to 45 s
+mission-control stop                      # TERM the active run (it kills claude), wait up to 45 s
 mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autopilot-ready; item: add it again
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
 mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run today / through that day / for N days
@@ -84,9 +84,10 @@ schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `loc
 pid N`, `free`, or `stale` when the recorded pid is dead. No secrets: the env file is never
 printed.
 
-`stop` sends TERM to the run's pid when the lock holds a live one; the run's trap kills the
-claude process (SIGTERM, SIGKILL after 10 s) and releases the lock. Every sleep in the run
-loop is interruptible, so the stop takes effect at once, not after the next watch step.
+`stop` sends TERM to the run's pid when the lock holds a live one; the run kills the
+claude process (SIGTERM, SIGKILL after 10 s) and releases the lock. While it waits for
+claude the run sees the stop within a second; a git or gh command that is running finishes
+first, and no further command starts.
 Prints `stopped <repo> <item>`, or `still running (pid N)` with exit 1 after 45 s, or
 `nothing running`. The stopped item stays in `queue.txt` (a list item) or keeps its label
 (a PR item), so the next run takes it again; `log <item>` still finds the log of the
