@@ -16,6 +16,7 @@ time.
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
 | `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `runner-error` when the runner itself failed while it finished the item (traceback in `logs/queue.log`), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
+| `held.txt` | `<repo> <pr number> <status>` per PR whose run ended while its `autopilot-ready` label could not be changed (`labels-failed`). A held PR is not run again: every check tries the label swap once more (creating the three labels where missing), releases the PR when that works and says so when it does not. `retry <repo> <#pr>` releases it too. |
 | `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. A line starting with `export` also reaches the run's environment (a token, a `PATH`); any other name the runner does not use is named in a warning. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
@@ -82,7 +83,7 @@ pause counts (interval and time read from the plist, the pause from `paused`), `
 demand only ("mission-control start")` (a LaunchAgent without an interval or a time),
 `schedule: every N min (legacy, ignores pause)` plus the warning line described under "Pause the
 schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `lock: held by
-pid N`, `free`, or `stale` when the recorded pid is dead. No secrets: the env file is never
+pid N`, `free`, or `stale` when the recorded pid is gone or belongs to another program. No secrets: the env file is never
 printed.
 
 `stop` sends TERM to the run's pid when the lock holds a live one; the run kills the
@@ -265,10 +266,11 @@ schedule: `install-schedule 30m` (a check every 30 minutes, `StartInterval`) or
 `mission-control run --scheduled` (the flag is what makes a pause count). A check with
 nothing queued and no labelled PR ends after it has asked `gh` once per repo of
 `repos.txt`; a check that falls into an active run writes one line to `queue.log`
-(`another run is active (pid N): scheduled check skipped`) and exits 0. Re-running
-`install-schedule` replaces the plist: bootout, then bootstrap; it refuses while a run is
-active (`a run is active (pid N, <item>), stop it first`), because the bootout would end
-that run. Output goes to `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
+(`another run is active (pid N): scheduled check skipped`) and exits 0. A check holds the
+lock for the seconds it asks `gh`. Re-running `install-schedule` replaces the plist: bootout,
+then bootstrap. `install-schedule`, `uninstall-schedule` and `start` refuse while a run or a
+check is active (`a run is active (pid N, <item or "no item yet">), stop it first`). Output
+goes to `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token` (kept in a mode-600 file) before `run`. `doctor` checks the login and
 prints this hint when it fails.
 

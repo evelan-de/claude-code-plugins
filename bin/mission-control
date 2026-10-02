@@ -13,7 +13,10 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
   repos.txt   one repo path per line; polled for open PRs labelled autopilot-ready
   done.txt    <ISO time> <repo> <item> <status> <pr url or -> [restarts=N] [no-plan] [labels-failed]
               [push-failed] [runner-error]
-  env        optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
+  held.txt    <repo> <pr number> <status> for a PR whose run ended while its autopilot-ready
+              label could not be changed; it is not run again until the label changes or
+              "retry" releases it
+  env         optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
               a line starting with "export" also reaches the run's environment
   logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
               renamed once the session dir or ticket key is known), queue.log for lines
@@ -124,6 +127,7 @@ DONE = QHOME + "/done.txt"
 ENVFILE = QHOME + "/env"
 LOGDIR = QHOME + "/logs"
 WTDIR = QHOME + "/worktrees"
+HELD = QHOME + "/held.txt"
 LOCK = QHOME + "/run.lock"
 PAUSE = QHOME + "/paused"
 FORCE = QHOME + "/force-once"
@@ -365,13 +369,19 @@ def date_plus_days(days):
     return (datetime.date.today() + datetime.timedelta(days=int(days))).isoformat()
 
 
+def pause_text():
+    """The first line of the pause file without whitespace."""
+    return "".join(first_line(PAUSE).split())
+
+
 def pause_until():
-    """What the pause file holds while the pause counts: "resume" for a pause without an end,
-    the date of a dated pause that is still valid (today or later), else nothing."""
+    """What the pause file holds while the pause counts: "resume" for a pause without an end
+    (the marker in any case, with or without its hyphen), the date of a dated pause that is
+    still valid (today or later), else nothing."""
     if not os.path.isfile(PAUSE):
         return ""
-    until = "".join(first_line(PAUSE).split())
-    if until == PAUSE_UNTIL_RESUME:
+    until = pause_text()
+    if until.lower().replace("-", "") == PAUSE_UNTIL_RESUME.replace("-", ""):
         return "resume"
     if not valid_date(until) or until < today():
         return ""
@@ -387,10 +397,18 @@ def plist_time():
 
 
 def plist_interval():
-    """The minutes between two checks of the installed LaunchAgent (its StartInterval), 0 when
+    """The seconds between two checks of the installed LaunchAgent (its StartInterval), 0 when
     it has none."""
-    seconds = re.search(r"<key>StartInterval</key><integer>(\d+)</integer>", read_text(PLIST))
-    return int(seconds.group(1)) // 60 if seconds else 0
+    seconds = re.search(r"<key>StartInterval</key>\s*<integer>(\d+)</integer>", read_text(PLIST))
+    return int(seconds.group(1)) if seconds else 0
+
+
+def plist_when():
+    """The installed schedule in words: every N min (or N s), or installed at HH:MM."""
+    seconds = plist_interval()
+    if not seconds:
+        return f"installed at {plist_time()}"
+    return f"every {seconds // 60} min" if seconds % 60 == 0 else f"every {seconds} s"
 
 
 def plist_on_demand():
@@ -406,7 +424,7 @@ def plist_legacy():
 
 def warn_legacy_plist():
     if plist_legacy():
-        again = f"{plist_interval()}m" if plist_interval() else plist_time()
+        again = f"{max(1, plist_interval() // 60)}m" if plist_interval() else plist_time()
         out(f"schedule installed without --scheduled: run \"mission-control install-schedule {again}\" "
             "again, otherwise the scheduled job ignores the pause")
 
@@ -424,9 +442,16 @@ def pid_alive(pid):
 
 
 def lock_pid():
-    """The pid recorded in the lock when that process is alive, else nothing."""
+    """The pid recorded in the lock when that process is alive and is a mission-control run,
+    else nothing. A pid that went to another program (a number reused after a reboot) makes
+    the lock stale."""
     pid = first_line(LOCK + "/pid").strip()
-    return pid if pid and pid_alive(pid) else ""
+    if not pid or not pid_alive(pid):
+        return ""
+    rc, command = capture(["ps", "-p", pid, "-o", "command="])
+    if rc == 0 and "mission-control" not in command:
+        return ""
+    return pid
 
 
 def note_current(it, attempt):
@@ -453,20 +478,29 @@ def current_package(wt, item):
 
 
 def acquire_lock():
+    """Takes the lock, or ends the command when a live run holds it. The lock directory is
+    prepared with the pid inside and then renamed into place, so nobody ever sees a lock
+    without a pid; a stale lock is replaced."""
     os.makedirs(QHOME, exist_ok=True)
+    mine = f"{LOCK}.{os.getpid()}"
+    shutil.rmtree(mine, ignore_errors=True)
     try:
-        os.mkdir(LOCK)
+        os.mkdir(mine)
+        with open(mine + "/pid", "w") as f:
+            f.write(f"{os.getpid()}\n")
     except OSError:
-        pid = first_line(LOCK + "/pid").strip()
-        if pid and pid_alive(pid):
-            die(f"another run is active (pid {pid}, lock {LOCK})")
-        shutil.rmtree(LOCK, ignore_errors=True)
+        die(f"cannot take the lock {LOCK}")
+    for attempt in (1, 2):
         try:
-            os.mkdir(LOCK)
+            os.rename(mine, LOCK)
+            return
         except OSError:
-            die(f"cannot take the lock {LOCK}")
-    with open(LOCK + "/pid", "w") as f:
-        f.write(f"{os.getpid()}\n")
+            holder = lock_pid()
+            if holder or attempt == 2:
+                shutil.rmtree(mine, ignore_errors=True)
+                die(f"another run is active (pid {holder}, lock {LOCK})" if holder
+                    else f"cannot take the lock {LOCK}")
+            shutil.rmtree(LOCK, ignore_errors=True)
 
 
 def release_lock():
@@ -1706,6 +1740,60 @@ def gh_step(it, what, *args):
         it.gh_failed = "labels-failed"
 
 
+def swap_label(directory, number, status):
+    """Takes autopilot-ready off the PR and sets autopilot-done or autopilot-blocked, by the
+    item's status. When that fails, the queue labels are created where they are missing and
+    the swap is tried once more. True when the PR no longer carries autopilot-ready."""
+    swap = [GH_BIN, "pr", "edit", number, "--remove-label", LABEL_READY,
+            "--add-label", LABEL_DONE if status == "done" else LABEL_BLOCKED]
+    if to_log(swap, cwd=directory) == 0:
+        return True
+    for name, color, description in LABELS:
+        to_log([GH_BIN, "label", "create", name, "--color", color, "--description", description], cwd=directory)
+    return to_log(swap, cwd=directory) == 0
+
+
+def held_prs():
+    """{(repo, PR number): status} of the PRs whose run ended but whose autopilot-ready label
+    could not be changed. They are not run again while they are held."""
+    held = {}
+    for line in read_lines(HELD):
+        words = line.split()
+        if len(words) == 3:
+            held[(words[0], words[1])] = words[2]
+    return held
+
+
+def write_held(held):
+    with open(HELD + ".tmp", "w", encoding="utf-8") as f:
+        f.write("".join(f"{repo} {number} {status}\n" for (repo, number), status in held.items()))
+    os.replace(HELD + ".tmp", HELD)
+
+
+def hold_pr(repo, number, status):
+    held = held_prs()
+    held[(repo, number)] = status
+    write_held(held)
+
+
+def release_pr(repo, number):
+    held = held_prs()
+    if held.pop((repo, number), None) is not None:
+        write_held(held)
+
+
+def settle_held_pr(repo, number, status):
+    """A labelled PR that is held: tries the label swap again. The PR is released when that
+    works, and named when it does not. Either way it is not run."""
+    if swap_label(repo, number, status):
+        release_pr(repo, number)
+        log(f"{os.path.basename(repo)} #{number}: label changed after its run ({status}), released")
+    else:
+        say(f"{os.path.basename(repo)} #{number}: still labelled {LABEL_READY} although its run ended ({status}); "
+            f"the label cannot be changed, so the PR is not run again. Change the label on GitHub, or run it "
+            f"again with: mission-control retry {repo} #{number}")
+
+
 def push_branch(it):
     """Pushes the run's branch to origin, whatever the item's outcome, and notes the pushed
     branch or the failure. No PR is opened here; done runs open their own. Never a base branch,
@@ -1766,14 +1854,15 @@ def finish_item(it):
             it.pr_number, it.draft, it.pr_url = found
 
     if it.pr_number and gh_usable:
-        if it.status == "done":
-            if it.draft == "true":
-                gh_step(it, "gh pr ready", "pr", "ready", it.pr_number)
-            gh_step(it, "gh pr edit (labels)", "pr", "edit", it.pr_number, "--remove-label", LABEL_READY,
-                    "--add-label", LABEL_DONE)
+        if it.status == "done" and it.draft == "true":
+            gh_step(it, "gh pr ready", "pr", "ready", it.pr_number)
+        if swap_label(it.gh_dir, it.pr_number, it.status):
+            log(f"gh pr edit (labels) on PR #{it.pr_number}: ok")
         else:
-            gh_step(it, "gh pr edit (labels)", "pr", "edit", it.pr_number, "--remove-label", LABEL_READY,
-                    "--add-label", LABEL_BLOCKED)
+            # the PR keeps autopilot-ready: held, so that the next check does not run it again
+            say(f"{it.who}: gh pr edit (labels) failed (see {State.item_log})")
+            it.gh_failed = "labels-failed"
+            hold_pr(it.repo, it.pr_number, it.status)
         handle, body_file = tempfile.mkstemp(prefix="mission-control.")
         with os.fdopen(handle, "w", encoding="utf-8") as f:
             f.write(pr_comment(it))
@@ -1843,7 +1932,7 @@ def scheduled_gate():
     if until:
         say(f"paused until {until}: scheduled run skipped (manual runs still work)")
         sys.exit(0)
-    old = "".join(first_line(PAUSE).split())
+    old = pause_text()
     remove_file(PAUSE)
     if valid_date(old):
         log(f"pause expired ({old}), file removed")
@@ -1860,12 +1949,13 @@ def cmd_run(args):
     load_env()
     warn_env_mode()
     if scheduled:
-        scheduled_gate()
         active = lock_pid()
         if active:
-            # a check that falls into a run: nothing to do, the run takes the queue as it finds it
+            # a check that falls into a run: nothing to do, and a force-once file stays for the
+            # first check after that run
             log(f"another run is active (pid {active}): scheduled check skipped")
             return 0
+        scheduled_gate()
     acquire_lock()
     try:
         signal.signal(signal.SIGINT, on_signal)
@@ -1890,7 +1980,11 @@ def cmd_run(args):
                     say(f"{repo}: not a git repository, skipped")
                     continue
                 for number, _, _ in list_ready_prs(path) or ():
-                    process_item(path, "pr", number)
+                    held = held_prs().get((path, number))
+                    if held:
+                        settle_held_pr(path, number, held)
+                    else:
+                        process_item(path, "pr", number)
         if scheduled:
             remove_file(FORCE)
     except Stopped:
@@ -2058,7 +2152,7 @@ def last_phase(logfile, repo_base, item):
 
 def schedule_line():
     """The schedule as status shows it: every N min or a daily time, with the pause."""
-    when = f"every {plist_interval()} min" if plist_interval() else f"installed at {plist_time()}"
+    when = plist_when()
     if plist_legacy():
         return f"schedule: {when} (legacy, ignores pause)"
     if plist_on_demand():
@@ -2133,7 +2227,7 @@ def cmd_status(args):
     if pid:
         out(f"lock: held by pid {pid}")
     elif os.path.isdir(LOCK):
-        out(f"lock: stale (pid {first_line(LOCK + '/pid').strip() or '?'} is dead, the next run takes it over)")
+        out(f"lock: stale (pid {first_line(LOCK + '/pid').strip() or '?'} is no queue run, the next run takes it over)")
     else:
         out("lock: free")
     return 0
@@ -2180,6 +2274,7 @@ def cmd_retry(args):
                                    "--add-label", LABEL_READY], cwd=repo)
         if rc != 0:
             die(f"gh pr edit {number} failed in {repo_base}: {err.splitlines()[0] if err.splitlines() else ''}")
+        release_pr(repo, number)
         out(f"retry: PR #{number} in {repo_base} labelled {LABEL_READY} again (the next run picks it up)")
         return 0
     if args[1].startswith(SESSIONS + "/"):
@@ -2258,8 +2353,7 @@ def cmd_start(args):
 
 
 def refuse_while_running():
-    """Ends the command while a run is active: booting the LaunchAgent out or kickstarting it
-    would end that run."""
+    """Ends the command while a run or a check is active."""
     pid = lock_pid()
     if pid:
         item = (read_lines(LOCK + "/current") + ["", ""])[1]
@@ -2348,8 +2442,10 @@ def cmd_pause(args):
         die_usage("usage: mission-control pause [until <YYYY-MM-DD> | <N>d]")
     os.makedirs(QHOME, exist_ok=True)
     try:
-        with open(PAUSE, "w") as f:
+        # written whole and then renamed: a check never reads a half-written pause
+        with open(PAUSE + ".tmp", "w") as f:
             f.write((PAUSE_UNTIL_RESUME if until == "resume" else until) + "\n")
+        os.replace(PAUSE + ".tmp", PAUSE)
     except OSError:
         die(f"cannot write {PAUSE}")
     log(f"paused until {until}")
@@ -2377,6 +2473,7 @@ def cmd_uninstall_schedule(args):
         die("uninstall-schedule needs macOS (launchd)")
     if not os.path.isfile(PLIST):
         die(f"nothing installed at {PLIST}")
+    refuse_while_running()
     launchctl("bootout", f"gui/{os.getuid()}", PLIST, silent=True)
     remove_file(PLIST)
     out(f"removed: {PLIST}")
@@ -2391,7 +2488,7 @@ def not_set_up():
     print(f"mission-control is not set up on this machine ({QHOME} does not exist).", file=sys.stderr)
     print("The queue runs on the office Mini. Hand work over with /autopilot-plan (draft PR with the label "
           "autopilot-ready); results arrive on the PR and in Slack #mission-control.", file=sys.stderr)
-    print("To set this machine up: mission-control doctor, then repos.txt and install-schedule HH:MM.", file=sys.stderr)
+    print("To set this machine up: mission-control doctor, then repos.txt and install-schedule 30m.", file=sys.stderr)
     return 3
 
 

@@ -1732,7 +1732,7 @@ class MissionControl(unittest.TestCase):
         out, got = mc("status", env=home)
         check("(q) status with a stale lock exits 0", got == 0)
         check("(q) status with a stale lock: running none", has("running: none", out))
-        check("(q) status names the stale lock", has("lock: stale (pid 999999 is dead", out))
+        check("(q) status names the stale lock", has("lock: stale (pid 999999 is no queue run", out))
         shutil.rmtree(f"{qh}/run.lock")
         out, got = mc("stop")
         check("(q) stop without a run says so", has("nothing running", out))
@@ -2145,7 +2145,30 @@ class MissionControl(unittest.TestCase):
               live_lines(f"{qh}/queue.txt") == 1 and cat(f"{qh}/run.lock/pid") == str(os.getpid()))
         out, got = mc("run")
         check("(t4) a manual run during a run is still refused", got == 1 and has("another run is active", out))
+        write(f"{qh}/force-once", "")
+        mc("run", "--scheduled")
+        check("(t4) a check during a run leaves force-once for the check after it", exists(f"{qh}/force-once"))
+        remove(f"{qh}/force-once")
         shutil.rmtree(f"{qh}/run.lock")
+        queue()
+        # a plist someone reformatted, and an interval that is not whole minutes
+        scheduled = ("<dict>\n<key>ProgramArguments</key>\n<array><string>/x/mission-control</string>"
+                     "<string>run</string><string>--scheduled</string></array>\n<key>StartInterval</key>\n"
+                     "\t<integer>%d</integer>\n</dict>\n")
+        write(plist, scheduled % 1800)
+        out, got = mc("status", env=home)
+        check("(t4) a reformatted plist still reads as every 30 min", has("schedule: every 30 min, active", out))
+        write(plist, scheduled % 90)
+        out, got = mc("status", env=home)
+        check("(t4) an interval that is not whole minutes is shown in seconds",
+              has("schedule: every 90 s, active", out))
+        # the marker written by hand, with other case and a space
+        write(f"{qh}/paused", "Until Resume\n")
+        queue("PAUL-86")
+        out, got = mc("run", "--scheduled")
+        check("(t4) a hand-written until-resume marker still pauses",
+              has("paused until resume: scheduled run skipped", out) and exists(f"{qh}/paused"))
+        mc("resume", env=home)
         queue()
 
     @unittest.skipUnless(DARWIN, "LaunchAgents exist on macOS only")
@@ -2182,7 +2205,48 @@ class MissionControl(unittest.TestCase):
         check("(t5) a refused install-schedule did not call launchctl", cat(f"{rec}/launchctl.args") == "")
         check("(t5) a refused install-schedule kept the interval",
               grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        out, got = mc("uninstall-schedule", env=mac)
+        check("(t5) uninstall-schedule during a run is refused",
+              got == 1 and has("a run is active", out) and os.path.isfile(plist))
         shutil.rmtree(f"{qh}/run.lock")
+        out, got = mc("uninstall-schedule", env=mac)
+        check("(t5) uninstall-schedule without a run removes the plist", got == 0 and not exists(plist))
+
+    def test_416_t6_label_that_cannot_be_changed(self):
+        """(t6) a PR whose label cannot be changed after its run is not run again at the next check"""
+        qh, rec = fresh_home("t6")
+        proj = S.proj
+        write(f"{rec}/prs.txt", "11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n")
+        write(f"{qh}/repos.txt", f"{proj}\n")
+        ENV.update(FAKE_SCENARIO="report", FAKE_GH_PRS=f"{rec}/prs.txt", FAKE_GH_FAIL="pr edit")
+        out, got = mc("run", "--scheduled")
+        check("(t6) the run ends done with labels-failed", grep_q(" done .*labels-failed", f"{qh}/done.txt"))
+        check("(t6) the labels were created and the swap tried again",
+              has("label create autopilot-done", cat(f"{rec}/gh.args"))
+              and len(grep("pr edit 11 --remove-label autopilot-ready", cat(f"{rec}/gh.args"))) == 2)
+        check("(t6) the PR is held", grep_q(f"{proj} 11 done", f"{qh}/held.txt", fixed=True, whole=True))
+        runs = count_lines(f"{rec}/claude.args")
+        out, got = mc("run", "--scheduled")
+        check("(t6) the next check does not run the PR again", count_lines(f"{rec}/claude.args") == runs)
+        check("(t6) the next check says why",
+              has("proj #11: still labelled autopilot-ready although its run ended (done)", out))
+        check("(t6) the next check exits 0", got == 0)
+        check("(t6) no second done.txt line", count_lines(f"{qh}/done.txt") == 1)
+        ENV.pop("FAKE_GH_FAIL", None)
+        out, got = mc("run", "--scheduled")
+        check("(t6) once gh works the label is set without a run",
+              count_lines(f"{rec}/claude.args") == runs
+              and has("pr edit 11 --remove-label autopilot-ready --add-label autopilot-done",
+                      last_line(f"{rec}/gh.args")))
+        check("(t6) the PR is no longer held", read(f"{qh}/held.txt").strip() == "")
+        # retry releases a held PR, so it runs again
+        write(f"{qh}/held.txt", f"{proj} 11 blocked\n{proj} 12 done\n")
+        out, got = mc("retry", proj, "#11")
+        check("(t6) retry releases the held PR and keeps the others",
+              got == 0 and read(f"{qh}/held.txt") == f"{proj} 12 done\n")
+        remove(f"{qh}/held.txt")
+        remove(f"{qh}/repos.txt")
+        ENV.pop("FAKE_GH_PRS", None)
 
     def test_420_v_pr_items_against_the_target_branch(self):
         """(v) PR items resolve their plan against the PR's target branch"""
@@ -2504,7 +2568,7 @@ class MissionControl(unittest.TestCase):
         os.makedirs(f"{qh}/run.lock")
         write(f"{qh}/run.lock/pid", "1\n")
         out, got = mc("status")
-        check("(z5) status calls the lock stale", has("lock: stale (pid 1 is dead", out))
+        check("(z5) status calls the lock stale", has("lock: stale (pid 1 is no queue run", out))
         queue("PAUL-305")
         out, got = mc("run")
         check("(z5) the run takes the lock over", got == 0 and grep_q(" PAUL-305 done ", f"{qh}/done.txt"))
@@ -2544,6 +2608,24 @@ class MissionControl(unittest.TestCase):
         check("(z7) log named the same way", len(ls(f"{qh}/logs/*-Gr____e___ndern.log")) == 1)
         git("-C", S.proj, "worktree", "remove", "--force", wt)
         ENV["FAKE_SCENARIO"] = "report"
+
+    def test_580_z8_lock_pid_of_another_program(self):
+        """(z8) a lock whose pid now belongs to another program of this user is taken over"""
+        qh, rec = fresh_home("z8")
+        other = subprocess.Popen(["sleep", "60"])
+        try:
+            os.makedirs(f"{qh}/run.lock")
+            write(f"{qh}/run.lock/pid", f"{other.pid}\n")
+            out, got = mc("status")
+            check("(z8) status calls the lock stale", has(f"lock: stale (pid {other.pid} is no queue run", out))
+            queue("PAUL-307")
+            out, got = mc("run", "--scheduled")
+            check("(z8) a scheduled check takes the lock over and runs",
+                  got == 0 and grep_q(" PAUL-307 done ", f"{qh}/done.txt"))
+            check("(z8) the other program is left alone", other.poll() is None)
+        finally:
+            other.kill()
+            other.wait()
 
 
 if __name__ == "__main__":

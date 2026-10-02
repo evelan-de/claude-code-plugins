@@ -4,8 +4,8 @@ How you hand a ticket to the autopilot and get a reviewed pull request back.
 
 **In one sentence:** you write the plan together with Claude in your own session, Claude
 opens a draft PR with the label `autopilot-ready`, and the queue on the office Mini picks
-it up within half an hour, implements it unattended and returns a ready PR with a report,
-which you review and merge.
+it up at its next check (every 30 minutes), implements it unattended and returns a ready PR
+with a report, which you review and merge.
 
 The full instructions behind this guide:
 [plan skill](../skills/autopilot-plan/SKILL.md) ·
@@ -225,8 +225,8 @@ change stays a draft PR without the label.
 ### 5.4 While it runs
 
 The queue on the office Mini looks for labelled PRs **every 30 minutes**, around the clock,
-and works one PR after another: a PR labelled while a run is active starts when that run has
-finished. Andreas can pause the queue; then nothing starts until he resumes it. Your machine
+and works one PR after another: a PR labelled while a run is active starts at the next check
+after that run. Andreas can pause the queue; then nothing starts until he resumes it. Your machine
 and session can be closed.
 
 - **The start comment.** When your PR's turn comes, the runner posts "Autopilot started on
