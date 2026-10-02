@@ -27,7 +27,8 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
   paused      "until-resume", or one date (YYYY-MM-DD, local): the schedule is paused until
               resume, or through that day; the LaunchAgent's "run --scheduled" skips while it
               is valid, a manual run ignores it
-  force-once  written by start; the next scheduled run consumes it and ignores the pause
+  force-once  written by start; the scheduled run it starts consumes it and ignores the pause
+              (it counts for five minutes; pause removes it)
 
 Each item runs in its own worktree inside the project, <repo>/.claude/worktrees/
 autopilot-<item>, where developers and the Claude app keep theirs and where the workbench
@@ -105,6 +106,7 @@ ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL
 READ_AT_START = ("HOME", "MISSION_CONTROL_HOME", "CLAUDE_BIN", "GH_BIN", "DOCKER_BIN", "JIRA_BIN", "JIRA_HOME")
 LAUNCHD_LABEL = "de.evelan.mission-control"
 PAUSE_UNTIL_RESUME = "until-resume"   # what the pause file holds for a pause without an end
+FORCE_ONCE_SECONDS = 300              # how long a force-once file written by start counts
 QUEUE_COMMANDS = ("run", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause", "resume")
 COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
                  "install-schedule | uninstall-schedule")
@@ -386,6 +388,13 @@ def pause_until():
     if not valid_date(until) or until < today():
         return ""
     return until
+
+
+def pause_unreadable():
+    """Something is at the pause file's place that is neither the marker nor a date (empty,
+    hand-edited, not readable, a directory). It counts as a pause: a damaged veto never
+    starts a run."""
+    return os.path.lexists(PAUSE) and not pause_until() and not valid_date(pause_text())
 
 
 def plist_time():
@@ -1919,25 +1928,29 @@ def finish_item(it):
 
 def scheduled_gate():
     """For "run --scheduled" only. A force-once file (start) is consumed and overrides a pause
-    once; a valid pause (until resume, or a date that has not passed) skips the run before the
-    lock or the queue is touched; an expired pause file is removed; an unreadable one (empty,
-    no date) is removed and said, the run goes ahead."""
+    once, when it is fresh (start wrote it a moment ago); an older one is removed. A valid pause
+    (until resume, or a date that has not passed) skips the run before the lock or the queue is
+    touched; an expired pause file is removed; a pause file that cannot be read (empty, no
+    date, not a file) stays and counts as a pause. True when force-once let the run through."""
     until = pause_until()
     if os.path.exists(FORCE):
+        fresh = time.time() - os.path.getmtime(FORCE) <= FORCE_ONCE_SECONDS
         remove_file(FORCE)
-        log(f"force-once consumed: scheduled run goes ahead{f' (pause until {until} kept)' if until else ''}")
-        return
-    if not os.path.isfile(PAUSE):
-        return
+        if fresh:
+            log(f"force-once consumed: scheduled run goes ahead{f' (pause until {until} kept)' if until else ''}")
+            return True
+        log(f"force-once older than {FORCE_ONCE_SECONDS // 60} min removed, it does not override a pause")
     if until:
         say(f"paused until {until}: scheduled run skipped (manual runs still work)")
         sys.exit(0)
-    old = pause_text()
-    remove_file(PAUSE)
-    if valid_date(old):
-        log(f"pause expired ({old}), file removed")
-    else:
-        say(f"pause file unreadable ({old or 'empty'}), removed, run goes ahead")
+    if pause_unreadable():
+        say(f"pause file unreadable ({pause_text() or 'empty'}): kept as a pause, scheduled run skipped "
+            "(\"mission-control resume\" lifts it)")
+        sys.exit(0)
+    if os.path.lexists(PAUSE):
+        log(f"pause expired ({pause_text()}), file removed")
+        remove_file(PAUSE)
+    return False
 
 
 def cmd_run(args):
@@ -1948,6 +1961,7 @@ def cmd_run(args):
         scheduled = True
     load_env()
     warn_env_mode()
+    forced = False
     if scheduled:
         active = lock_pid()
         if active:
@@ -1955,13 +1969,22 @@ def cmd_run(args):
             # first check after that run
             log(f"another run is active (pid {active}): scheduled check skipped")
             return 0
-        scheduled_gate()
+        forced = scheduled_gate()
+
+    def vetoed():
+        """A pause set while this scheduled run is under way: no further item starts."""
+        if not scheduled or forced or not (pause_until() or pause_unreadable()):
+            return False
+        say("paused: no further item starts in this run, what is queued stays queued")
+        return True
+
     acquire_lock()
     try:
         signal.signal(signal.SIGINT, on_signal)
         signal.signal(signal.SIGTERM, on_signal)
         os.makedirs(LOGDIR, exist_ok=True)
-        while True:
+        stopped_by_pause = False
+        while not stopped_by_pause:
             line = first_queue_line()
             if line is None:
                 break
@@ -1970,9 +1993,11 @@ def cmd_run(args):
                 say(f"removed unparsable line from queue.txt: {line}")
                 remove_queue_line(line)
                 continue
-            process_item(parsed[0], "text", parsed[1], line, parsed[2])
+            stopped_by_pause = vetoed()
+            if not stopped_by_pause:
+                process_item(parsed[0], "text", parsed[1], line, parsed[2])
         repos = live_lines(REPOS)
-        if repos_pollable(repos, in_run=True):
+        if not stopped_by_pause and repos_pollable(repos, in_run=True):
             for repo in repos:
                 repo = expand_tilde(repo)
                 path = resolve_repo(repo)
@@ -1983,8 +2008,13 @@ def cmd_run(args):
                     held = held_prs().get((path, number))
                     if held:
                         settle_held_pr(path, number, held)
-                    else:
-                        process_item(path, "pr", number)
+                        continue
+                    stopped_by_pause = vetoed()
+                    if stopped_by_pause:
+                        break
+                    process_item(path, "pr", number)
+                if stopped_by_pause:
+                    break
         if scheduled:
             remove_file(FORCE)
     except Stopped:
@@ -2159,6 +2189,8 @@ def schedule_line():
         return 'schedule: on demand only ("mission-control start")'
     if os.path.isfile(PLIST):
         until = pause_until()
+        if pause_unreadable():
+            return f"schedule: {when}, paused (pause file unreadable, \"mission-control resume\" lifts it)"
         return f"schedule: {when}, " + (f"paused until {until}" if until else "active")
     return "schedule: not installed"
 
@@ -2441,6 +2473,10 @@ def cmd_pause(args):
     else:
         die_usage("usage: mission-control pause [until <YYYY-MM-DD> | <N>d]")
     os.makedirs(QHOME, exist_ok=True)
+    # a start that never ran must not override the pause that is set now
+    remove_file(FORCE)
+    if os.path.isdir(PAUSE):
+        shutil.rmtree(PAUSE, ignore_errors=True)
     try:
         # written whole and then renamed: a check never reads a half-written pause
         with open(PAUSE + ".tmp", "w") as f:
@@ -2455,9 +2491,12 @@ def cmd_pause(args):
 
 
 def cmd_resume(args):
-    if os.path.exists(PAUSE):
+    if os.path.lexists(PAUSE):
         try:
-            os.remove(PAUSE)
+            if os.path.isdir(PAUSE) and not os.path.islink(PAUSE):
+                shutil.rmtree(PAUSE)
+            else:
+                os.remove(PAUSE)
         except OSError:
             die(f"cannot remove {PAUSE}")
         log("resumed")

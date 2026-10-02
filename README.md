@@ -66,6 +66,9 @@ unattended and hands you a reviewed pull request.
    PR comment and a comment on the Jira ticket.
 5. **Review and merge** like any other PR. The run never merges.
 
+The queue can be paused (`/evelan:mission-control pause`): no check starts a run until
+`resume`.
+
 **Model and effort** are two lines in the plan. `Model: sonnet` is the default and always
 runs at effort `xhigh` or `max`; `Model: opus` runs at any effort, `medium` by default. Say
 them while planning ("opus, high") or change them later with

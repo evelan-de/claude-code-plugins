@@ -1946,21 +1946,40 @@ class MissionControl(unittest.TestCase):
               grep_q(f"pause expired ({yesterday}), file removed", f"{qh}/logs/queue.log"))
         out, got = mc("status", env=home)
         check("(t) status: active again after the expired pause", has("schedule: installed at 22:00, active", out))
-        # unreadable pause file (empty, garbage): removed and said, run proceeds
-        for junk in ("", "garbage"):
-            write(f"{qh}/paused", junk)
+        # a pause file that cannot be read (empty, garbage, a directory): it stays and counts as
+        # a pause, so a damaged veto never starts a run
+        for junk in ("", "garbage", None):
+            if junk is None:
+                os.makedirs(f"{qh}/paused")
+            else:
+                write(f"{qh}/paused", junk)
             queue("PAUL-81")
             out, got = mc("run", "--scheduled")
             shown = junk or "empty"
-            check(f"(t) unreadable pause '{shown}': scheduled run exits 0", got == 0)
-            check(f"(t) unreadable pause '{shown}': said on stdout",
-                  has(f"[mission-control] pause file unreadable ({shown}), removed, run goes ahead", out))
-            check(f"(t) unreadable pause '{shown}': logged",
-                  grep_q(f"pause file unreadable ({shown}), removed, run goes ahead", f"{qh}/logs/queue.log"))
-            check(f"(t) unreadable pause '{shown}': not called expired", lacks(f"expired ({shown})", out))
-            check(f"(t) unreadable pause '{shown}': file removed", not exists(f"{qh}/paused"))
-            check(f"(t) unreadable pause '{shown}': item processed", grep_q(" PAUL-81 done ", f"{qh}/done.txt"))
-        check("(t) unreadable pause: run went ahead both times", grep_c(" PAUL-81 done ", f"{qh}/done.txt") == 3)
+            kind = "a directory" if junk is None else f"'{shown}'"
+            check(f"(t) unreadable pause {kind}: scheduled run exits 0", got == 0)
+            check(f"(t) unreadable pause {kind}: said on stdout",
+                  has(f"[mission-control] pause file unreadable ({shown}): kept as a pause, scheduled run skipped",
+                      out))
+            check(f"(t) unreadable pause {kind}: logged",
+                  grep_q(f"pause file unreadable ({shown}): kept as a pause", f"{qh}/logs/queue.log", fixed=True))
+            check(f"(t) unreadable pause {kind}: the file stays", os.path.lexists(f"{qh}/paused"))
+            check(f"(t) unreadable pause {kind}: item not processed",
+                  grep_c(" PAUL-81 done ", f"{qh}/done.txt") == 1 and live_lines(f"{qh}/queue.txt") == 1)
+            out, got = mc("status", env=home)
+            check(f"(t) unreadable pause {kind}: status says paused",
+                  has("schedule: installed at 22:00, paused (pause file unreadable", out))
+            out, got = mc("resume", env=home)
+            check(f"(t) unreadable pause {kind}: resume lifts it",
+                  out == "resumed" and not os.path.lexists(f"{qh}/paused"))
+        queue()
+        # an empty scheduled check: one line on stdout, nothing in queue.log
+        size = os.path.getsize(f"{qh}/logs/queue.log")
+        out, got = mc("run", "--scheduled")
+        check("(t) a scheduled check with nothing to do prints one line",
+              got == 0 and out == "[mission-control] run finished")
+        check("(t) a scheduled check with nothing to do writes nothing to queue.log",
+              os.path.getsize(f"{qh}/logs/queue.log") == size)
         # pause until <date>, pause <N>d, invalid dates, a date in the past
         out, got = mc("pause", "until", "2099-12-31", env=home)
         check("(t) pause until exits 0", got == 0)
@@ -2002,6 +2021,18 @@ class MissionControl(unittest.TestCase):
         check("(t) the next scheduled run is paused again",
               has(f"paused until {in3days}: scheduled run skipped", out))
         check("(t) the next scheduled run left the item queued", live_lines(f"{qh}/queue.txt") == 1)
+        # a force-once left behind by a start that never ran: too old to override the pause,
+        # and a new pause removes one
+        write(f"{qh}/force-once", "")
+        hour_ago = time.time() - 3600
+        os.utime(f"{qh}/force-once", (hour_ago, hour_ago))
+        out, got = mc("run", "--scheduled")
+        check("(t) an old force-once does not override the pause",
+              has("scheduled run skipped", out) and live_lines(f"{qh}/queue.txt") == 1)
+        check("(t) an old force-once is removed", not exists(f"{qh}/force-once"))
+        write(f"{qh}/force-once", "")
+        mc("pause", env=home)
+        check("(t) pause removes a force-once left behind", not exists(f"{qh}/force-once"))
         out, got = mc("run", "--bogus")
         check("(t) run rejects an unknown flag with exit 2", got == 2)
         out, got = mc("bogus")
@@ -2247,6 +2278,35 @@ class MissionControl(unittest.TestCase):
         remove(f"{qh}/held.txt")
         remove(f"{qh}/repos.txt")
         ENV.pop("FAKE_GH_PRS", None)
+
+    def test_418_t7_pause_during_a_scheduled_run(self):
+        """(t7) a pause set while a scheduled run is under way: no further item starts"""
+        qh, rec = fresh_home("t7")
+        ENV["FAKE_SCENARIO"] = "report"
+        fake = f"{S.fakes}/claude"
+        pausing = f"{S.tmp}/pausing-claude"
+        # a claude that sets the pause while it runs, as the owner would during an item
+        script(pausing, "#!/usr/bin/env python3\nimport os, sys\n"
+               "with open(os.environ['MISSION_CONTROL_HOME'] + '/paused', 'w') as f:\n"
+               "    f.write('until-resume\\n')\n"
+               f"os.execv({fake!r}, [{fake!r}] + sys.argv[1:])\n")
+        queue("PAUL-187", "PAUL-188")
+        out, got = mc("run", "--scheduled", env={"CLAUDE_BIN": pausing})
+        done = read(f"{qh}/done.txt")
+        check("(t7) the item that was running finishes", got == 0 and has(" PAUL-187 done ", done))
+        check("(t7) the next item does not start",
+              lacks("PAUL-188", done) and count_lines(f"{rec}/claude.args") == 1)
+        check("(t7) the next item stays queued", live_lines(f"{qh}/queue.txt") == 1)
+        check("(t7) the veto is said", has("paused: no further item starts in this run", out))
+        # a run that start let through during a pause works the whole queue
+        write(f"{qh}/force-once", "")
+        queue("PAUL-188", "PAUL-189")
+        out, got = mc("run", "--scheduled")
+        done = read(f"{qh}/done.txt")
+        check("(t7) a started run during a pause works every queued item",
+              has(" PAUL-188 done ", done) and has(" PAUL-189 done ", done))
+        check("(t7) the pause is still set afterwards", cat(f"{qh}/paused") == "until-resume")
+        mc("resume")
 
     def test_420_v_pr_items_against_the_target_branch(self):
         """(v) PR items resolve their plan against the PR's target branch"""

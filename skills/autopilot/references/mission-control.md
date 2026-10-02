@@ -22,7 +22,7 @@ time.
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
 | `paused` | `until-resume`, or one date `YYYY-MM-DD` (local time): the schedule is paused until `resume`, or through that day. Written by `pause`, removed by `resume` or, for a date, by the first scheduled run after it. See "Pause the schedule". |
-| `force-once` | Written by `start`; the next scheduled run consumes it and goes ahead although a pause is set. |
+| `force-once` | Written by `start`; the scheduled run it starts consumes it and goes ahead although a pause is set. Counts for five minutes; removed by `pause`. |
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
 
 Settings in `env` (environment variables override them; defaults in brackets):
@@ -316,11 +316,14 @@ What a pause does: the LaunchAgent starts `run --scheduled`. While the pause is 
 or date>: scheduled run skipped (manual runs still work)` and exits 0 without taking the
 lock or touching the queue. A pause until resume ends only with `resume`. The first
 scheduled run after a pause date removes the file, logs `pause expired (<date>), file
-removed` in `queue.log` and goes on as usual. A `paused` file with anything else (empty, or
-hand-edited) is removed too; that run prints and logs `pause file unreadable (<content or
-empty>), removed, run goes ahead`. `status` shows `schedule: every N min, paused until
-resume` (or the date; `installed at HH:MM` for a daily schedule) while the pause is valid,
-`..., active` otherwise.
+removed` in `queue.log` and goes on as usual. A `paused` file with anything else (empty,
+hand-edited, not readable, a directory) stays and counts as a pause: the check prints and
+logs `pause file unreadable (<content or empty>): kept as a pause, scheduled run skipped`,
+and `resume` removes it. A pause set while a scheduled run is under way lets the item that
+is running finish and starts no further one (`paused: no further item starts in this run,
+what is queued stays queued`). `status` shows `schedule: every N min, paused until resume`
+(or the date, or `paused (pause file unreadable, ...)`; `installed at HH:MM` for a daily
+schedule) while the pause counts, `..., active` otherwise.
 
 Legacy schedule: a LaunchAgent installed before the pause feature runs plain `run`, without
 `--scheduled`, so it never looks at the pause file. `pause`, `resume` and `status` detect
@@ -330,11 +333,12 @@ the scheduled job ignores the pause` with the interval or time read from the pli
 shows `schedule: <every N min or installed at HH:MM> (legacy, ignores pause)` instead of
 active or paused. The pause file is still written; reinstalling the schedule makes it count.
 
-What a pause does not do: it does not end a run that is active (that is `stop`); a manual
-`mission-control run` (no flag) ignores it entirely; and `start` overrides it once: it
+What a pause does not do: it does not end the item that is running (that is `stop`); a
+manual `mission-control run` (no flag) ignores it entirely; and `start` overrides it once: it
 writes `force-once`, which the scheduled run it starts consumes at its start (and which a
-scheduled run removes at its end in any case), so a "start now" during a pause works and the
-pause still holds for the checks after it.
+scheduled run removes at its end in any case), so a "start now" during a pause works the
+whole queue once and the pause still holds for the checks after it. `force-once` counts for
+five minutes; an older one is removed without effect, and `pause` removes one that is there.
 
 ## Slack notifications
 
