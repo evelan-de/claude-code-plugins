@@ -2315,6 +2315,95 @@ class MissionControl(unittest.TestCase):
         check("(y6) the run's work is not pushed there", has("ended on the base branch dev; not pushed", out))
         git("-C", proj, "worktree", "remove", "--force", f"{proj}/.claude/worktrees/autopilot-2026-09-27-PAUL-92-dev")
 
+    def test_510_z1_the_same_line_queued_twice(self):
+        """(z1) a line that is in queue.txt twice is processed twice, one at a time"""
+        qh, rec = fresh_home("z1")
+        ENV["FAKE_SCENARIO"] = "report"
+        queue("PAUL-300", "PAUL-300")
+        out, got = mc("run")
+        check("(z1) run exits 0", got == 0)
+        check("(z1) both lines left the queue", live_lines(f"{qh}/queue.txt") == 0)
+        check("(z1) the item ran twice", len(grep(" PAUL-300 done ", read(f"{qh}/done.txt"))) == 2)
+        check("(z1) no removal failure", lacks("could not remove", out))
+        git("-C", S.proj, "worktree", "remove", "--force", f"{S.proj}/.claude/worktrees/autopilot-PAUL-300")
+
+    def test_520_z2_worktree_folder_cannot_be_created(self):
+        """(z2) a project whose .claude is a file: the item is blocked, the queue moves on"""
+        qh, rec = fresh_home("z2")
+        other = f"{S.tmp}/proj-z2"
+        git("init", "-q", "-b", "main", other)
+        commit(other, "--allow-empty", "-m", "init")
+        write(f"{other}/.claude", "not a directory\n")
+        write(f"{qh}/queue.txt", f"{other} PAUL-301\n{S.proj} PAUL-302\n")
+        out, got = mc("run")
+        done = read(f"{qh}/done.txt")
+        check("(z2) run exits 0", got == 0)
+        check("(z2) the item is blocked", has(" PAUL-301 blocked ", done))
+        check("(z2) the reason is said", has("PAUL-301: blocked: worktree could not be created", out))
+        check("(z2) the next item still ran", has(" PAUL-302 done ", done))
+        check("(z2) the queue is empty", live_lines(f"{qh}/queue.txt") == 0)
+        check("(z2) no traceback", lacks("Traceback", out))
+
+    def test_530_z3_runner_error_while_an_item_is_prepared(self):
+        """(z3) the runner itself fails on an item: blocked, recorded, the queue moves on"""
+        qh, rec = fresh_home("z3")
+        other = f"{S.tmp}/proj-z3"
+        session = f"{SESSIONS}/2026-10-02-broken"
+        git("init", "-q", "-b", "main", other)
+        commit(other, "--allow-empty", "-m", "init")
+        # on the item's branch .claude is a tracked file, so the run's sentinel cannot be written
+        git("-C", other, "checkout", "-q", "-b", "feat/broken")
+        os.makedirs(f"{other}/{session}")
+        write(f"{other}/{session}/PLAN.md", "# PLAN\nBranch: feat/broken   Base: main   Ticket: none\n")
+        write(f"{other}/.claude", "not a directory\n")
+        git("-C", other, "add", "-A")
+        commit(other, "-m", "plan and a .claude file")
+        git("-C", other, "checkout", "-q", "main")
+        write(f"{qh}/queue.txt", f"{other} {session} feat/broken\n{S.proj} PAUL-303\n")
+        out, got = mc("run")
+        done = read(f"{qh}/done.txt")
+        check("(z3) run exits 0", got == 0)
+        check("(z3) the item is blocked with the runner error",
+              has("2026-10-02-broken: blocked: runner error, ", out))
+        check("(z3) recorded in done.txt", has(f" {session} blocked ", done))
+        check("(z3) claude was not started for it", lacks("2026-10-02-broken", read(f"{rec}/claude.args")))
+        check("(z3) the traceback is in the item log, not on stdout",
+              lacks("Traceback", out) and grep_q("Traceback", one(f"{qh}/logs/*-2026-10-02-broken.log")))
+        check("(z3) the next item still ran", has(" PAUL-303 done ", done))
+        check("(z3) the queue is empty", live_lines(f"{qh}/queue.txt") == 0)
+        check("(z3) lock released", not exists(f"{qh}/run.lock"))
+
+    def test_540_z4_stop_lets_a_git_command_finish(self):
+        """(z4) TERM during a git command: the command finishes, then the run ends"""
+        qh, rec = fresh_home("z4")
+        slow = f"{S.tmp}/slowgit"
+        os.makedirs(slow, exist_ok=True)
+        real_git = shutil.which("git", path=ENV["PATH"])
+        script(f"{slow}/git", "#!/usr/bin/env python3\n"
+               "import os, sys, time\n"
+               "rec = os.environ['FAKE_RECORD']\n"
+               "if 'worktree' in sys.argv and 'add' in sys.argv:\n"
+               "    open(rec + '/git.started', 'w').close()\n"
+               "    time.sleep(2)\n"
+               "    open(rec + '/git.finished', 'w').close()\n"
+               f"os.execv({real_git!r}, [{real_git!r}] + sys.argv[1:])\n")
+        queue("PAUL-304")
+        path = ENV["PATH"]
+        ENV["PATH"] = f"{slow}:{path}"
+        runner = start_run(f"{rec}/out")
+        ENV["PATH"] = path
+        wait_for(f"{rec}/git.started")
+        os.kill(runner.pid, signal.SIGTERM)
+        got = shell_status(runner.wait())
+        wt = f"{S.proj}/.claude/worktrees/autopilot-PAUL-304"
+        check("(z4) run exited on TERM with 130", got == 130)
+        check("(z4) the git command was not cut off", exists(f"{rec}/git.finished"))
+        check("(z4) the worktree it built is whole", git("-C", wt, "rev-parse", "--verify", "-q", "HEAD") == 0)
+        check("(z4) claude was not started after the stop", not exists(f"{rec}/claude.args"))
+        check("(z4) item still queued after the stop", grep_q("PAUL-304", f"{qh}/queue.txt"))
+        check("(z4) lock released", not exists(f"{qh}/run.lock"))
+        git("-C", S.proj, "worktree", "remove", "--force", wt)
+
 
 if __name__ == "__main__":
     unittest.main()

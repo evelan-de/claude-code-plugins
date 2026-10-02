@@ -50,9 +50,10 @@ def usage():
 
 def catalog_text():
     """What `codex-cli debug models` prints on stdout, whatever its exit code; "" when it
-    cannot be started."""
+    cannot be started. The wrapper runs under this interpreter, so no shebang is needed."""
     try:
-        done = subprocess.run([CODEX_CLI, "debug", "models"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        done = subprocess.run([sys.executable, CODEX_CLI, "debug", "models"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         return ""
     return done.stdout.decode("utf-8", errors="replace")

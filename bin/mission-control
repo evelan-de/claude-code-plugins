@@ -71,6 +71,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 USAGE = __doc__.split("\n\n")[1]
 SESSIONS = "docs/autopilot/sessions"
@@ -147,7 +148,9 @@ class State:
     """What one invocation carries along."""
     item_log = ""          # the open item's log; empty outside an item
     proc = None            # the running claude process
+    stop = False           # INT or TERM arrived during a run
     source_failed = False  # a PR source could not be read
+    item_failed = False    # the runner itself failed on an item
     gh_auth = None         # cached result of gh auth status
 
 
@@ -161,8 +164,9 @@ class Config:
     timeout_s = watch_s = 0
 
 
-class Stopped(Exception):
-    """INT or TERM arrived during a run."""
+class Stopped(BaseException):
+    """The run was asked to stop (INT or TERM). Not an Exception, so the guards around an item
+    let it pass."""
 
 
 # ---------- small helpers ----------
@@ -244,6 +248,21 @@ def exit_code(returncode):
     return 128 - returncode if returncode < 0 else returncode
 
 
+def check_stop():
+    if State.stop:
+        raise Stopped()
+
+
+def execute(cmd, **how):
+    """subprocess.run between two stop checks: a stop request never ends a command half way
+    (a git call finishes what it began), and no command starts after one."""
+    check_stop()
+    try:
+        return subprocess.run(cmd, **how)
+    finally:
+        check_stop()
+
+
 def capture(cmd, cwd=None, err="drop", stdin_text=None):
     """(exit code, stdout without trailing newlines). err: drop, log (item log) or merge
     (into stdout). 127 when the command cannot be started."""
@@ -255,7 +274,7 @@ def capture(cmd, cwd=None, err="drop", stdin_text=None):
             errfile = stderr = sink()
         else:
             stderr = subprocess.DEVNULL
-        done = subprocess.run(
+        done = execute(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=stderr,
             input=None if stdin_text is None else stdin_text.encode("utf-8"),
             stdin=subprocess.DEVNULL if stdin_text is None else None)
@@ -267,22 +286,22 @@ def capture(cmd, cwd=None, err="drop", stdin_text=None):
             errfile.close()
 
 
-def capture_err(cmd, cwd=None):
-    """(exit code, stderr without trailing newlines); stdout is dropped."""
+def capture_both(cmd, cwd=None):
+    """(exit code, stdout, stderr), both without trailing newlines."""
     try:
-        done = subprocess.run(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                              stdin=subprocess.DEVNULL)
-        return exit_code(done.returncode), done.stderr.decode("utf-8", "replace").rstrip("\n")
+        done = execute(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
     except OSError as e:
-        return 127, str(e)
+        return 127, "", str(e)
+    return (exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
+            done.stderr.decode("utf-8", "replace").rstrip("\n"))
 
 
 def to_log(cmd, cwd=None):
     """Runs the command with its output appended to the item log; its exit code."""
     with sink() as f:
         try:
-            return exit_code(subprocess.run(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
-                                            stdin=subprocess.DEVNULL).returncode)
+            return exit_code(execute(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL).returncode)
         except OSError as e:
             f.write(f"{e}\n".encode("utf-8"))
             return 127
@@ -435,7 +454,9 @@ def release_lock():
 
 
 def on_signal(signum, frame):
-    raise Stopped()
+    """Notes the stop request; the run ends at its next stop check, between two commands or
+    within a second while it waits for claude."""
+    State.stop = True
 
 
 def kill_run():
@@ -448,6 +469,7 @@ def kill_run():
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
+        proc.wait()
 
 
 # ---------- settings ----------
@@ -473,7 +495,7 @@ def parse_env_file(path):
 def to_seconds(minutes):
     try:
         return int(float(minutes) * 60)
-    except ValueError:
+    except (ValueError, OverflowError):
         return 0
 
 
@@ -502,6 +524,12 @@ def load_env():
     Config.timeout_min = setting("MISSION_CONTROL_TIMEOUT_MIN", "480")
     Config.timeout_s = to_seconds(Config.timeout_min)
     Config.watch_s = to_seconds(setting("MISSION_CONTROL_WATCH_MIN", "20"))
+
+
+def setting(name, default=""):
+    """A setting outside the launch settings: the environment, else the env file, else the
+    default."""
+    return os.environ.get(name) or Config.values.get(name) or default
 
 
 def file_mode(path):
@@ -552,8 +580,11 @@ def first_queue_line():
 
 
 def remove_queue_line(line):
+    """Removes the first occurrence of the line from queue.txt. A line that cannot be removed
+    ends the run: it would be processed again and again."""
     lines = read_lines(QUEUE)
-    if line in lines:
+    before = lines.count(line)
+    if before:
         lines.remove(line)
     try:
         with open(QUEUE + ".tmp", "w", encoding="utf-8") as f:
@@ -561,7 +592,7 @@ def remove_queue_line(line):
         os.replace(QUEUE + ".tmp", QUEUE)
     except OSError:
         pass
-    if first_queue_line() == line:
+    if before and read_lines(QUEUE).count(line) != before - 1:
         die(f"could not remove the processed line from {QUEUE}, stopping")
 
 
@@ -569,7 +600,7 @@ def resolve_repo(path):
     """The absolute path of a git checkout, or nothing. A bare name (no "/") means
     $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>."""
     if "/" not in path and path not in (".", "..") and not os.path.isdir(path):
-        path = env("MISSION_CONTROL_PROJECTS", HOME + "/dev/projects") + "/" + path
+        path = setting("MISSION_CONTROL_PROJECTS", HOME + "/dev/projects") + "/" + path
     if not os.path.isdir(path):
         return ""
     path = os.path.abspath(path)
@@ -982,14 +1013,9 @@ def repos_pollable(repos, in_run=False):
 def list_ready_prs(repo):
     """(number, branch, url) of the open PRs labelled autopilot-ready. On failure says a FAIL
     line, notes the failed source and returns nothing."""
-    try:
-        done = subprocess.run(
-            [GH_BIN, "pr", "list", "--label", LABEL_READY, "--state", "open", "--json", "number,headRefName,url",
-             "--jq", r'.[] | "\(.number) \(.headRefName) \(.url)"'],
-            cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
-        rc, text, err = done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
-    except OSError as e:
-        rc, text, err = 127, "", str(e)
+    rc, text, err = capture_both(
+        [GH_BIN, "pr", "list", "--label", LABEL_READY, "--state", "open", "--json", "number,headRefName,url",
+         "--jq", r'.[] | "\(.number) \(.headRefName) \(.url)"'], cwd=repo)
     if rc != 0:
         first = err.splitlines()[0] if err.splitlines() else ""
         say(f"FAIL - {repo}: gh pr list --label {LABEL_READY} failed (exit {rc}): {first}")
@@ -1150,7 +1176,7 @@ def notify(text, sound="", slack=""):
     """macOS notification with the text (and the named sound: Glass for done, Sosumi for
     anything that needs a look) and the Slack message (the slack text, else the text). A Slack
     error status (for example a rejected payload) is logged."""
-    if env("MISSION_CONTROL_NO_NOTIFY", "0") == "1":
+    if setting("MISSION_CONTROL_NO_NOTIFY", "0") == "1":
         return
     if sound and shutil.which("osascript"):
         escaped = text.replace("\\", "\\\\").replace('"', '\\"')
@@ -1162,7 +1188,9 @@ def notify(text, sound="", slack=""):
         # the output is dropped on purpose: curl error messages can quote the URL
         rc = quiet(["curl", "-sS", "--fail", "--max-time", "20", "-X", "POST", "-H", "Content-type: application/json",
                     "--data", slack_json(slack or text), url])
-        if rc != 0:
+        if rc == 0:
+            log("notification: Slack message sent")
+        else:
             log(f"notification: Slack webhook failed (curl exit {rc})")
 
 
@@ -1185,6 +1213,7 @@ class Item:
         self.model = self.effort = self.fallback = self.budget = ""
         self.result = ""   # of the last attempt: exited, stalled or timeout
         self.exit = 0      # the claude exit code of the last attempt
+        self.recorded = False  # its line is in done.txt
 
     @property
     def who(self):
@@ -1217,7 +1246,11 @@ def prepare_worktree(repo, wt, branch=""):
         log(f"reusing worktree {wt}")
         refresh_worktree(wt)
         return True
-    os.makedirs(os.path.dirname(wt), exist_ok=True)
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+    except OSError as e:
+        log(f"cannot create {os.path.dirname(wt)}: {e}")
+        return False
     git_log(repo, "worktree", "prune")
     if not branch:
         if git_log(repo, "fetch", "-q", "origin") != 0:
@@ -1387,8 +1420,9 @@ def run_attempt(it, state_file):
             it.exit = 127
             log(f"claude exited with {it.exit} ({it.result})")
             return
-    # Poll step: the watch interval, at most 30 s; 0.2 s when the stall check is off (tests).
-    step = min(Config.watch_s, 30) if Config.watch_s > 0 else 0.2
+    # Poll step: one second, so a stop request is seen at once; 0.2 s when the stall check is
+    # off (tests).
+    step = 1 if Config.watch_s > 0 else 0.2
     tick = time.time()
     while True:
         try:
@@ -1396,6 +1430,7 @@ def run_attempt(it, state_file):
             break
         except subprocess.TimeoutExpired:
             pass
+        check_stop()
         now = time.time()
         if now - started >= Config.timeout_s:
             it.result = "timeout"
@@ -1448,17 +1483,51 @@ def budget_hit():
 
 def process_item(repo_in, kind, ref, line="", branch=""):
     """One item from start to finish: worktree, plan, run and restarts, then finish_item.
-    kind: text (a queue line) or pr (a labelled PR, ref = its number)."""
+    kind: text (a queue line) or pr (a labelled PR, ref = its number). A failure of the runner
+    itself never leaves the item at the head of the queue: while the item is prepared or run,
+    it ends the item as blocked; while the item is finished, drop_failed_item takes over."""
     it = Item(repo_in, kind, ref, line, branch)
-    os.makedirs(LOGDIR, exist_ok=True)
-    State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-{safe_name(it.item)}.log"
-    open(State.item_log, "w").close()
-    note_current(it, 1)
-    say(f"{it.who}: resolving")
+    try:
+        os.makedirs(LOGDIR, exist_ok=True)
+        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-{safe_name(it.item)}.log"
+        open(State.item_log, "w").close()
+        note_current(it, 1)
+        say(f"{it.who}: resolving")
+        try:
+            prepare_and_run(it)
+        except Exception as e:
+            kill_run()
+            log(traceback.format_exc().rstrip())
+            it.block(f"runner error, {type(e).__name__}: {e} (traceback in {State.item_log})")
+        finish_item(it)
+    except Exception as e:
+        drop_failed_item(it, e)
+    finally:
+        State.item_log = ""
 
-    it.repo = resolve_repo(repo_in)
+
+def drop_failed_item(it, error):
+    """The runner itself failed while an item was started or finished. The traceback goes to
+    queue.log, the failure is said, and a queue line that is still there is removed with a
+    blocked line in done.txt, so the next run does not begin with the same failure."""
+    State.item_log = ""
+    State.item_failed = True
+    log(traceback.format_exc().rstrip())
+    say(f"FAIL - {it.who}: runner error, {type(error).__name__}: {error} (traceback in {LOGDIR}/queue.log)")
+    if it.line and first_queue_line() == it.line:
+        if not it.recorded:
+            with open(DONE, "a", encoding="utf-8") as f:
+                f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} blocked {it.pr_url} runner-error\n")
+        remove_queue_line(it.line)
+
+
+def prepare_and_run(it):
+    """Worktree, plan and launch settings, ticket and start comment, hooks, then the attempts.
+    Leaves the item with a status."""
+    kind, ref = it.kind, it.ref
+    it.repo = resolve_repo(it.repo_in)
     if not it.repo:
-        it.block(f"{repo_in} is not a git repository")
+        it.block(f"{it.repo_in} is not a git repository")
     it.gh_dir = it.repo
 
     if not it.status and kind == "pr":
@@ -1518,7 +1587,6 @@ def process_item(repo_in, kind, ref, line="", branch=""):
             gh_step(it, "gh pr comment (start)", "pr", "comment", it.pr_number, "--body",
                     f"Autopilot started on {host()} at {time.strftime('%H:%M')} (model {it.model}, effort "
                     f"{it.effort}). Please do not push to this branch until the result comment arrives.")
-            log(f"start comment on PR #{it.pr_number}")
 
         ensure_hooks(it)
         it.title = item_title(it)
@@ -1530,9 +1598,6 @@ def process_item(repo_in, kind, ref, line="", branch=""):
         run_until_settled(it, state_file)
         remove_file(state_file)
         it.branch = current_branch(it.wt) or it.branch
-
-    finish_item(it)
-    State.item_log = ""
 
 
 def run_until_settled(it, state_file):
@@ -1582,8 +1647,11 @@ def run_until_settled(it, state_file):
 
 
 def gh_step(it, what, *args):
-    """Runs gh in the item's directory; a failure is said and remembered as labels-failed."""
-    if to_log([GH_BIN, *args], cwd=it.gh_dir) != 0:
+    """Runs gh in the item's directory and logs the outcome; a failure is said and remembered
+    as labels-failed."""
+    if to_log([GH_BIN, *args], cwd=it.gh_dir) == 0:
+        log(f"{what} on PR #{it.pr_number}: ok")
+    else:
         say(f"{it.who}: {what} failed (see {State.item_log})")
         it.gh_failed = "labels-failed"
 
@@ -1682,6 +1750,7 @@ def finish_item(it):
     extra = "".join(" " + note for note in notes)
     with open(DONE, "a", encoding="utf-8") as f:
         f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} {it.status} {it.pr_url}{extra}\n")
+    it.recorded = True
     if it.line:
         remove_queue_line(it.line)
 
@@ -1769,12 +1838,14 @@ def cmd_run(args):
         if scheduled:
             remove_file(FORCE)
     except Stopped:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        kill_run()
         return 130
     finally:
+        # whatever ends the run, no claude process outlives it
+        kill_run()
         release_lock()
+    if State.item_failed:
+        out("[mission-control] run finished, a runner error occurred (see above)")
+        return 1
     if State.source_failed:
         out("[mission-control] run finished, one source failed (see above)")
         return 1
@@ -1907,9 +1978,15 @@ def cmd_doctor(args):
 
 def item_logs():
     """Item log files, newest first (queue.log and launchd.log excluded)."""
+    def changed(path):
+        try:
+            return os.path.getmtime(path)
+        except OSError:  # renamed or removed by a run meanwhile
+            return 0
+
     logs = [path for path in glob.glob(f"{glob.escape(LOGDIR)}/*.log")
             if os.path.basename(path) not in ("queue.log", "launchd.log")]
-    return sorted(logs, key=os.path.getmtime, reverse=True)
+    return sorted(logs, key=changed, reverse=True)
 
 
 def last_phase(logfile, repo_base, item):
@@ -2040,8 +2117,8 @@ def cmd_retry(args):
     if number.isdigit():
         if len(args) != 2:
             die("usage: mission-control retry <repo> <#pr>")
-        rc, err = capture_err([GH_BIN, "pr", "edit", number, "--remove-label", LABEL_BLOCKED, "--add-label", LABEL_READY],
-                              cwd=repo)
+        rc, _, err = capture_both([GH_BIN, "pr", "edit", number, "--remove-label", LABEL_BLOCKED,
+                                   "--add-label", LABEL_READY], cwd=repo)
         if rc != 0:
             die(f"gh pr edit {number} failed in {repo_base}: {err.splitlines()[0] if err.splitlines() else ''}")
         out(f"retry: PR #{number} in {repo_base} labelled {LABEL_READY} again (the next run picks it up)")
@@ -2192,7 +2269,10 @@ def cmd_pause(args):
     elif len(args) == 1:
         if not re.fullmatch(r"[0-9]+d", args[0]):
             die_usage(f"usage: mission-control pause [until <YYYY-MM-DD> | <N>d] (got: {args[0]})")
-        until = date_plus_days(args[0][:-1])
+        try:
+            until = date_plus_days(args[0][:-1])
+        except OverflowError:
+            die_usage(f"usage: mission-control pause [until <YYYY-MM-DD> | <N>d] (got: {args[0]})")
     else:
         die_usage("usage: mission-control pause [until <YYYY-MM-DD> | <N>d]")
     os.makedirs(QHOME, exist_ok=True)
