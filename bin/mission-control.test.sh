@@ -291,7 +291,7 @@ write_plist() {
 fresh_home a
 export FAKE_SCENARIO=report
 printf '# comment\n%s PAUL-1\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a) run exits 0" [ "$got" -eq 0 ]
 check "(a) queue.txt emptied" [ "$(live_lines "$QH/queue.txt")" = 0 ]
 done_line="$(cat "$QH/done.txt" 2>/dev/null)"
@@ -317,7 +317,7 @@ check "(a) the run saw the sentinel .claude/.autopilot-active" grep -q "attempt 
 fresh_home a2
 export FAKE_SCENARIO=report-blocked
 printf '%s PAUL-31\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a2) run exits 0" [ "$got" -eq 0 ]
 check "(a2) status blocked in done.txt" grep -q " PAUL-31 blocked " "$QH/done.txt"
 check "(a2) reason from the Status line on stdout" has "blocked: cannot reach the API" "$out"
@@ -336,7 +336,7 @@ check "(a2) status file removed from the kept worktree" [ ! -e "$proj/.claude/wo
 fresh_home a2b
 export FAKE_SCENARIO=budget
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a2b) blocked" grep -q " PAUL-36 blocked " "$QH/done.txt"
 check "(a2b) reason names the budget" has "budget of 200 USD exhausted before REPORT.md or HANDOFF.md was written" "$out"
 
@@ -344,7 +344,7 @@ check "(a2b) reason names the budget" has "budget of 200 USD exhausted before RE
 fresh_home a2c
 export FAKE_SCENARIO=handoff-then-abort
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a2c) claude called exactly twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
 check "(a2c) blocked with the report's reason" grep -q " PAUL-35 blocked " "$QH/done.txt"
 check "(a2c) reason from the newer REPORT.md" has "blocked: gate needs a database" "$out"
@@ -354,7 +354,7 @@ check "(a2c) log says the report decided" grep -q "REPORT.md is newer than HANDO
 fresh_home a3
 export FAKE_SCENARIO=report-nostatus
 printf '%s PAUL-32\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(a3) status blocked in done.txt" grep -q " PAUL-32 blocked " "$QH/done.txt"
 check "(a3) reason names the missing status line" has "report without status line" "$out"
 
@@ -362,9 +362,9 @@ check "(a3) reason names the missing status line" has "report without status lin
 fresh_home a4
 export FAKE_SCENARIO=noop
 printf '%s PAUL-99\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" list 2>&1)"
+out="$("$TOOL" list 2>&1)"
 check "(a4) list marks the item no plan (OLD-1 does not count)" has "PAUL-99 (no plan)" "$out"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(a4) run does not report done" grep -qv " PAUL-99 done " "$QH/done.txt"
 check "(a4) status blocked, no session directory" grep -q " PAUL-99 blocked - no-plan" "$QH/done.txt"
 check "(a4) reason names the missing session directory" has "no session directory for this item" "$out"
@@ -373,14 +373,14 @@ check "(a4) reason names the missing session directory" has "no session director
 fresh_home a2d
 export FAKE_SCENARIO=early-exit-then-report
 printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a2d) claude called twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
 check "(a2d) restart announced with the reason" has "ended without REPORT.md or HANDOFF.md, restart 1/5" "$out"
 check "(a2d) done with restarts=1" grep -q " PAUL-37 done .* restarts=1" "$QH/done.txt"
 fresh_home a2e
 export FAKE_SCENARIO=early-exit-always MISSION_CONTROL_MAX_RESTARTS=2
 printf '%s PAUL-38\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(a2e) claude called 1 + MAX_RESTARTS times" [ "$(count_lines "$REC/claude.args")" = 3 ]
 check "(a2e) handoff-limit with the artifact reason" grep -q " PAUL-38 handoff-limit " "$QH/done.txt"
 check "(a2e) reason on stdout" has "no REPORT.md or HANDOFF.md after 2 restarts" "$out"
@@ -390,14 +390,14 @@ unset MISSION_CONTROL_MAX_RESTARTS
 fresh_home a5
 export FAKE_SCENARIO=report
 printf '%s "Move the picker"\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(a5) topic item done via the directory created by the run" grep -q ' "Move the picker" done ' "$QH/done.txt"
 
 # ---------- (b) HANDOFF.md then REPORT.md -> done with restarts=1 ----------
 fresh_home b
 export FAKE_SCENARIO=handoff-then-report
 printf '%s PAUL-2\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(b) run exits 0" [ "$got" -eq 0 ]
 check "(b) claude called twice" [ "$(count_lines "$REC/claude.args")" = 2 ]
 check "(b) done with restarts=1" grep -q " PAUL-2 done .* restarts=1" "$QH/done.txt"
@@ -408,7 +408,7 @@ check "(b) the restarted run saw the sentinel again" grep -q "attempt 2" "$REC/s
 fresh_home c
 export FAKE_SCENARIO=handoff-always MISSION_CONTROL_MAX_RESTARTS=2
 printf '%s PAUL-3\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(c) run exits 0" [ "$got" -eq 0 ]
 check "(c) claude called 1 + MAX_RESTARTS times" [ "$(count_lines "$REC/claude.args")" = 3 ]
 check "(c) status handoff-limit in done.txt" grep -q " PAUL-3 handoff-limit " "$QH/done.txt"
@@ -422,7 +422,7 @@ export FAKE_SCENARIO=report
 printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n12 feat/PAUL-10-noplan https://github.com/e/r/pull/12\n13 feat/PAUL-11-missing https://github.com/e/r/pull/13\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(d) run exits 0" [ "$got" -eq 0 ]
 cl="$(cat "$REC/claude.args")"
 check "(d) PR 11 run with the session dir found on its branch" has "/autopilot docs/autopilot/sessions/2026-09-19-PAUL-9-thing " "$cl"
@@ -453,7 +453,7 @@ export FAKE_SCENARIO=sleep
 printf '12 feat/PAUL-10-noplan https://github.com/e/r/pull/12\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
-sh "$TOOL" run >"$REC/out" 2>&1 &
+"$TOOL" run >"$REC/out" 2>&1 &
 runpid=$!
 for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
 sleep 0.5
@@ -473,12 +473,12 @@ fresh_home d3
 export FAKE_SCENARIO=report FAKE_GH_FAIL="pr list --label"
 printf '%s PAUL-33\n' "$proj" >"$QH/queue.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(d3) run exits 1 when a source failed" [ "$got" -eq 1 ]
 check "(d3) FAIL line on stdout" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
 check "(d3) FAIL line in the log" grep -q "gh pr list --label autopilot-ready failed" "$QH/logs/queue.log"
 check "(d3) the list item was still processed" grep -q " PAUL-33 done " "$QH/done.txt"
-out="$(sh "$TOOL" list 2>&1)"; got=$?
+out="$("$TOOL" list 2>&1)"; got=$?
 check "(d3) list reports the failure too" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
 check "(d3) list exits 1 when a source failed" [ "$got" -eq 1 ]
 unset FAKE_GH_FAIL
@@ -493,21 +493,21 @@ login_notice='gh: not authenticated (run "gh auth login -h github.com -w"); labe
 unknown_line="labelled PRs: unknown (gh not authenticated in this session)"
 ssh_env="SSH_CONNECTION=10.0.0.2 51234 10.0.0.1 22"
 # over SSH: the token sits in the Keychain of the GUI session
-out="$(env "$ssh_env" HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(env "$ssh_env" HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(d4) status over SSH exits 0" [ "$got" -eq 0 ]
 check "(d4) status over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
 check "(d4) status over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
 check "(d4) status over SSH says the labelled PRs are unknown" has "$unknown_line" "$out"
 check "(d4) status over SSH prints no PR count" lacks "labelled PRs: 0" "$out"
 check "(d4) status over SSH did not poll the repos" lacks "pr list --label" "$(cat "$REC/gh.args")"
-out="$(env SSH_TTY=/dev/ttys003 HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(env SSH_TTY=/dev/ttys003 HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(d4) SSH_TTY alone counts as an SSH session" has "$ssh_notice" "$out"
-out="$(env "$ssh_env" sh "$TOOL" list 2>&1)"; got=$?
+out="$(env "$ssh_env" "$TOOL" list 2>&1)"; got=$?
 check "(d4) list over SSH exits 0" [ "$got" -eq 0 ]
 check "(d4) list over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
 check "(d4) list over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
 printf '%s PAUL-90\n' "$proj" >"$QH/queue.txt"
-out="$(env "$ssh_env" sh "$TOOL" run 2>&1)"; got=$?
+out="$(env "$ssh_env" "$TOOL" run 2>&1)"; got=$?
 check "(d4) run over SSH exits 0" [ "$got" -eq 0 ]
 check "(d4) run over SSH prints the Keychain notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$ssh_notice")" = 1 ]
 check "(d4) run over SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
@@ -515,23 +515,23 @@ check "(d4) run over SSH still processed the queue item" grep -q " PAUL-90 done 
 check "(d4) run over SSH logged the notice" grep -qF "$ssh_notice" "$QH/logs/queue.log"
 check "(d4) run over SSH does not say a source failed" lacks "one source failed" "$out"
 # not over SSH: a real login problem
-out="$(env -u SSH_CONNECTION -u SSH_TTY HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(env -u SSH_CONNECTION -u SSH_TTY HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(d4) status without SSH exits 0" [ "$got" -eq 0 ]
 check "(d4) status without SSH says to log in" has "$login_notice" "$out"
 check "(d4) status without SSH does not mention the Keychain" lacks "Keychain" "$out"
 check "(d4) status without SSH says the labelled PRs are unknown" has "$unknown_line" "$out"
-out="$(env -u SSH_CONNECTION -u SSH_TTY sh "$TOOL" list 2>&1)"; got=$?
+out="$(env -u SSH_CONNECTION -u SSH_TTY "$TOOL" list 2>&1)"; got=$?
 check "(d4) list without SSH exits 1" [ "$got" -eq 1 ]
 check "(d4) list without SSH prints the login notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$login_notice")" = 1 ]
 check "(d4) list without SSH prints no per-repo FAIL line" lacks "FAIL -" "$out"
 printf '%s PAUL-91\n' "$proj" >"$QH/queue.txt"
-out="$(env -u SSH_CONNECTION -u SSH_TTY sh "$TOOL" run 2>&1)"; got=$?
+out="$(env -u SSH_CONNECTION -u SSH_TTY "$TOOL" run 2>&1)"; got=$?
 check "(d4) run without SSH exits 1 (a real auth problem)" [ "$got" -eq 1 ]
 check "(d4) run without SSH prints the login notice exactly once" [ "$(printf '%s\n' "$out" | grep -cF "$login_notice")" = 1 ]
 check "(d4) run without SSH still processed the queue item" grep -q " PAUL-91 done " "$QH/done.txt"
 # no repos: gh is not asked at all
 : >"$QH/repos.txt"
-out="$(env "$ssh_env" sh "$TOOL" list 2>&1)"; got=$?
+out="$(env "$ssh_env" "$TOOL" list 2>&1)"; got=$?
 check "(d4) list without repos exits 0" [ "$got" -eq 0 ]
 check "(d4) list without repos prints no notice" lacks "gh:" "$out"
 unset FAKE_GH_AUTH_FAIL
@@ -542,7 +542,7 @@ printf '%s PAUL-4\n%s "Move the picker"\n%s PAUL-20\n%s docs/autopilot/sessions/
 printf '%s\n' "$proj" >"$QH/repos.txt"
 printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
-out="$(sh "$TOOL" list 2>&1)"; got=$?
+out="$("$TOOL" list 2>&1)"; got=$?
 check "(e) list exits 0" [ "$got" -eq 0 ]
 check "(e) list shows the ticket item" has "queue  $proj  PAUL-4 (no plan)" "$out"
 check "(e) list shows the quoted topic" has "queue  $proj  \"Move the picker\" (no plan)" "$out"
@@ -555,26 +555,26 @@ unset FAKE_GH_PRS
 
 # ---------- (f) add: quoting and branch detection ----------
 fresh_home f
-sh "$TOOL" add "$proj" PAUL-5 >/dev/null
-sh "$TOOL" add "$proj" Move the picker into the composer >/dev/null
+"$TOOL" add "$proj" PAUL-5 >/dev/null
+"$TOOL" add "$proj" Move the picker into the composer >/dev/null
 check "(f) add writes a plain item unquoted" grep -qxF "$proj PAUL-5" "$QH/queue.txt"
 check "(f) add quotes an item with spaces" grep -qxF "$proj \"Move the picker into the composer\"" "$QH/queue.txt"
-out="$(sh "$TOOL" add "$tmp/nowhere" X 2>&1)"; got=$?
+out="$("$TOOL" add "$tmp/nowhere" X 2>&1)"; got=$?
 check "(f) add refuses a non-repo (exit 1)" [ "$got" -eq 1 ]
 check "(f) add names the reason" has "not a git repository" "$out"
-out="$(sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy 2>&1)"
+out="$("$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy 2>&1)"
 check "(f) add finds the branch holding a session dir absent from the checkout" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/PAUL-21-branchy" "$QH/queue.txt"
 check "(f) add prints the branch" has "feat/PAUL-21-branchy" "$out"
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-20-effort/ >/dev/null
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-20-effort/ >/dev/null
 check "(f) add records the current branch for a session dir in the checkout" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-20-effort main" "$QH/queue.txt"
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/given >/dev/null
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/given >/dev/null
 check "(f) add takes an explicit branch" grep -qxF "$proj docs/autopilot/sessions/2026-09-18-PAUL-21-branchy feat/given" "$QH/queue.txt"
 
 # ---------- (f2) a list item on a feature branch runs on that branch with its plan ----------
 fresh_home f2
 export FAKE_SCENARIO=report
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy >/dev/null
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-18-PAUL-21-branchy >/dev/null
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(f2) run exits 0" [ "$got" -eq 0 ]
 check "(f2) done without no-plan" grep -q " docs/autopilot/sessions/2026-09-18-PAUL-21-branchy done https://github.com/e/r/pull/7$" "$QH/done.txt"
 check "(f2) model opus and effort low taken from the plan on the branch" has "--model opus --effort low " "$(cat "$REC/claude.args")"
@@ -585,29 +585,29 @@ check "(f2) the run was on feat/PAUL-21-branchy" grep -q "PAUL-21-branchy" "$QH/
 fresh_home g
 printf '%s\n' "$proj" >"$QH/repos.txt"
 export FAKE_SCENARIO=notloggedin
-out="$(sh "$TOOL" doctor 2>&1)"; got=$?
+out="$("$TOOL" doctor 2>&1)"; got=$?
 check "(g) doctor exits 1 when claude is not logged in" [ "$got" -eq 1 ]
 check "(g) doctor explains the Keychain-over-SSH caveat" has "Keychain" "$out"
 export FAKE_SCENARIO=ok
 printf 'SLACK_WEBHOOK_URL=x\n' >"$QH/env"; chmod 644 "$QH/env"
-out="$(sh "$TOOL" doctor 2>&1)"; got=$?
+out="$("$TOOL" doctor 2>&1)"; got=$?
 check "(g) doctor exits 1 on env mode 644" [ "$got" -eq 1 ]
 check "(g) doctor names the wanted mode" has "want 600" "$out"
 chmod 600 "$QH/env"
-out="$(sh "$TOOL" doctor 2>&1)"; got=$?
+out="$("$TOOL" doctor 2>&1)"; got=$?
 check "(g) doctor passes with login, gh, repo, labels, env 600" [ "$got" -eq 0 ]
 check "(g) doctor reports all checks passed" has "all checks passed" "$out"
 check "(g) doctor checked the labels" has "label autopilot-blocked exists in proj" "$out"
 check "(g) doctor lists the repos" has "repos in the queue: 1" "$out"
 export FAKE_GH_LABELS=autopilot-ready
-out="$(cd "$proj" && sh "$TOOL" labels 2>&1)"; got=$?
+out="$(cd "$proj" && "$TOOL" labels 2>&1)"; got=$?
 check "(g) labels exits 0" [ "$got" -eq 0 ]
 check "(g) labels keeps an existing label" has "label autopilot-ready exists in proj" "$out"
 check "(g) labels creates the missing ones" has "label autopilot-done created in proj" "$out"
 check "(g) labels uses the agreed colours" has "label create autopilot-blocked --color B60205" "$(cat "$REC/gh.args")"
 check "(g) labels uses the agreed colours (done)" has "label create autopilot-done --color 1D76DB" "$(cat "$REC/gh.args")"
 export FAKE_GH_FAIL="label create"
-out="$(sh "$TOOL" labels "$proj" 2>&1)"; got=$?
+out="$("$TOOL" labels "$proj" 2>&1)"; got=$?
 check "(g) labels exits 1 when a label cannot be created" [ "$got" -eq 1 ]
 check "(g) labels names the failure" has "FAIL - label autopilot-done missing in proj" "$out"
 unset FAKE_GH_FAIL FAKE_GH_LABELS
@@ -616,15 +616,15 @@ unset FAKE_GH_FAIL FAKE_GH_LABELS
 fresh_home h0
 rm -rf "$QH"
 for c in status list run add stop log kickstart; do
-  out="$(sh "$TOOL" $c "$proj" X 2>&1)"; got=$?
+  out="$("$TOOL" $c "$proj" X 2>&1)"; got=$?
   check "(h0) $c refuses on a machine without the queue home (exit 3)" [ "$got" -eq 3 ]
   check "(h0) $c names the office Mini and /autopilot-plan" has "office Mini" "$out"
 done
 check "(h0) no queue.txt was created by add" [ ! -e "$QH/queue.txt" ]
-out="$(sh "$TOOL" retry "$proj" 7 2>&1)"; got=$?
+out="$("$TOOL" retry "$proj" 7 2>&1)"; got=$?
 check "(h0) retry refuses too (exit 3)" [ "$got" -eq 3 ]
 mkdir -p "$QH"
-out="$(sh "$TOOL" status 2>&1)"; got=$?
+out="$("$TOOL" status 2>&1)"; got=$?
 check "(h0) status works once the queue home exists" [ "$got" -eq 0 ]
 
 # ---------- (h) lock ----------
@@ -632,12 +632,12 @@ fresh_home h
 export FAKE_SCENARIO=report
 printf '%s PAUL-6\n' "$proj" >"$QH/queue.txt"
 mkdir -p "$QH/run.lock"; echo "$$" >"$QH/run.lock/pid"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(h) second run refused while the lock is held by a live pid" [ "$got" -eq 1 ]
 check "(h) refusal names the lock" has "another run is active" "$out"
 check "(h) refused run did not start claude" [ ! -e "$REC/claude.args" ]
 echo 999999 >"$QH/run.lock/pid"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(h) stale lock (dead pid) is taken over" [ "$got" -eq 0 ]
 check "(h) lock released after the run" [ ! -e "$QH/run.lock" ]
 
@@ -648,23 +648,23 @@ unset MISSION_CONTROL_NO_NOTIFY
 secret="https://hooks.slack.com/services/T000/B000/SECRETXYZ"
 printf 'SLACK_WEBHOOK_URL=%s\n' "$secret" >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-7\n' "$proj" >"$QH/queue.txt"
-out="$(PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"; got=$?
+out="$(PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"; got=$?
 check "(i) run exits 0 with notifications on" [ "$got" -eq 0 ]
 check "(i) Slack webhook was called" has "SECRETXYZ" "$(cat "$REC/curl.args" 2>/dev/null)"
 check "(i) macOS notification was sent" has "PAUL-7: done" "$(cat "$REC/osascript.args" 2>/dev/null)"
 check "(i) done notification plays Glass" has 'sound name "Glass"' "$(cat "$REC/osascript.args" 2>/dev/null)"
 printf '%s PAUL-7b\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_SCENARIO=report-blocked PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=report-blocked PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 check "(i) blocked notification carries the reason and plays Sosumi" has "PAUL-7b: blocked: cannot reach the API" "$(grep Sosumi "$REC/osascript.args" 2>/dev/null)"
 check "(i) stdout never contains the webhook URL" lacks "SECRETXYZ" "$out"
 check "(i) logs never contain the webhook URL" lacks "SECRETXYZ" "$(cat "$QH"/logs/*.log)"
 printf '%s PAUL-8\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_CURL_EXIT=22 PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 check "(i) curl failure logged with its exit code" grep -q "Slack webhook failed (curl exit 22)" "$QH"/logs/*-PAUL-8.log
 # Slack at the start and a detailed message at the end
 : >"$REC/curl.args"
 printf '%s PAUL-7c\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_SCENARIO=report-full PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=report-full PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 slack="$(cat "$REC/curl.args")"
 check "(i) Slack at the start: title, model and effort" has "*Autopilot started* on $(hostname -s): proj - PAUL-7c" "$slack"
 check "(i) Slack at the start: model and effort" has "Model sonnet, effort xhigh" "$slack"
@@ -677,7 +677,7 @@ check "(i) Slack at the end: open items" has "- ask Markus about the copy" "$sla
 check "(i) Slack at the end: other report sections stay out" lacks "gate green" "$slack"
 : >"$REC/curl.args"
 printf '%s PAUL-7d\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_SCENARIO=report-blocked-open PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=report-blocked-open PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 slack="$(cat "$REC/curl.args")"
 check "(i) Slack when blocked: status, reason and open items" \
   bash -c 'printf "%s" "$1" | grep -qF "*Autopilot blocked*: proj - PAUL-7d" && printf "%s" "$1" | grep -qF "Reason: gate needs a database" && printf "%s" "$1" | grep -qF -- "- start Postgres on the Mini"' _ "$slack"
@@ -692,7 +692,7 @@ git -C "$proj" checkout -q main
 printf '21 feat/PAUL-220-export https://github.com/e/r/pull/21\n' >"$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
 : >"$REC/curl.args"
-out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports <Select> & co" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_GH_PRS="$REC/prs.txt" FAKE_PR_TITLE="WEB-9: CSV export on /reports <Select> & co" PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 slack="$(cat "$REC/curl.args")"
 check "(i) PR item: Slack start with the PR's title, escaped" has "*Autopilot started* on $(hostname -s): proj - WEB-9: CSV export on /reports &lt;Select&gt; &amp; co" "$slack"
 check "(i) PR item: what it is about, from the plan's Destination" has "Users export the report as CSV from /reports." "$slack"
@@ -704,9 +704,9 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic"
 printf '# PLAN - Quote "fix" - 2026-09-26\nBranch: feat/PAUL-221-topic   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "topic plan"; git -C "$proj" push -q origin feat/PAUL-221-topic
 git -C "$proj" checkout -q main
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-221-topic feat/PAUL-221-topic >/dev/null
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-221-topic feat/PAUL-221-topic >/dev/null
 : >"$REC/curl.args"
-out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 JQ_BIN=/nonexistent/jq PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 JQ_BIN=/nonexistent/jq PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 payload="$(grep -o -- '--data {.*} https://hooks' "$REC/curl.args" | tail -n 1 | sed 's/^--data //; s/ https:\/\/hooks$//')"
 check "(i) plan topic as the title when there is no PR" has "proj - Quote \\\"fix\\\"" "$(grep -F 'Autopilot started' "$REC/curl.args")"
 check "(i) without jq the Slack payload is valid JSON with newlines, quotes and a backslash" \
@@ -727,7 +727,7 @@ for jqmode in with without; do
   : >"$REC/curl.args"
   printf '%s PAUL-7e-%s\n' "$proj" "$jqmode" >"$QH/queue.txt"
   jqbin=jq; [ "$jqmode" = without ] && jqbin=/nonexistent/jq
-  out="$(FAKE_SCENARIO=report-edge JQ_BIN="$jqbin" PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+  out="$(FAKE_SCENARIO=report-edge JQ_BIN="$jqbin" PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
   msg="$(python3 "$tmp/slack_payload.py" "$REC/curl.args" "Autopilot done")"; got=$?
   check "(i) $jqmode jq: the end message is valid JSON and UTF-8" [ "$got" -eq 0 ]
   check "(i) $jqmode jq: <, > and & escaped, a Markdown link in Slack form" has "ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>" "$msg"
@@ -739,11 +739,11 @@ done
 check "(i) without jq: the escape character is dropped" has "- esc [31mred[0m end" "$msg"
 : >"$REC/curl.args"
 printf '%s PAUL-7f\n' "$proj" >"$QH/queue.txt"
-out="$(LC_ALL=de_DE.UTF-8 FAKE_SCENARIO=report PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(LC_ALL=de_DE.UTF-8 FAKE_SCENARIO=report PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 check "(i) a German locale still writes the cost with a point" has "· \$0.10" "$(cat "$REC/curl.args")"
 : >"$REC/curl.args"
 printf '%s PAUL-7g\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_SCENARIO=sleep FAKE_GH_NO_PR=1 MISSION_CONTROL_TIMEOUT_MIN=0.02 PATH="$tmp/fakes:$PATH" sh "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=sleep FAKE_GH_NO_PR=1 MISSION_CONTROL_TIMEOUT_MIN=0.02 PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 slack="$(cat "$REC/curl.args")"
 check "(i) timeout: status, reason and the stopped attempt in Slack" \
   bash -c 'printf "%s" "$1" | grep -qF "*Autopilot timeout*: proj - PAUL-7g" && printf "%s" "$1" | grep -qF "Reason: wall-clock timeout" && printf "%s" "$1" | grep -qF "+ a stopped attempt"' _ "$slack"
@@ -754,8 +754,8 @@ export MISSION_CONTROL_NO_NOTIFY=1
 # ---------- (j) reused worktree: fetch and fast-forward before the retry ----------
 fresh_home j
 export FAKE_SCENARIO=report-blocked
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(sh "$TOOL" run 2>&1)"
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$("$TOOL" run 2>&1)"
 wt="$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing"
 check "(j) first run blocked, worktree kept" [ -e "$wt/.git" ]
 git -C "$proj" push -q origin feat/PAUL-9-thing   # the run's commit, as the real run would push it
@@ -763,8 +763,8 @@ git clone -q "$tmp/origin.git" "$tmp/devclone"
 git -C "$tmp/devclone" checkout -q feat/PAUL-9-thing
 commit "$tmp/devclone" --allow-empty -m "developer fix"
 git -C "$tmp/devclone" push -q origin feat/PAUL-9-thing
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(sh "$TOOL" run 2>&1)"
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$("$TOOL" run 2>&1)"
 git -C "$wt" log --oneline -5 >"$REC/wt.gitlog"
 check "(j) retry fast-forwarded the reused worktree to the developer's push" grep -q "developer fix" "$REC/wt.gitlog"
 check "(j) the run saw the developer fix" grep -q "developer fix" "$REC/claude.gitlog.2"
@@ -772,8 +772,8 @@ check "(j) no fast-forward complaint" lacks "not fast-forwardable" "$out"
 commit "$wt" --allow-empty -m "local divergence"
 commit "$tmp/devclone" --allow-empty -m "another fix"
 git -C "$tmp/devclone" push -q origin feat/PAUL-9-thing
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(j) diverged worktree: said, run continues" has "feat/PAUL-9-thing is not fast-forwardable to origin/feat/PAUL-9-thing, continuing on the local state" "$out"
 check "(j) diverged worktree: item still processed" [ "$(grep -c "PAUL-9-thing blocked" "$QH/done.txt")" = 3 ]
 
@@ -783,8 +783,8 @@ export FAKE_SCENARIO=report-blocked
 # worktrees live in the project now, so (j)'s kept one would be reused; this case needs a new one
 git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing"
 git -C "$proj" checkout -q --ignore-other-worktrees feat/PAUL-9-thing
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(j2) run exits 0" [ "$got" -eq 0 ]
 check "(j2) says where else the branch is checked out" has "branch feat/PAUL-9-thing is also checked out in " "$out"
 check "(j2) names the other checkout and the rule" has "/proj; the run works on feat/PAUL-9-thing here, do not commit there until it is done" "$out"
@@ -796,8 +796,8 @@ git -C "$proj" checkout -q main
 fresh_home j3
 export FAKE_SCENARIO=report
 mkdir -p "$tmp/jirahome"; printf 'JIRA_SITE=x\nJIRA_EMAIL=y\nJIRA_TOKEN=z\n' >"$tmp/jirahome/env"
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" "$TOOL" run 2>&1)"; got=$?
 check "(j3) jira start called with the plan's ticket before the run" [ "$(sed -n 1p "$REC/jira.args")" = "start PAUL-9" ]
 check "(j3) jira start happened before claude" grep -qx "start PAUL-9" "$REC/jira-at-claude-start.1"
 check "(j3) jira comment called at the end" [ "$(sed -n 2p "$REC/jira.args")" = "comment PAUL-9 -" ]
@@ -805,20 +805,20 @@ check "(j3) comment body: status, PR and the report head" bash -c 'grep -q "^Aut
 check "(j3) comment body has no Markdown headings" bash -c '! grep -q "^#" "$1"' _ "$REC/jira-comment.1"
 check "(j3) done.txt has no jira-failed" bash -c '! grep -q "jira-failed" "$1"' _ "$QH/done.txt"
 fresh_home j3b
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(FAKE_JIRA_FAIL=1 JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(FAKE_JIRA_FAIL=1 JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" "$TOOL" run 2>&1)"; got=$?
 check "(j3b) jira failure is said with jira's last line" has "jira start PAUL-9 failed: jira: HTTP 401" "$out"
 check "(j3b) the run still happened" [ "$(count_lines "$REC/claude.args")" = 1 ]
 check "(j3b) done.txt marks jira-failed" grep -q " jira-failed" "$QH/done.txt"
 fresh_home j3c
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira" sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/nojira" "$TOOL" run 2>&1)"; got=$?
 check "(j3c) without a credentials file jira is not called" [ ! -e "$REC/jira.args" ]
 check "(j3c) the log says why" grep -q "PAUL-9 not updated (no jira script or no" "$QH"/logs/*-2026-09-19-PAUL-9-thing.log
 fresh_home j3d
 export FAKE_SCENARIO=report-blocked
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" sh "$TOOL" run 2>&1)"; got=$?
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+out="$(JIRA_BIN="$tmp/fakes/jira" JIRA_HOME="$tmp/jirahome" "$TOOL" run 2>&1)"; got=$?
 check "(j3d) blocked: comment carries the status and the report head" bash -c 'grep -q "^Autopilot: blocked" "$1" && grep -q "cannot reach the API" "$1"' _ "$REC/jira-comment.1"
 
 # ---------- (j4) review-bot comments counted in done.txt when the repo has the review workflow ----------
@@ -828,24 +828,24 @@ mkdir -p "$proj/.github/workflows"; echo "name: review" >"$proj/.github/workflow
 git -C "$proj" add -A && commit "$proj" -m "review workflow"
 git -C "$proj" push -q origin main 2>/dev/null || true
 printf '%s PAUL-70\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_REVIEW_INLINE="claude[bot] claude[bot]" FAKE_REVIEW_TOP="andreas github-actions[bot]" sh "$TOOL" run 2>&1)"; got=$?
+out="$(FAKE_REVIEW_INLINE="claude[bot] claude[bot]" FAKE_REVIEW_TOP="andreas github-actions[bot]" "$TOOL" run 2>&1)"; got=$?
 check "(j4) done.txt counts the comments not by the PR author" grep -q " PAUL-70 done .* review-comments=3" "$QH/done.txt"
 check "(j4) both bot threads unanswered" grep -q " PAUL-70 done .* unanswered-review-comments=2" "$QH/done.txt"
 check "(j4) unanswered comments are said" has "PAUL-70: 2 review-bot comment(s) on the PR have no reply from the run" "$out"
 printf '%s PAUL-72\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_REVIEW_INLINE="claude[bot]:1 claude[bot]:2 andreas>1 claude[bot]>1" FAKE_REVIEW_TOP="" sh "$TOOL" run 2>&1)"; got=$?
+out="$(FAKE_REVIEW_INLINE="claude[bot]:1 claude[bot]:2 andreas>1 claude[bot]>1" FAKE_REVIEW_TOP="" "$TOOL" run 2>&1)"; got=$?
 check "(j4) a thread with an author reply counts as answered; a bot follow-up does not" grep -q " PAUL-72 done .* review-comments=3 unanswered-review-comments=1" "$QH/done.txt"
 printf '%s PAUL-73\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="" sh "$TOOL" run 2>&1)"; got=$?
+out="$(FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="" "$TOOL" run 2>&1)"; got=$?
 check "(j4) all answered: no unanswered field" grep -q " PAUL-73 done .* review-comments=1$" "$QH/done.txt"
 check "(j4) all answered: nothing said" lacks "PAUL-73: " "$(printf '%s' "$out" | grep 'no reply')"
 printf '%s PAUL-71\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
+out="$(FAKE_REVIEW_INLINE="" FAKE_REVIEW_TOP="andreas" "$TOOL" run 2>&1)"; got=$?
 check "(j4) zero bot comments: said on stdout" has "PAUL-71: no review-bot comment on the PR yet, check it" "$out"
 check "(j4) zero bot comments: recorded" grep -q " PAUL-71 done .* review-comments=0" "$QH/done.txt"
 # a developer's PR: the run answers from the queue machine's gh account, not as the PR author
 printf '%s PAUL-74\n' "$proj" >"$QH/queue.txt"
-out="$(FAKE_PR_AUTHOR=dev FAKE_GH_ME=andreas FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="andreas" sh "$TOOL" run 2>&1)"; got=$?
+out="$(FAKE_PR_AUTHOR=dev FAKE_GH_ME=andreas FAKE_REVIEW_INLINE="claude[bot]:1 andreas>1" FAKE_REVIEW_TOP="andreas" "$TOOL" run 2>&1)"; got=$?
 check "(j4) developer PR: replies from the queue machine's account count as answered" grep -q " PAUL-74 done .* review-comments=1$" "$QH/done.txt"
 check "(j4) developer PR: nothing said about unanswered comments" lacks "no reply from the run" "$out"
 git -C "$proj" rm -q -r .github && commit "$proj" -m "remove review workflow" && git -C "$proj" push -q origin main 2>/dev/null || true
@@ -854,7 +854,7 @@ git -C "$proj" rm -q -r .github && commit "$proj" -m "remove review workflow" &&
 fresh_home k
 export FAKE_SCENARIO=sleep MISSION_CONTROL_TIMEOUT_MIN=0.02
 printf '%s PAUL-34\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
 check "(k) run exits 0" [ "$got" -eq 0 ]
 check "(k) status timeout in done.txt" grep -q " PAUL-34 timeout " "$QH/done.txt"
@@ -868,53 +868,53 @@ fresh_home l
 export FAKE_SCENARIO=report
 printf 'MISSION_CONTROL_MODEL=haiku\nMISSION_CONTROL_EFFORT=xhigh\nMISSION_CONTROL_FALLBACK_MODEL=sonnet\n' >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l) env file beats the default (model haiku, effort xhigh, fallback sonnet)" has "--model haiku --effort xhigh --advisor fable --fallback-model sonnet" "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-35\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_MODEL=opus MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_MODEL=opus MISSION_CONTROL_EFFORT=low "$TOOL" run >/dev/null 2>&1
 check "(l) environment beats the env file" has "--model opus --effort low " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l) Effort: high from PLAN.md beats the env file" has "--effort high " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-20\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_EFFORT=low sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_EFFORT=low "$TOOL" run >/dev/null 2>&1
 check "(l) explicit environment effort beats PLAN.md" has "--effort low " "$(tail -n 1 "$REC/claude.args")"
 rm -f "$QH/env"
 printf '%s PAUL-36\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l) defaults without env file (sonnet at xhigh)" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 " "$(tail -n 1 "$REC/claude.args")"
 
 # ---------- (l2) model from the plan header, sonnet effort floor, fallback and budget ----------
 fresh_home l2
 export FAKE_SCENARIO=report
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(l2) Model: opus from PLAN.md, its effort kept, no fallback, budget 400" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 400 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the run line names the model" has "run (attempt 1, model opus, effort medium)" "$out"
 printf '%s PAUL-161\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l2) Model: sonnet with Effort: medium runs at xhigh, fallback opus, budget 200" has "--model sonnet --effort xhigh --advisor fable --fallback-model opus --permission-mode auto --max-budget-usd 200 " "$(tail -n 1 "$REC/claude.args")"
 check "(l2) the raise is logged" grep -q "effort medium raised to xhigh" "$(ls "$QH"/logs/*-PAUL-161.log)"
 printf '%s PAUL-162\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l2) Model: Sonnet with Effort: max keeps max" has "--model sonnet --effort max " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_MODEL=sonnet sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_MODEL=sonnet "$TOOL" run >/dev/null 2>&1
 check "(l2) environment model beats the plan, the floor still applies" has "--model sonnet --effort xhigh " "$(tail -n 1 "$REC/claude.args")"
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
-MISSION_CONTROL_BUDGET_USD=30 sh "$TOOL" run >/dev/null 2>&1
+MISSION_CONTROL_BUDGET_USD=30 "$TOOL" run >/dev/null 2>&1
 check "(l2) an explicit budget beats the per-model default" has "--model opus --effort medium --advisor fable --permission-mode auto --max-budget-usd 30 " "$(tail -n 1 "$REC/claude.args")"
 printf 'MISSION_CONTROL_FALLBACK_MODEL=fable\n' >"$QH/env"; chmod 600 "$QH/env"
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l2) a fallback of another family is kept for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable " "$(tail -n 1 "$REC/claude.args")"
 printf 'MISSION_CONTROL_FALLBACK_MODEL=opus,fable\n' >"$QH/env"
 printf '%s PAUL-160\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l2) opus is dropped from a fallback list for an opus run" has "--model opus --effort medium --advisor fable --fallback-model fable --permission-mode" "$(tail -n 1 "$REC/claude.args")"
 rm -f "$QH/env"
 printf '%s PAUL-164\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(l2) markdown headers (- **Model:** \`Opus\`, **Effort:** High.) are read" has "--model opus --effort high " "$(tail -n 1 "$REC/claude.args")"
 
 # ---------- (l3) an unknown Model: blocks the item before anything runs ----------
@@ -922,7 +922,7 @@ fresh_home l3
 printf '14 feat/PAUL-163-bogus https://github.com/e/r/pull/14\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(l3) an unknown Model: in the plan: run exits 0" [ "$got" -eq 0 ]
 check "(l3) claude not started" [ ! -e "$REC/claude.args" ]
 check "(l3) done.txt says blocked" grep -q " docs/autopilot/sessions/2026-09-25-PAUL-163-bogus blocked https://github.com/e/r/pull/14$" "$QH/done.txt"
@@ -935,7 +935,7 @@ unset FAKE_GH_PRS
 fresh_home m
 export FAKE_SCENARIO=report FAKE_GH_NO_PR=1
 printf '%s PAUL-137\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(m) run exits 0" [ "$got" -eq 0 ]
 check "(m) done with - as the PR url" grep -q " PAUL-137 done - no-plan$" "$QH/done.txt"
 check "(m) no label or comment call without a PR" lacks "pr edit" "$(cat "$REC/gh.args")"
@@ -948,7 +948,7 @@ unset FAKE_GH_NO_PR
 fresh_home m2
 export FAKE_SCENARIO=report
 printf '%s PAUL-37\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(m2) the refused push is recorded" grep -q " PAUL-37 done .*push-failed" "$QH/done.txt"
 check "(m2) the worktree is kept, not removed" [ -e "$proj/.claude/worktrees/autopilot-PAUL-37/.git" ]
 check "(m2) and it says why" has "PAUL-37: worktree kept at $proj/.claude/worktrees/autopilot-PAUL-37 because its branch is not on origin" "$out"
@@ -959,7 +959,7 @@ git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-PAUL-3
 fresh_home n
 export FAKE_SCENARIO=report
 printf '%s\n%s PAUL-38\n' "$proj" "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(n) run exits 0" [ "$got" -eq 0 ]
 check "(n) the unparsable line is named" has "removed unparsable line from queue.txt: $proj" "$out"
 check "(n) the good line was processed" grep -q " PAUL-38 done " "$QH/done.txt"
@@ -970,10 +970,10 @@ fresh_home o
 export FAKE_SCENARIO=report
 printf 'MISSION_CONTROL_BUDGET_USD=5\n' >"$QH/env"; chmod 644 "$QH/env"
 printf '%s PAUL-39\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" list 2>&1)"; got=$?
+out="$("$TOOL" list 2>&1)"; got=$?
 check "(o) list warns once about the env mode" [ "$(printf '%s\n' "$out" | grep -c "has mode 644, want 600")" = 1 ]
 check "(o) list still exits 0" [ "$got" -eq 0 ]
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(o) run warns about the env mode and continues" has "has mode 644, want 600" "$out"
 check "(o) run still used the env file" has "--max-budget-usd 5 " "$(cat "$REC/claude.args")"
 check "(o) run exits 0" [ "$got" -eq 0 ]
@@ -982,7 +982,7 @@ check "(o) run exits 0" [ "$got" -eq 0 ]
 fresh_home p
 export FAKE_SCENARIO=report FAKE_GH_FAIL="pr edit"
 printf '%s PAUL-40\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(p) run exits 0" [ "$got" -eq 0 ]
 check "(p) done.txt records done with labels-failed" grep -q " PAUL-40 done https://github.com/e/r/pull/7 no-plan labels-failed$" "$QH/done.txt"
 check "(p) the failure is said" has "PAUL-40: gh pr edit (labels) failed" "$out"
@@ -999,11 +999,11 @@ printf '%s\n' "$proj" >"$QH/repos.txt"
 printf '11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '2026-09-19T20:00:00Z %s PAUL-40 done https://github.com/e/r/pull/40\n' "$proj" >"$QH/done.txt"
-sh "$TOOL" run >"$REC/out" 2>&1 &
+"$TOOL" run >"$REC/out" 2>&1 &
 runpid=$!
 for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
 sleep 0.5
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(q) status exits 0" [ "$got" -eq 0 ]
 check "(q) status shows the running item with attempt and phase" has "running: proj PAUL-50 (attempt 1, since " "$out"
 check "(q) status phase is the run line from the item log" has ", phase: run (attempt 1, model sonnet, effort xhigh)" "$out"
@@ -1016,7 +1016,7 @@ echo "2026-09-20T22:00:00Z ctx=123456 tool=Edit" >"$qwt/.claude/.autopilot-statu
 printf '# PLAN\n### P1 [x] done thing\n### P2 [~] the current package\n### P3 [ ] later\n' >"$qwt/docs/autopilot/sessions/2026-09-20-PAUL-50-x/PLAN.md"
 echo new >"$qwt/new-file.txt"
 printf '%s\n%s\n%s\n%s\n%s\n%s\n' proj docs/autopilot/sessions/2026-09-20-PAUL-50-x 1 "$(date +%s)" "$QH/logs/x.log" "$qwt" >"$QH/run.lock/current"
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(q) status: current package from PLAN.md" has "  package: P2 [~] the current package" "$out"
 check "(q) status: run line from the hook's status file" has "  run: 2026-09-20T22:00:00Z ctx=123456 tool=Edit" "$out"
 printf '%s\n%s\n%s\n%s\n%s\n%s\n' proj PAUL-50 1 "$(date +%s)" "$QH/logs/x.log" "$qwt" >"$QH/run.lock/current"
@@ -1028,9 +1028,9 @@ check "(q) status says no schedule" has "schedule: not installed" "$out"
 check "(q) status names the lock holder" has "lock: held by pid $runpid" "$out"
 check "(q) status never prints the webhook variable" lacks "SLACK_WEBHOOK_URL" "$out"
 write_plist "$fakehome" 22 5
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(q) status reads the schedule time from the plist" has "schedule: installed at 22:05, active" "$out"
-out="$(sh "$TOOL" stop 2>&1)"; got=$?
+out="$("$TOOL" stop 2>&1)"; got=$?
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
 wait "$runpid" 2>/dev/null
 check "(q) stop exits 0" [ "$got" -eq 0 ]
@@ -1038,21 +1038,21 @@ check "(q) stop reports stopped with repo and item" has "stopped proj PAUL-50" "
 check "(q) stop killed the fake claude" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
 check "(q) lock released after stop" [ ! -e "$QH/run.lock" ]
 kill -9 "$cpid" 2>/dev/null
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(q) status after stop: running none" has "running: none" "$out"
 check "(q) status after stop: lock free" has "lock: free" "$out"
-check "(q) the stopped item is still first in queue.txt" [ "$(sh "$TOOL" list 2>/dev/null | head -n 1 | grep -c "PAUL-50")" = 1 ]
+check "(q) the stopped item is still first in queue.txt" [ "$("$TOOL" list 2>/dev/null | head -n 1 | grep -c "PAUL-50")" = 1 ]
 mkdir -p "$QH/run.lock"; echo 999999 >"$QH/run.lock/pid"
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(q) status with a stale lock exits 0" [ "$got" -eq 0 ]
 check "(q) status with a stale lock: running none" has "running: none" "$out"
 check "(q) status names the stale lock" has "lock: stale (pid 999999 is dead" "$out"
 rm -rf "$QH/run.lock"
-out="$(sh "$TOOL" stop 2>&1)"; got=$?
+out="$("$TOOL" stop 2>&1)"; got=$?
 check "(q) stop without a run says so" has "nothing running" "$out"
 check "(q) stop without a run exits 0" [ "$got" -eq 0 ]
 export FAKE_GH_FAIL="pr list --label"
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(q) status tolerates a gh failure with a FAIL line" has "FAIL - $proj: gh pr list --label autopilot-ready failed" "$out"
 check "(q) status still exits 0 on a gh failure" [ "$got" -eq 0 ]
 unset FAKE_GH_FAIL FAKE_GH_PRS
@@ -1061,18 +1061,18 @@ unset FAKE_GH_FAIL FAKE_GH_PRS
 fresh_home q2
 export FAKE_SCENARIO=sleep MISSION_CONTROL_WATCH_MIN=0.5
 printf '%s PAUL-54\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >"$REC/out" 2>&1 &
+"$TOOL" run >"$REC/out" 2>&1 &
 runpid=$!
 for _ in $(seq 1 100); do [ -f "$REC/claude.pid" ] && break; sleep 0.1; done
 sleep 0.5
 if [ "$(uname)" = Darwin ]; then
   fakehome="$tmp/fakehome-q2"; mkdir -p "$fakehome"
-  out="$(HOME="$fakehome" sh "$TOOL" kickstart 2>&1)"; got=$?
+  out="$(HOME="$fakehome" "$TOOL" kickstart 2>&1)"; got=$?
   check "(q2) kickstart refuses while a run is active" [ "$got" -eq 1 ]
   check "(q2) kickstart names the run" has "a run is active (pid $runpid, PAUL-54), stop it first" "$out"
 fi
 t0="$(date +%s)"
-out="$(sh "$TOOL" stop 2>&1)"; got=$?
+out="$("$TOOL" stop 2>&1)"; got=$?
 t1="$(date +%s)"
 cpid="$(cat "$REC/claude.pid" 2>/dev/null || echo 0)"
 wait "$runpid" 2>/dev/null
@@ -1081,7 +1081,7 @@ check "(q2) stop reports stopped with the item" has "stopped proj PAUL-54" "$out
 check "(q2) stop returned within 5 s (sleep interrupted)" [ $((t1 - t0)) -le 5 ]
 check "(q2) fake claude gone" bash -c '! kill -0 "$1" 2>/dev/null' _ "$cpid"
 check "(q2) item still queued after stop" grep -q "PAUL-54" "$QH/queue.txt"
-out="$(sh "$TOOL" log PAUL-54 2>&1)"; got=$?
+out="$("$TOOL" log PAUL-54 2>&1)"; got=$?
 check "(q2) log still finds the stopped item's log" [ "$got" -eq 0 ]
 kill -9 "$cpid" 2>/dev/null
 export MISSION_CONTROL_WATCH_MIN=0
@@ -1089,67 +1089,67 @@ export MISSION_CONTROL_WATCH_MIN=0
 # ---------- (r) retry: a PR gets its label back, an item is queued again ----------
 fresh_home r
 export FAKE_SCENARIO=report-blocked
-out="$(sh "$TOOL" retry "$proj" '#41' 2>&1)"; got=$?
+out="$("$TOOL" retry "$proj" '#41' 2>&1)"; got=$?
 check "(r) retry #pr exits 0" [ "$got" -eq 0 ]
 check "(r) retry #pr swaps blocked for ready" has "pr edit 41 --remove-label autopilot-blocked --add-label autopilot-ready" "$(cat "$REC/gh.args")"
 check "(r) retry #pr says so" has "retry: PR #41 in proj labelled autopilot-ready again" "$out"
-out="$(sh "$TOOL" retry "$proj" 42 2>&1)"
+out="$("$TOOL" retry "$proj" 42 2>&1)"
 check "(r) retry accepts a bare number" has "pr edit 42 --remove-label autopilot-blocked" "$(cat "$REC/gh.args")"
 export FAKE_GH_FAIL="pr edit"
-out="$(sh "$TOOL" retry "$proj" '#43' 2>&1)"; got=$?
+out="$("$TOOL" retry "$proj" '#43' 2>&1)"; got=$?
 check "(r) retry #pr exits 1 when gh fails" [ "$got" -eq 1 ]
 check "(r) retry #pr names the failure with gh's first stderr line" has "gh pr edit 43 failed in proj: fake gh: failing on purpose" "$out"
 unset FAKE_GH_FAIL
-out="$(sh "$TOOL" retry "$proj" 12abc 2>&1)"
+out="$("$TOOL" retry "$proj" 12abc 2>&1)"
 check "(r) retry treats a mixed argument as an item, not a PR" grep -qxF "$proj 12abc" "$QH/queue.txt"
 check "(r) retry did not label a PR for the mixed argument" lacks "pr edit 12abc" "$(cat "$REC/gh.args")"
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing feat/PAUL-9-thing >/dev/null
+"$TOOL" run >/dev/null 2>&1
 check "(r) blocked run left its worktree" [ -e "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing/.git" ]
 check "(r) queue empty before retry" [ "$(live_lines "$QH/queue.txt")" = 0 ]
 # the branch the kept worktree is on (detached at its tip when (j) still holds the branch,
 # then the fake run created its own); retry must record exactly that one
 wt_branch="$(git -C "$proj/.claude/worktrees/autopilot-2026-09-19-PAUL-9-thing" symbolic-ref --short HEAD)"
 check "(r) the worktree is on a branch" [ -n "$wt_branch" ]
-out="$(sh "$TOOL" retry "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing 2>&1)"; got=$?
+out="$("$TOOL" retry "$proj" docs/autopilot/sessions/2026-09-19-PAUL-9-thing 2>&1)"; got=$?
 check "(r) retry item exits 0" [ "$got" -eq 0 ]
 check "(r) retry item queues it with the worktree's branch" grep -qxF "$proj docs/autopilot/sessions/2026-09-19-PAUL-9-thing $wt_branch" "$QH/queue.txt"
 check "(r) retry item says added" has "added: $proj docs/autopilot/sessions/2026-09-19-PAUL-9-thing $wt_branch" "$out"
-out="$(sh "$TOOL" retry "$proj" PAUL-31 2>&1)"
+out="$("$TOOL" retry "$proj" PAUL-31 2>&1)"
 check "(r) retry ticket key queues it" grep -qxF "$proj PAUL-31" "$QH/queue.txt"
-out="$(sh "$TOOL" retry "$tmp/nowhere" '#1' 2>&1)"; got=$?
+out="$("$TOOL" retry "$tmp/nowhere" '#1' 2>&1)"; got=$?
 check "(r) retry refuses a non-repo" [ "$got" -eq 1 ]
-out="$(HOME="$tmp" sh "$TOOL" retry '~/proj' PAUL-44 2>&1)"
+out="$(HOME="$tmp" "$TOOL" retry '~/proj' PAUL-44 2>&1)"
 check "(r) retry expands ~ in the repo path" grep -qxF "$proj PAUL-44" "$QH/queue.txt"
-out="$(HOME="$tmp" sh "$TOOL" add '~/proj' PAUL-45 2>&1)"
+out="$(HOME="$tmp" "$TOOL" add '~/proj' PAUL-45 2>&1)"
 check "(r) add expands ~ in the repo path" grep -qxF "$proj PAUL-45" "$QH/queue.txt"
-out="$(MISSION_CONTROL_PROJECTS="$tmp" sh "$TOOL" add proj PAUL-46 2>&1)"; got=$?
+out="$(MISSION_CONTROL_PROJECTS="$tmp" "$TOOL" add proj PAUL-46 2>&1)"; got=$?
 check "(r) add resolves a bare project name under the projects directory" grep -qxF "$proj PAUL-46" "$QH/queue.txt"
-out="$(MISSION_CONTROL_PROJECTS="$tmp" sh "$TOOL" add nosuchproj PAUL-47 2>&1)"; got=$?
+out="$(MISSION_CONTROL_PROJECTS="$tmp" "$TOOL" add nosuchproj PAUL-47 2>&1)"; got=$?
 check "(r) a bare name that resolves to nothing is refused" [ "$got" -eq 1 ]
 check "(r) refusal names the argument" has "nosuchproj is not a git repository" "$out"
-out="$(HOME="$tmp" sh "$TOOL" labels '~/proj' 2>&1)"; got=$?
+out="$(HOME="$tmp" "$TOOL" labels '~/proj' 2>&1)"; got=$?
 check "(r) labels expands ~ in the repo path" [ "$got" -eq 0 ]
 
 # ---------- (s) log: newest item log, or by substring ----------
 fresh_home s
 export FAKE_SCENARIO=report
 printf '%s PAUL-60\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 sleep 1
 printf '%s PAUL-61\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
-out="$(sh "$TOOL" log 2>&1)"; got=$?
+"$TOOL" run >/dev/null 2>&1
+out="$("$TOOL" log 2>&1)"; got=$?
 check "(s) log exits 0" [ "$got" -eq 0 ]
 check "(s) log names the newest item log" has "log: $QH/logs/" "$out"
 check "(s) log picks the newest item" has "PAUL-61.log" "$(printf '%s\n' "$out" | head -n 1)"
 check "(s) log shows the log content" has "PAUL-61: done (PR" "$out"
-out="$(sh "$TOOL" log PAUL-60 2>&1)"; got=$?
+out="$("$TOOL" log PAUL-60 2>&1)"; got=$?
 check "(s) log <substring> exits 0" [ "$got" -eq 0 ]
 check "(s) log <substring> names that file" has "PAUL-60.log" "$(printf '%s\n' "$out" | head -n 1)"
 check "(s) log <substring> shows that run" has "PAUL-60: done (PR" "$out"
 check "(s) log output is at most 41 lines" [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -le 41 ]
-out="$(sh "$TOOL" log NOPE 2>&1)"; got=$?
+out="$("$TOOL" log NOPE 2>&1)"; got=$?
 check "(s) log with no match exits 1" [ "$got" -eq 1 ]
 check "(s) log with no match says so" has "no item log with 'NOPE'" "$out"
 # hand-made logs: the timestamp part must never match, the item part matches after safe_name
@@ -1158,19 +1158,19 @@ mkdir -p "$QH/logs"
 printf '2026-12-12T12:12:12Z proj PAUL-70: done\n' >"$QH/logs/20261212-121212-PAUL-70.log"
 sleep 1
 printf '2026-12-12T12:12:13Z proj #34: resolving\n' >"$QH/logs/20261212-121213-_34-2026-09-19-PAUL-2801-export.log"
-out="$(sh "$TOOL" log '#34' 2>&1)"; got=$?
+out="$("$TOOL" log '#34' 2>&1)"; got=$?
 check "(s2) log '#34' finds the PR item's log" has "_34-2026-09-19-PAUL-2801-export.log" "$(printf '%s\n' "$out" | head -n 1)"
-out="$(sh "$TOOL" log PAUL-2801 2>&1)"; got=$?
+out="$("$TOOL" log PAUL-2801 2>&1)"; got=$?
 check "(s2) log <ticket key> finds the run whose session dir contains the key" has "_34-2026-09-19-PAUL-2801-export.log" "$(printf '%s\n' "$out" | head -n 1)"
-out="$(sh "$TOOL" log docs/autopilot/sessions/2026-09-19-PAUL-2801-export 2>&1)"; got=$?
+out="$("$TOOL" log docs/autopilot/sessions/2026-09-19-PAUL-2801-export 2>&1)"; got=$?
 check "(s2) log <session dir> finds it too" [ "$got" -eq 0 ]
-out="$(sh "$TOOL" log 12 2>&1)"; got=$?
+out="$("$TOOL" log 12 2>&1)"; got=$?
 check "(s2) log 12 does not match the timestamp" [ "$got" -eq 1 ]
-out="$(sh "$TOOL" log PAUL-70 2>&1)"
+out="$("$TOOL" log PAUL-70 2>&1)"
 check "(s2) log PAUL-70 finds the older log" has "20261212-121212-PAUL-70.log" "$(printf '%s\n' "$out" | head -n 1)"
-out="$(sh "$TOOL" bogus 2>&1)"
+out="$("$TOOL" bogus 2>&1)"
 check "(s) unknown command lists the new commands" has "status | stop | retry | log" "$out"
-out="$(sh "$TOOL" help 2>&1)"
+out="$("$TOOL" help 2>&1)"
 check "(s) usage mentions start" has "mission-control start" "$out"
 
 # ---------- (t) pause: scheduled runs skip, manual runs go on ----------
@@ -1180,49 +1180,49 @@ in3days="$(date -v+3d +%Y-%m-%d 2>/dev/null || date -d "+3 days" +%Y-%m-%d)"
 fresh_home t
 export FAKE_SCENARIO=report
 fakehome="$tmp/fakehome-t"; write_plist "$fakehome" 22 0
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(t) status: schedule active without a pause file" has "schedule: installed at 22:00, active" "$out"
-out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause 2>&1)"; got=$?
 check "(t) pause exits 0" [ "$got" -eq 0 ]
 check "(t) pause says paused until today" [ "$out" = "paused until $today" ]
 check "(t) pause file holds today's date" [ "$(cat "$QH/paused")" = "$today" ]
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(t) status: schedule paused until today, nothing after the date" bash -c 'printf "%s\n" "$1" | grep -qx "schedule: installed at 22:00, paused until $2"' _ "$out" "$today"
 check "(t) status: the date appears once on the schedule line" [ "$(printf '%s\n' "$out" | grep -c "$today$today")" = 0 ]
 printf '%s PAUL-80\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+out="$("$TOOL" run --scheduled 2>&1)"; got=$?
 check "(t) scheduled run exits 0 while paused" [ "$got" -eq 0 ]
 check "(t) scheduled run says it skipped" has "paused until $today: scheduled run skipped (manual runs still work)" "$out"
 check "(t) scheduled run logged the skip" grep -q "paused until $today: scheduled run skipped" "$QH/logs/queue.log"
 check "(t) scheduled run left the queue alone" [ "$(live_lines "$QH/queue.txt")" = 1 ]
 check "(t) scheduled run did not start claude" [ ! -e "$REC/claude.args" ]
 check "(t) scheduled run did not take the lock" [ ! -e "$QH/run.lock" ]
-out="$(sh "$TOOL" run 2>&1)"; got=$?
+out="$("$TOOL" run 2>&1)"; got=$?
 check "(t) manual run exits 0 while paused" [ "$got" -eq 0 ]
 check "(t) manual run processed the item" grep -q " PAUL-80 done " "$QH/done.txt"
 check "(t) manual run kept the pause" [ "$(cat "$QH/paused")" = "$today" ]
-out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" resume 2>&1)"; got=$?
 check "(t) resume exits 0" [ "$got" -eq 0 ]
 check "(t) resume says resumed" [ "$out" = "resumed" ]
 check "(t) resume removed the file" [ ! -e "$QH/paused" ]
-out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" resume 2>&1)"; got=$?
 check "(t) resume without a pause exits 0" [ "$got" -eq 0 ]
 check "(t) resume without a pause says not paused" [ "$out" = "not paused" ]
 # expired pause: removed, run proceeds
 printf '%s\n' "$yesterday" >"$QH/paused"
 printf '%s PAUL-81\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+out="$("$TOOL" run --scheduled 2>&1)"; got=$?
 check "(t) expired pause: scheduled run exits 0" [ "$got" -eq 0 ]
 check "(t) expired pause: item processed" grep -q " PAUL-81 done " "$QH/done.txt"
 check "(t) expired pause: file removed" [ ! -e "$QH/paused" ]
 check "(t) expired pause: logged" grep -q "pause expired ($yesterday), file removed" "$QH/logs/queue.log"
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(t) status: active again after the expired pause" has "schedule: installed at 22:00, active" "$out"
 # unreadable pause file (empty, garbage): removed and said, run proceeds
 for junk in "" garbage; do
   printf '%s' "$junk" >"$QH/paused"
   printf '%s PAUL-81\n' "$proj" >"$QH/queue.txt"
-  out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+  out="$("$TOOL" run --scheduled 2>&1)"; got=$?
   shown="${junk:-empty}"
   check "(t) unreadable pause '$shown': scheduled run exits 0" [ "$got" -eq 0 ]
   check "(t) unreadable pause '$shown': said on stdout" has "[mission-control] pause file unreadable ($shown), removed, run goes ahead" "$out"
@@ -1233,17 +1233,17 @@ for junk in "" garbage; do
 done
 check "(t) unreadable pause: run went ahead both times" [ "$(grep -c " PAUL-81 done " "$QH/done.txt")" = 3 ]
 # pause until <date>, pause <N>d, invalid dates, a date in the past
-out="$(HOME="$fakehome" sh "$TOOL" pause until 2099-12-31 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause until 2099-12-31 2>&1)"; got=$?
 check "(t) pause until exits 0" [ "$got" -eq 0 ]
 check "(t) pause until says the date" [ "$out" = "paused until 2099-12-31" ]
 check "(t) pause until writes the date" [ "$(cat "$QH/paused")" = "2099-12-31" ]
-out="$(HOME="$fakehome" sh "$TOOL" pause until "$today" 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause until "$today" 2>&1)"; got=$?
 check "(t) pause until today is allowed" [ "$got" -eq 0 ]
-out="$(HOME="$fakehome" sh "$TOOL" pause 3d 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause 3d 2>&1)"; got=$?
 check "(t) pause 3d exits 0" [ "$got" -eq 0 ]
 check "(t) pause 3d says the date three days ahead" [ "$out" = "paused until $in3days" ]
 check "(t) pause 3d writes that date" [ "$(cat "$QH/paused")" = "$in3days" ]
-out="$(HOME="$fakehome" sh "$TOOL" pause until "$yesterday" 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause until "$yesterday" 2>&1)"; got=$?
 check "(t) pause until <yesterday> exits 2" [ "$got" -eq 2 ]
 check "(t) pause until <yesterday> says the date is in the past" [ "$out" = "mission-control: date is in the past: $yesterday" ]
 check "(t) pause until <yesterday> left the previous pause untouched" [ "$(cat "$QH/paused")" = "$in3days" ]
@@ -1258,7 +1258,7 @@ for case in \
   "3d extra|$pause_usage"; do
   bad="${case%%|*}"; want="${case#*|}"
   # shellcheck disable=SC2086
-  out="$(HOME="$fakehome" sh "$TOOL" pause $bad 2>&1)"; got=$?
+  out="$(HOME="$fakehome" "$TOOL" pause $bad 2>&1)"; got=$?
   check "(t) pause $bad exits 2" [ "$got" -eq 2 ]
   check "(t) pause $bad names the problem" has "mission-control: $want" "$out"
 done
@@ -1266,20 +1266,20 @@ check "(t) an invalid pause left the previous pause untouched" [ "$(cat "$QH/pau
 # force-once: consumed by the scheduled run, overrides the pause once
 : >"$QH/force-once"
 printf '%s PAUL-82\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run --scheduled 2>&1)"; got=$?
+out="$("$TOOL" run --scheduled 2>&1)"; got=$?
 check "(t) force-once: scheduled run exits 0" [ "$got" -eq 0 ]
 check "(t) force-once: item processed despite the pause" grep -q " PAUL-82 done " "$QH/done.txt"
 check "(t) force-once: file consumed" [ ! -e "$QH/force-once" ]
 check "(t) force-once: pause still in place" [ "$(cat "$QH/paused")" = "$in3days" ]
 printf '%s PAUL-83\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run --scheduled 2>&1)"
+out="$("$TOOL" run --scheduled 2>&1)"
 check "(t) the next scheduled run is paused again" has "paused until $in3days: scheduled run skipped" "$out"
 check "(t) the next scheduled run left the item queued" [ "$(live_lines "$QH/queue.txt")" = 1 ]
-out="$(sh "$TOOL" run --bogus 2>&1)"; got=$?
+out="$("$TOOL" run --bogus 2>&1)"; got=$?
 check "(t) run rejects an unknown flag with exit 2" [ "$got" -eq 2 ]
-out="$(sh "$TOOL" bogus 2>&1)"
+out="$("$TOOL" bogus 2>&1)"
 check "(t) unknown command lists pause and resume" has "pause | resume" "$out"
-out="$(sh "$TOOL" help 2>&1)"
+out="$("$TOOL" help 2>&1)"
 check "(t) usage mentions pause" has "pause" "$out"
 
 # ---------- (t2) install-schedule writes run --scheduled; kickstart writes force-once ----------
@@ -1293,7 +1293,7 @@ EOF
   fresh_home t2
   fakehome="$tmp/fakehome-t2"; mkdir -p "$fakehome"
   plist="$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" install-schedule 22:00 2>&1)"; got=$?
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" install-schedule 22:00 2>&1)"; got=$?
   check "(t2) install-schedule exits 0" [ "$got" -eq 0 ]
   check "(t2) plist written under the temporary HOME" [ -f "$plist" ]
   check "(t2) plist runs mission-control run --scheduled" grep -q '<string>run</string><string>--scheduled</string>' "$plist"
@@ -1303,22 +1303,22 @@ EOF
   check "(t2) bootout first" has "bootout gui/" "$(printf '%s\n' "$la" | sed -n 1p)"
   check "(t2) bootstrap second" has "bootstrap gui/" "$(printf '%s\n' "$la" | sed -n 2p)"
   check "(t2) only the fake launchctl was called (no real launchd)" lacks "kickstart" "$la"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" install-schedule 23:30 2>&1)"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" install-schedule 23:30 2>&1)"
   check "(t2) re-running install-schedule replaces the plist" grep -q '<key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer>' "$plist"
   check "(t2) re-run booted out and bootstrapped again" [ "$(grep -c . "$REC/launchctl.args")" = 4 ]
-  sh "$TOOL" pause >/dev/null
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
+  "$TOOL" pause >/dev/null
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" kickstart 2>&1)"; got=$?
   check "(t2) kickstart exits 0 during a pause" [ "$got" -eq 0 ]
   check "(t2) kickstart called launchctl kickstart" has "kickstart gui/" "$(tail -n 1 "$REC/launchctl.args")"
   check "(t2) kickstart wrote force-once" [ -e "$QH/force-once" ]
   check "(t2) kickstart says the pause is overridden once" has "the pause until $today is overridden for this run only" "$out"
   export FAKE_SCENARIO=report
   printf '%s PAUL-84\n' "$proj" >"$QH/queue.txt"
-  out="$(sh "$TOOL" run --scheduled 2>&1)"
+  out="$("$TOOL" run --scheduled 2>&1)"
   check "(t2) the kickstarted scheduled run processed the item" grep -q " PAUL-84 done " "$QH/done.txt"
   check "(t2) force-once consumed by that run" [ ! -e "$QH/force-once" ]
   rm -f "$plist"; : >"$REC/launchctl.args"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" start 2>&1)"; got=$?
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" start 2>&1)"; got=$?
   check "(t2) start without a schedule exits 0" [ "$got" -eq 0 ]
   check "(t2) start installed the LaunchAgent on demand" [ -f "$plist" ]
   check "(t2) on-demand plist has no StartCalendarInterval" bash -c '! grep -q StartCalendarInterval "$1"' _ "$plist"
@@ -1326,14 +1326,14 @@ EOF
   check "(t2) start booted out, bootstrapped, then kickstarted" [ "$(sed -n '1p;2p;3p' "$REC/launchctl.args" | cut -d' ' -f1 | tr '\n' ' ')" = "bootout bootstrap kickstart " ]
   check "(t2) start wrote force-once" [ -e "$QH/force-once" ]
   check "(t2) start says where the output goes" has 'started: de.evelan.mission-control runs now in the GUI session' "$out"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" status 2>&1)"
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" status 2>&1)"
   check "(t2) status shows the on-demand schedule" has 'schedule: on demand only ("mission-control start"), no nightly run' "$out"
   rm -f "$QH/force-once"
   mkdir -p "$QH/run.lock"; echo "$$" >"$QH/run.lock/pid"
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" start 2>&1)"; got=$?
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" start 2>&1)"; got=$?
   check "(t2) start during a run exits 1" [ "$got" -eq 1 ]
   check "(t2) refused start (active run) wrote no force-once" [ ! -e "$QH/force-once" ]
-  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" sh "$TOOL" kickstart 2>&1)"; got=$?
+  out="$(HOME="$fakehome" PATH="$tmp/fakes:$PATH" "$TOOL" kickstart 2>&1)"; got=$?
   check "(t2) kickstart is an alias of start (refused the same way)" [ "$got" -eq 1 ]
   rm -rf "$QH/run.lock"
 fi
@@ -1342,29 +1342,29 @@ fi
 fresh_home t3
 fakehome="$tmp/fakehome-t3"; write_plist "$fakehome" 21 15 legacy
 legacy_warn='schedule installed without --scheduled: run "mission-control install-schedule 21:15" again, otherwise the nightly job ignores the pause'
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"; got=$?
 check "(t3) status exits 0 with a legacy plist" [ "$got" -eq 0 ]
 check "(t3) status shows the legacy schedule line" has "schedule: installed at 21:15 (legacy, ignores pause)" "$out"
 check "(t3) status prints the warning with the plist time" has "$legacy_warn" "$out"
-out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" pause 2>&1)"; got=$?
 check "(t3) pause exits 0 with a legacy plist" [ "$got" -eq 0 ]
 check "(t3) pause still writes the file" [ "$(cat "$QH/paused")" = "$today" ]
 check "(t3) pause says paused" has "paused until $today" "$out"
 check "(t3) pause prints the warning" has "$legacy_warn" "$out"
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(t3) status with a legacy plist and a pause still says legacy" has "schedule: installed at 21:15 (legacy, ignores pause)" "$out"
 check "(t3) status with a legacy plist never says paused until" lacks "paused until" "$out"
-out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"; got=$?
+out="$(HOME="$fakehome" "$TOOL" resume 2>&1)"; got=$?
 check "(t3) resume exits 0 with a legacy plist" [ "$got" -eq 0 ]
 check "(t3) resume says resumed" has "resumed" "$out"
 check "(t3) resume prints the warning" has "$legacy_warn" "$out"
 write_plist "$fakehome" 21 15
-out="$(HOME="$fakehome" sh "$TOOL" pause 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" pause 2>&1)"
 check "(t3) a plist with --scheduled gets no warning from pause" [ "$out" = "paused until $today" ]
-out="$(HOME="$fakehome" sh "$TOOL" status 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" status 2>&1)"
 check "(t3) a plist with --scheduled gets no warning from status" lacks "without --scheduled" "$out"
 rm -f "$fakehome/Library/LaunchAgents/de.evelan.mission-control.plist"
-out="$(HOME="$fakehome" sh "$TOOL" resume 2>&1)"
+out="$(HOME="$fakehome" "$TOOL" resume 2>&1)"
 check "(t3) no plist: no warning from resume" [ "$out" = "resumed" ]
 
 # ---------- (v) PR items resolve their plan against the PR's target branch ----------
@@ -1373,7 +1373,7 @@ export FAKE_SCENARIO=report
 printf '16 feat/default-org-redirect https://github.com/e/r/pull/16 preview\n17 feat/borrowed-plan https://github.com/e/r/pull/17 preview\n18 feat/big https://github.com/e/r/pull/18 preview\n19 feat/PAUL-190-new https://github.com/e/r/pull/19 preview\n20 feat/tick https://github.com/e/r/pull/20 preview\n' >"$REC/prs.txt"
 export FAKE_GH_PRS="$REC/prs.txt"
 printf '%s\n' "$proj" >"$QH/repos.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 cl="$(cat "$REC/claude.args" 2>/dev/null)"
 check "(v) PR 16 runs its own plan" has "/autopilot docs/autopilot/sessions/2026-09-23-default-org-redirect " "$cl"
 check "(v) the finished session on preview is never run" lacks "2026-09-23-two-factor-auth" "$cl"
@@ -1393,7 +1393,7 @@ fresh_home w
 export FAKE_SCENARIO=report
 printf '%s PAUL-200\n' "$proj" >"$QH/queue.txt"
 wt200="$proj/.claude/worktrees/autopilot-PAUL-200"
-out="$(FAKE_DOCKER_PS="$(printf 'proj-paul-200|%s\nproj-paul-200|%s/docker/dev\nother-stack|/somewhere/else\nprefix-trap|%s-other\n' "$wt200" "$wt200" "$wt200")" sh "$TOOL" run 2>&1)"
+out="$(FAKE_DOCKER_PS="$(printf 'proj-paul-200|%s\nproj-paul-200|%s/docker/dev\nother-stack|/somewhere/else\nprefix-trap|%s-other\n' "$wt200" "$wt200" "$wt200")" "$TOOL" run 2>&1)"
 check "(w) the run saw the hooks installed and registered" grep -q "attempt 1" "$REC/hooks.seen"
 check "(w) without a branch the hooks are not committed" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.1")" = 0 ]
 check "(w) without a branch: said" has "PAUL-200: autopilot hooks installed for this run, not committed (no branch yet)" "$out"
@@ -1407,8 +1407,8 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks"
 printf '# PLAN\nBranch: feat/PAUL-202-nohooks   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan without hooks"; git -C "$proj" push -q origin feat/PAUL-202-nohooks
 git -C "$proj" checkout -q main
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks feat/PAUL-202-nohooks >/dev/null
-out="$(sh "$TOOL" run 2>&1)"
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-202-nohooks feat/PAUL-202-nohooks >/dev/null
+out="$("$TOOL" run 2>&1)"
 check "(w) on a branch the hooks are committed before the run" grep -q "chore(autopilot): install or update the autopilot hooks" "$REC/claude.gitlog.2"
 check "(w) on a branch: said with the branch" has "autopilot hooks installed or updated and committed on feat/PAUL-202-nohooks" "$out"
 hooks_commit="$(git -C "$tmp/origin.git" log --format=%H --grep "install or update the autopilot hooks" feat/PAUL-202-nohooks)"
@@ -1424,8 +1424,8 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked"
 printf '# PLAN\nBranch: feat/PAUL-201-hooked   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-201-hooked/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "plan"; git -C "$proj" push -q origin feat/PAUL-201-hooked
 git -C "$proj" checkout -q main
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-201-hooked feat/PAUL-201-hooked >/dev/null
-out="$(sh "$TOOL" run 2>&1)"
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-201-hooked feat/PAUL-201-hooked >/dev/null
+out="$("$TOOL" run 2>&1)"
 check "(w) current hooks: no hooks commit" [ "$(grep -c "install or update the autopilot hooks" "$REC/claude.gitlog.3")" = 0 ]
 check "(w) current hooks: logged as current" grep -q "autopilot hooks current" "$(ls "$QH"/logs/*-2026-09-26-PAUL-201-hooked.log)"
 check "(w) current hooks: the run saw them" grep -q "attempt 3" "$REC/hooks.seen"
@@ -1437,7 +1437,7 @@ export FAKE_SCENARIO=report
 for v in v20.1.0 v22.2.0 v22.10.1 v24.0.0; do mkdir -p "$NVM_DIR/versions/node/$v/bin"; done
 mkdir -p "$NVM_DIR/alias"; echo 24 >"$NVM_DIR/alias/default"
 printf '%s PAUL-210\n' "$proj" >"$QH/queue.txt"
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" run >/dev/null 2>&1
 check "(x) without .nvmrc: nvm's default alias (24)" [ "$(cat "$REC/claude.path.1")" = "$NVM_DIR/versions/node/v24.0.0/bin" ]
 git -C "$proj" checkout -q -b feat/PAUL-211-node main
 echo "v22" >"$proj/.nvmrc"
@@ -1445,8 +1445,8 @@ mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-211-node"
 printf '# PLAN\nBranch: feat/PAUL-211-node   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-211-node/PLAN.md"
 git -C "$proj" add -A; commit "$proj" -m "node 22 plan"; git -C "$proj" push -q origin feat/PAUL-211-node
 git -C "$proj" checkout -q main
-sh "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-211-node feat/PAUL-211-node >/dev/null
-sh "$TOOL" run >/dev/null 2>&1
+"$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-211-node feat/PAUL-211-node >/dev/null
+"$TOOL" run >/dev/null 2>&1
 check "(x) .nvmrc v22: the highest installed 22.x (v22.10.1, not v22.2.0)" [ "$(cat "$REC/claude.path.2")" = "$NVM_DIR/versions/node/v22.10.1/bin" ]
 check "(x) the Node choice is logged" grep -q "node for the run: $NVM_DIR/versions/node/v22.10.1/bin" "$(ls "$QH"/logs/*-2026-09-26-PAUL-211-node.log)"
 rm -rf "$NVM_DIR"
@@ -1459,7 +1459,7 @@ export FAKE_SCENARIO=report-blocked
 # (y1) a worktree an older runner kept under the queue home moves into the project
 git -C "$proj" worktree add -q --detach "$QH/worktrees/proj-PAUL-77" main
 printf '%s PAUL-77\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(y1) the old worktree moved into the project" [ -e "$proj/.claude/worktrees/autopilot-PAUL-77/.git" ]
 check "(y1) nothing left at the old place" [ ! -e "$QH/worktrees/proj-PAUL-77" ]
 check "(y1) the move is said" has "PAUL-77: worktree moved into the project" "$out"
@@ -1480,7 +1480,7 @@ chmod +x "$tmp/origin.git/hooks/pre-receive"
 check "(y2) sanity: origin really refuses such a branch" \
   bash -c '! git -C "$1" push -q origin main:refs/heads/probe-PAUL-88 2>/dev/null' _ "$proj"
 printf '%s PAUL-88\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 rm -f "$tmp/origin.git/hooks/pre-receive"
 check "(y2) the failed push is said" has "PAUL-88: pushing feat/2026-09-20-PAUL-88 to origin failed" "$out"
 check "(y2) done.txt marks push-failed" grep -q " PAUL-88 blocked .*push-failed" "$QH/done.txt"
@@ -1493,7 +1493,7 @@ chmod +x "$proj/.git/hooks/pre-push"
 check "(y3) sanity: the hook blocks a normal push" \
   bash -c '! git -C "$1" push -q origin main:refs/heads/probe-hook 2>/dev/null' _ "$proj"
 printf '%s PAUL-90\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 rm -f "$proj/.git/hooks/pre-push"
 git -C "$proj" config --unset core.hooksPath
 git -C "$tmp/origin.git" config --unset core.hooksPath
@@ -1506,7 +1506,7 @@ printf '# PLAN\nBranch: develop   Base: main   Ticket: none\n' >"$proj/docs/auto
 git -C "$proj" add -A; commit "$proj" -m "plan on develop"; git -C "$proj" push -q origin develop
 git -C "$proj" checkout -q main
 printf '%s docs/autopilot/sessions/2026-09-27-PAUL-89-dev develop\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(y4) the run's work is not on origin's develop" \
   bash -c '! git -C "$1" log --format=%s develop | grep -q "^fake run"' _ "$tmp/origin.git"
 # the hooks installed before the run are not committed on a base branch, so nothing of the
@@ -1532,7 +1532,7 @@ git -C "$proj" add -A; commit "$proj" -m "plan on trunk"; git -C "$proj" push -q
 git -C "$proj" checkout -q main
 git -C "$proj" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
 printf '%s docs/autopilot/sessions/2026-09-27-PAUL-91-trunk trunk\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 git -C "$proj" symbolic-ref -d refs/remotes/origin/HEAD
 check "(y5) origin's default branch did not move" \
   [ "$(git -C "$tmp/origin.git" log -1 --format=%s trunk)" = "plan on trunk" ]
@@ -1548,7 +1548,7 @@ printf '# PLAN\nBranch: dev   Base: main   Ticket: none\n' >"$proj/docs/autopilo
 git -C "$proj" add -A; commit "$proj" -m "plan on dev"; git -C "$proj" push -q origin dev
 git -C "$proj" checkout -q main
 printf '%s docs/autopilot/sessions/2026-09-27-PAUL-92-dev dev\n' "$proj" >"$QH/queue.txt"
-out="$(sh "$TOOL" run 2>&1)"
+out="$("$TOOL" run 2>&1)"
 check "(y6) origin's dev did not move" \
   [ "$(git -C "$tmp/origin.git" log -1 --format=%s dev)" = "plan on dev" ]
 check "(y6) hooks on dev: said" \
