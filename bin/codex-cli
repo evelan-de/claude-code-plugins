@@ -1,71 +1,110 @@
-#!/bin/sh
-# codex-cli - locate the locally installed Codex CLI and exec it.
-#
-# Teammates get Codex from different places: an npm or homebrew install on
-# PATH, or only the binary bundled inside a desktop app, which is not on PATH.
-# Skills call this wrapper so they never hardcode a machine-specific path.
-#
-# Resolution order:
-#   1. `codex` on PATH (npm / homebrew installs) - the maintained install wins
-#   2. the desktop-app bundle: $CODEX_CLI_APP_BIN when set, otherwise
-#        /Applications/ChatGPT.app/Contents/Resources/codex  (Codex lives in
-#          the ChatGPT app since mid-2026)
-#        /Applications/Codex.app/Contents/Resources/codex    (the former
-#          standalone app, kept in case it returns)
-#   3. $HOME/.local/bin/codex
-# App bundles ship pre-release builds, which is why a real install on PATH
-# is preferred whenever one exists.
-#
-# On failure the message lists every path that was probed, so the reader
-# can see at once which install is missing. All arguments are forwarded
-# verbatim.
+#!/usr/bin/env python3
+"""codex-cli - locate the locally installed Codex CLI and run it in place of this process.
 
-if [ -n "${CODEX_CLI_APP_BIN:-}" ]; then
-  APP_BINS="$CODEX_CLI_APP_BIN"
-else
-  APP_BINS="/Applications/ChatGPT.app/Contents/Resources/codex
-/Applications/Codex.app/Contents/Resources/codex"
-fi
+usage: codex-cli <codex arguments ...>
 
-CODEX_BIN=""
-PROBED=""
+Teammates get Codex from different places: an npm or homebrew install on PATH, or only the
+binary bundled inside a desktop app, which is not on PATH. Skills call this wrapper so they
+never hardcode a machine-specific path.
 
-if command -v codex >/dev/null 2>&1; then
-  CODEX_BIN="$(command -v codex)"
-else
-  PROBED="  codex on PATH"
-fi
+Resolution order:
+  1. `codex` on PATH (npm / homebrew installs) - the maintained install wins
+  2. the desktop-app bundle: $CODEX_CLI_APP_BIN when set (one path per line), otherwise
+       /Applications/ChatGPT.app/Contents/Resources/codex  (Codex lives in the ChatGPT app
+         since mid-2026)
+       /Applications/Codex.app/Contents/Resources/codex    (the former standalone app, kept
+         in case it returns)
+  3. $HOME/.local/bin/codex
+App bundles ship pre-release builds, which is why a real install on PATH is preferred
+whenever one exists. A candidate that leads back to this wrapper is skipped.
 
-if [ -z "$CODEX_BIN" ]; then
-  # One candidate per line; paths may contain spaces, so read line-wise.
-  while IFS= read -r candidate; do
-    [ -n "$candidate" ] || continue
-    if [ -x "$candidate" ]; then
-      CODEX_BIN="$candidate"
-      break
-    fi
-    PROBED="$PROBED
-  $candidate"
-  done <<EOF
-$APP_BINS
-EOF
-fi
+The binary that is found replaces this process, so stdin, stdout, stderr, signals and the
+exit code are the binary's own. All arguments are forwarded verbatim.
 
-if [ -z "$CODEX_BIN" ]; then
-  if [ -x "$HOME/.local/bin/codex" ]; then
-    CODEX_BIN="$HOME/.local/bin/codex"
-  else
-    PROBED="$PROBED
-  $HOME/.local/bin/codex"
-  fi
-fi
+When nothing is found, the message on stderr lists every location that was probed, so the
+reader can see at once which install is missing, and the exit code is 127. A binary that is
+found but cannot be started ends with exit code 126.
 
-if [ -z "$CODEX_BIN" ]; then
-  echo "codex-cli: Codex CLI not found. Looked for:" >&2
-  printf '%s\n' "$PROBED" >&2
-  echo "Install it with 'npm install -g @openai/codex' or 'brew install codex'," >&2
-  echo "or install the ChatGPT desktop app, then retry." >&2
-  exit 127
-fi
+Python 3 standard library only.
+"""
+import os
+import shutil
+import signal
+import sys
 
-exec "$CODEX_BIN" "$@"
+APP_BINS = (
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+)
+
+
+def is_self(path):
+    """The path leads back to this wrapper, for example a symlink named codex."""
+    try:
+        return os.path.samefile(path, __file__)
+    except OSError:
+        return False
+
+
+def runnable(path):
+    """The path exists with the executable bit and is not this wrapper."""
+    return os.access(path, os.X_OK) and not is_self(path)
+
+
+def on_path():
+    """The first `codex` on PATH that is not this wrapper, None when there is none."""
+    for directory in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        found = shutil.which("codex", path=directory or os.curdir)
+        if found and not is_self(found):
+            return found
+    return None
+
+
+def app_candidates():
+    """The desktop-app bundle paths to probe: the override, one path per line, or the defaults."""
+    override = os.environ.get("CODEX_CLI_APP_BIN")
+    if override:
+        return [line for line in override.split("\n") if line]
+    return list(APP_BINS)
+
+
+def find_codex():
+    """The binary (None when there is none) and the locations probed without success, in order."""
+    found = on_path()
+    if found:
+        return found, []
+    probed = ["codex on PATH"]
+    for candidate in app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]:
+        if runnable(candidate):
+            return candidate, probed
+        probed.append(candidate)
+    return None, probed
+
+
+def restore_signals():
+    """Hand the binary the default handling of the signals the Python runtime ignores."""
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, signal.SIG_DFL)
+
+
+def main(argv):
+    binary, probed = find_codex()
+    if not binary:
+        print("codex-cli: Codex CLI not found. Looked for:", file=sys.stderr)
+        for location in probed:
+            print(f"  {location}", file=sys.stderr)
+        print("Install it with 'npm install -g @openai/codex' or 'brew install codex',", file=sys.stderr)
+        print("or install the ChatGPT desktop app, then retry.", file=sys.stderr)
+        return 127
+    restore_signals()
+    try:
+        os.execv(binary, [binary] + argv)
+    except OSError as e:
+        print(f"codex-cli: cannot run {binary}: {e.strerror}", file=sys.stderr)
+        return 126
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
