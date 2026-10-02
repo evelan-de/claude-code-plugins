@@ -698,7 +698,7 @@ check "(i) PR item: Slack start with the PR's title, escaped" has "*Autopilot st
 check "(i) PR item: what it is about, from the plan's Destination" has "Users export the report as CSV from /reports." "$slack"
 check "(i) PR item: the PR link at the start" has "effort xhigh · https://github.com/e/r/pull/21" "$slack"
 : >"$REC/repos.txt"; rm -f "$QH/repos.txt"
-# the plan's topic when there is no PR title, and valid JSON without jq
+# the plan's topic when there is no PR title, and a valid JSON payload
 git -C "$proj" checkout -q -b feat/PAUL-221-topic main
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic"
 printf '# PLAN - Quote "fix" - 2026-09-26\nBranch: feat/PAUL-221-topic   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-26-PAUL-221-topic/PLAN.md"
@@ -706,10 +706,10 @@ git -C "$proj" add -A; commit "$proj" -m "topic plan"; git -C "$proj" push -q or
 git -C "$proj" checkout -q main
 "$TOOL" add "$proj" docs/autopilot/sessions/2026-09-26-PAUL-221-topic feat/PAUL-221-topic >/dev/null
 : >"$REC/curl.args"
-out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 JQ_BIN=/nonexistent/jq PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
+out="$(FAKE_SCENARIO=report-full FAKE_GH_NO_PR=1 PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
 payload="$(grep -o -- '--data {.*} https://hooks' "$REC/curl.args" | tail -n 1 | sed 's/^--data //; s/ https:\/\/hooks$//')"
 check "(i) plan topic as the title when there is no PR" has "proj - Quote \\\"fix\\\"" "$(grep -F 'Autopilot started' "$REC/curl.args")"
-check "(i) without jq the Slack payload is valid JSON with newlines, quotes and a backslash" \
+check "(i) the Slack payload is valid JSON with newlines, quotes and a backslash" \
   python3 -c 'import json, sys; t = json.loads(sys.argv[1])["text"]; assert "\n*What shipped*\n" in t and "\"quotes\"" in t and "back\\slash" in t, t' "$payload"
 # Slack-safe text: escaping, links, umlauts cut by characters, control characters, heading variants
 cat >"$tmp/slack_payload.py" <<'PYEOF'
@@ -723,20 +723,17 @@ for line in open(sys.argv[1], encoding="utf-8"):
         sys.exit(0)
 sys.exit(1)
 PYEOF
-for jqmode in with without; do
-  : >"$REC/curl.args"
-  printf '%s PAUL-7e-%s\n' "$proj" "$jqmode" >"$QH/queue.txt"
-  jqbin=jq; [ "$jqmode" = without ] && jqbin=/nonexistent/jq
-  out="$(FAKE_SCENARIO=report-edge JQ_BIN="$jqbin" PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
-  msg="$(python3 "$tmp/slack_payload.py" "$REC/curl.args" "Autopilot done")"; got=$?
-  check "(i) $jqmode jq: the end message is valid JSON and UTF-8" [ "$got" -eq 0 ]
-  check "(i) $jqmode jq: <, > and & escaped, a Markdown link in Slack form" has "ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>" "$msg"
-  check "(i) $jqmode jq: the umlaut line cut to 220 characters, not inside a character" \
-    python3 -c 'import sys; l = [x for x in sys.argv[1].splitlines() if x.startswith("- ää")][0]; assert len(l) == 220, len(l)' "$msg"
-  check "(i) $jqmode jq: \"## Open Items:\" with CRLF found" has "*Open items*
+: >"$REC/curl.args"
+printf '%s PAUL-7e\n' "$proj" >"$QH/queue.txt"
+out="$(FAKE_SCENARIO=report-edge PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"
+msg="$(python3 "$tmp/slack_payload.py" "$REC/curl.args" "Autopilot done")"; got=$?
+check "(i) the end message is valid JSON and UTF-8" [ "$got" -eq 0 ]
+check "(i) <, > and & escaped, a Markdown link in Slack form" has "ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>" "$msg"
+check "(i) the umlaut line cut to 220 characters, not inside a character" \
+  python3 -c 'import sys; l = [x for x in sys.argv[1].splitlines() if x.startswith("- ää")][0]; assert len(l) == 220, len(l)' "$msg"
+check "(i) \"## Open Items:\" with CRLF found" has "*Open items*
 - none left" "$msg"
-done
-check "(i) without jq: the escape character is dropped" has "- esc [31mred[0m end" "$msg"
+check "(i) the escape character is dropped" has "- esc [31mred[0m end" "$msg"
 : >"$REC/curl.args"
 printf '%s PAUL-7f\n' "$proj" >"$QH/queue.txt"
 out="$(LC_ALL=de_DE.UTF-8 FAKE_SCENARIO=report PATH="$tmp/fakes:$PATH" "$TOOL" run 2>&1)"

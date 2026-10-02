@@ -69,6 +69,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 USAGE = __doc__.split("\n\n")[1]
@@ -1655,8 +1656,8 @@ def finish_item(it):
         else:
             gh_step(it, "gh pr edit (labels)", "pr", "edit", it.pr_number, "--remove-label", LABEL_READY,
                     "--add-label", LABEL_BLOCKED)
-        body_file = f"{LOGDIR}/.comment.{os.getpid()}"
-        with open(body_file, "w", encoding="utf-8") as f:
+        handle, body_file = tempfile.mkstemp(prefix="mission-control.")
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
             f.write(pr_comment(it))
         gh_step(it, "gh pr comment", "pr", "comment", it.pr_number, "--body-file", body_file)
         remove_file(body_file)
@@ -2266,4 +2267,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
