@@ -46,8 +46,13 @@ decisions, packages with their verification criteria). Of the session folder rea
 The gate result must be evidence, never a claim. Two acceptable sources, in this order:
 
 1. **Hook-written evidence log.** If `.claude/autopilot-gate.log` exists, take its last line
-   whose `cmd=` equals the `gate` in `.claude/autopilot.json` cut to its first line and
-   first 160 characters (the filter logs it that way). Accept it as the gate result
+   whose `cmd=` is the `gate` in `.claude/autopilot.json` (the filter logs the whole command
+   as it ran, line breaks as `\n`, a run below the project root as `cd <dir> && <command>`;
+   none of these is the gate). A `cmd=` with the gate behind
+   `timeout N` counts too. One with the gate behind environment assignments
+   (`TZ=... <gate>`, `env ... <gate>`, `cross-env ... <gate>`) counts as well; report it
+   as a GAP and name the assignments that `.claude/autopilot.json` does not carry.
+   Accept the line as the gate result
    ONLY if `exit=0` AND its `tree=` equals the output of
    `bash .claude/hooks/autopilot-gate-filter.sh tree` run now (the working-tree hash, committed
    or not). Quote that line in your output.
