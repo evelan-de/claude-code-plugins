@@ -20,7 +20,7 @@ time.
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
-| `paused` | One date, `YYYY-MM-DD` (local time): the schedule is paused through that day. Written by `pause`, removed by `resume` or by the first scheduled run after the date. See "Pause the schedule". |
+| `paused` | `until-resume`, or one date `YYYY-MM-DD` (local time): the schedule is paused until `resume`, or through that day. Written by `pause`, removed by `resume` or, for a date, by the first scheduled run after it. See "Pause the schedule". |
 | `force-once` | Written by `start`; the next scheduled run consumes it and goes ahead although a pause is set. |
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
 
@@ -58,10 +58,10 @@ mission-control status                    # one screen: running item, queue, lab
 mission-control stop                      # TERM the active run (it kills claude), wait up to 45 s
 mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autopilot-ready; item: add it again
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
-mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run today / through that day / for N days
+mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run until resume / through that day / for N days
 mission-control resume                    # lift the pause
 mission-control start                     # run now, inside the GUI session; installs the LaunchAgent on demand; refuses while a run is active
-mission-control install-schedule [22:00]  # LaunchAgent (macOS), daily at that time, or on demand only without a time; runs "run --scheduled"
+mission-control install-schedule [30m | 22:00]  # LaunchAgent (macOS): a check every N minutes, or daily at that time, or on demand only without an argument; runs "run --scheduled"; refuses while a run is active
 mission-control uninstall-schedule
 ```
 
@@ -76,10 +76,11 @@ against the merge-base>`;
 (a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
 token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
 session)` replace the counts, see "Over SSH"); `last done:` with the
-last five `done.txt` lines; `schedule: installed at HH:MM, active`, `schedule: installed at
-HH:MM, paused until <date>` (time read from the plist, date from `paused`), `schedule: on
-demand only ("mission-control start"), no nightly run` (a LaunchAgent without a time),
-`schedule: installed at HH:MM (legacy, ignores pause)` plus the warning line described under "Pause the
+last five `done.txt` lines; `schedule: every N min, active` or `schedule: installed at HH:MM,
+active`, with `paused until resume` or `paused until <date>` in place of `active` while a
+pause counts (interval and time read from the plist, the pause from `paused`), `schedule: on
+demand only ("mission-control start")` (a LaunchAgent without an interval or a time),
+`schedule: every N min (legacy, ignores pause)` plus the warning line described under "Pause the
 schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `lock: held by
 pid N`, `free`, or `stale` when the recorded pid is dead. No secrets: the env file is never
 printed.
@@ -109,12 +110,13 @@ directly.
 `start` runs `launchctl kickstart gui/<uid>/de.evelan.mission-control`: the LaunchAgent
 starts a `run` now, inside the GUI session, so the Keychain login is readable even when the
 command arrives over SSH. No LaunchAgent installed → it installs one without a schedule
-first (`install-schedule` with no time: the plist has no `StartCalendarInterval`, so it only
-runs on `start`). It refuses with exit 1 while a run is active (`a run is active (pid N,
-<item>), stop it first`). Output goes to `logs/launchd.log`; follow it with `log` once an
-item log exists. It works during a pause: it writes `force-once` before the `launchctl
-kickstart`, so that one scheduled run goes ahead and the pause stays for the following
-nights. A refused start writes nothing. `kickstart` is the old name and does the same.
+first (`install-schedule` with no argument: the plist has neither `StartInterval` nor
+`StartCalendarInterval`, so it only runs on `start`). It refuses with exit 1 while a run is
+active (`a run is active (pid N, <item>), stop it first`). Output goes to `logs/launchd.log`;
+follow it with `log` once an item log exists. It works during a pause: it writes `force-once`
+before the `launchctl kickstart`, so that one scheduled run goes ahead and the pause stays for
+the checks after it. A refused start writes nothing. `kickstart` is the old name and does the
+same.
 
 `labels` is the one source of truth for the three labels (`autopilot-ready` 0E8A16,
 `autopilot-done` 1D76DB, `autopilot-blocked` B60205, each with a description). It prints
@@ -256,12 +258,17 @@ continue with the other repos and the list, and exit 1 at the end.
 Claude Code keeps its login in the macOS Keychain. A shell over SSH, or a launchd job
 outside your GUI session, cannot read it: `claude -p` says "Not logged in" although the Mac
 is logged in. So start `run` from a Terminal in the Mac's own session, or install the
-schedule: `install-schedule HH:MM` writes
+schedule: `install-schedule 30m` (a check every 30 minutes, `StartInterval`) or
+`install-schedule HH:MM` (once a day, `StartCalendarInterval`) writes
 `~/Library/LaunchAgents/de.evelan.mission-control.plist`, loaded with
 `launchctl bootstrap gui/<uid>`, which runs inside the GUI session. The agent runs
-`mission-control run --scheduled` (the flag is what makes a pause count). Re-running
-`install-schedule` replaces the plist: bootout, then bootstrap. Output goes to
-`logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
+`mission-control run --scheduled` (the flag is what makes a pause count). A check with
+nothing queued and no labelled PR ends after it has asked `gh` once per repo of
+`repos.txt`; a check that falls into an active run writes one line to `queue.log`
+(`another run is active (pid N): scheduled check skipped`) and exits 0. Re-running
+`install-schedule` replaces the plist: bootout, then bootstrap; it refuses while a run is
+active (`a run is active (pid N, <item>), stop it first`), because the bootout would end
+that run. Output goes to `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token` (kept in a mode-600 file) before `run`. `doctor` checks the login and
 prints this hint when it fails.
 
@@ -272,7 +279,7 @@ that arrives over SSH cannot read it. The script says so once, `gh: token not re
 this SSH session (macOS Keychain); labelled PRs unknown here, the scheduled run in the GUI
 session sees them`, and `status` shows `labelled PRs: unknown (gh not authenticated in this
 session)` instead of the counts. That is not a login problem and not 47 broken projects:
-the nightly run starts from the LaunchAgent inside the GUI session, reads the token and
+the scheduled run starts from the LaunchAgent inside the GUI session, reads the token and
 sees every labelled PR. Only a manual `run` over SSH is blind to PRs; its queue items still
 run. Optional, the owner's call: `gh auth login -h github.com -w --insecure-storage` stores
 the token in a mode-600 file (`~/.config/gh/hosts.yml`) instead of the Keychain, which makes
@@ -287,41 +294,45 @@ directory `$HOME`.
 
 ## Pause the schedule
 
-Three commands, one file (`paused`, holding a date `YYYY-MM-DD` in local time):
+Three commands, one file (`paused`, holding `until-resume` or a date `YYYY-MM-DD` in local
+time):
 
 ```
-mission-control pause                     # today only: "paused until 2026-09-20"
+mission-control pause                     # until resume: "paused until resume"
 mission-control pause until 2026-09-25    # through that day inclusive
-mission-control pause 3d                  # today plus three days
+mission-control pause 3d                  # today plus three days (0d: today only)
 mission-control resume                    # "resumed", or "not paused"
 ```
 
-`pause` prints `paused until <date>` and writes that date. A date that is not a real
-calendar day (`2026-02-30`, `31.12.2026`, a weekday name) is refused with exit 2 (`not a
-date: '...'`), and so is a date before today (`date is in the past: <date>`); the file stays
-as it was in both cases. Today itself is allowed.
+`pause` prints `paused until resume` or `paused until <date>` and writes the file. A date
+that is not a real calendar day (`2026-02-30`, `31.12.2026`, a weekday name) is refused with
+exit 2 (`not a date: '...'`), and so is a date before today (`date is in the past: <date>`);
+the file stays as it was in both cases. Today itself is allowed.
 
-What a pause does: the LaunchAgent starts `run --scheduled`. While the pause is valid (its
-date is today or later) that run prints and logs `paused until <date>: scheduled run skipped
-(manual runs still work)` and exits 0 without taking the lock or touching the queue. The
-first scheduled run after the date removes the file, logs `pause expired (<date>), file
-removed` in `queue.log` and goes on as usual. A `paused` file without a readable date
-(empty, or hand-edited) is removed too; that run prints and logs `pause file unreadable
-(<content or empty>), removed, run goes ahead`. `status` shows `schedule: installed at
-HH:MM, paused until <date>` while the pause is valid, `..., active` otherwise.
+What a pause does: the LaunchAgent starts `run --scheduled`. While the pause is valid (until
+`resume`, or a date that is today or later) that run prints and logs `paused until <resume
+or date>: scheduled run skipped (manual runs still work)` and exits 0 without taking the
+lock or touching the queue. A pause until resume ends only with `resume`. The first
+scheduled run after a pause date removes the file, logs `pause expired (<date>), file
+removed` in `queue.log` and goes on as usual. A `paused` file with anything else (empty, or
+hand-edited) is removed too; that run prints and logs `pause file unreadable (<content or
+empty>), removed, run goes ahead`. `status` shows `schedule: every N min, paused until
+resume` (or the date; `installed at HH:MM` for a daily schedule) while the pause is valid,
+`..., active` otherwise.
 
 Legacy schedule: a LaunchAgent installed before the pause feature runs plain `run`, without
 `--scheduled`, so it never looks at the pause file. `pause`, `resume` and `status` detect
 that (the plist's `ProgramArguments` lack `--scheduled`) and print `schedule installed
-without --scheduled: run "mission-control install-schedule HH:MM" again, otherwise the
-nightly job ignores the pause` with the time read from the plist; `status` shows
-`schedule: installed at HH:MM (legacy, ignores pause)` instead of active or paused. The
-pause file is still written; reinstalling the schedule makes it count.
+without --scheduled: run "mission-control install-schedule <30m or HH:MM>" again, otherwise
+the scheduled job ignores the pause` with the interval or time read from the plist; `status`
+shows `schedule: <every N min or installed at HH:MM> (legacy, ignores pause)` instead of
+active or paused. The pause file is still written; reinstalling the schedule makes it count.
 
-What a pause does not do: a manual `mission-control run` (no flag) ignores it entirely, and
-`start` overrides it once: it writes `force-once`, which the scheduled run it starts
-consumes at its start (and which a scheduled run removes at its end in any case), so a
-"start now" during a pause works and the pause still holds for the following nights.
+What a pause does not do: it does not end a run that is active (that is `stop`); a manual
+`mission-control run` (no flag) ignores it entirely; and `start` overrides it once: it
+writes `force-once`, which the scheduled run it starts consumes at its start (and which a
+scheduled run removes at its end in any case), so a "start now" during a pause works and the
+pause still holds for the checks after it.
 
 ## Slack notifications
 

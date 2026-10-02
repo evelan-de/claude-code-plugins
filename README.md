@@ -1,11 +1,11 @@
 # Evelan Claude Code Plugins
 
 The Evelan team's skills, agents and helper scripts for Claude Code: plan a ticket with
-Claude and let the office Mini implement it overnight, review code, work with Codex, and a
+Claude and let the office Mini implement it unattended, review code, work with Codex, and a
 set of everyday helpers.
 
 **Contents:** [Install](#install) · [Documentation](#documentation) ·
-[Autopilot](#autopilot-tickets-implemented-overnight) · [All skills](#all-skills) ·
+[Autopilot](#autopilot-tickets-implemented-unattended) · [All skills](#all-skills) ·
 [Helper scripts](#helper-scripts) · [Working on this plugin](#working-on-this-plugin)
 
 ## Install
@@ -38,7 +38,7 @@ To have Claude offer the plugin to everyone who opens a project, add this to the
 | Document | For | Covers |
 | --- | --- | --- |
 | [Autopilot for developers](docs/autopilot-developer-guide.md) | every developer | planning a ticket, handing it to the queue, what a run does, PR labels, reviewing the result, blocked runs |
-| [Mission control](skills/autopilot/references/mission-control.md) | whoever runs the queue on the office Mini | queue files, commands, nightly schedule, Slack, Jira credentials, logs |
+| [Mission control](skills/autopilot/references/mission-control.md) | whoever runs the queue on the office Mini | queue files, commands, schedule and pause, Slack, Jira credentials, logs |
 | [Plan template](skills/autopilot-plan/references/plan-template.md) | plan writers | the `PLAN.md` format, including the `Model:` and `Effort:` lines |
 | [Project setup](skills/autopilot/references/init.md) | once per project | what `/autopilot init` installs |
 | [Browser checks](skills/autopilot/references/browser.md) | projects with a UI | how a run checks the app with `agent-browser`, login state files |
@@ -46,7 +46,7 @@ To have Claude offer the plugin to everyone who opens a project, add this to the
 All documents, including the dated notes on changes and decisions: [`docs/`](docs/README.md).
 Each skill's full instructions are in `skills/<name>/SKILL.md`.
 
-## Autopilot: tickets implemented overnight
+## Autopilot: tickets implemented unattended
 
 You write the plan together with Claude in your own session; the office Mini implements it
 unattended and hands you a reviewed pull request.
@@ -58,7 +58,8 @@ unattended and hands you a reviewed pull request.
    model and effort. It writes `PLAN.md` on a new branch.
 3. **Hand over:** Claude pushes the branch and opens a draft PR with the label
    `autopilot-ready`.
-4. **Run:** the office Mini picks it up at 22:00 and says so on the PR and in Slack
+4. **Run:** the office Mini looks for labelled PRs every 30 minutes, picks it up at its next
+   check (after the run it is on, if one is active) and says so on the PR and in Slack
    `#mission-control` (title and what it is about). It implements the plan test-first,
    reviews the whole branch, checks the result in a browser and marks the PR ready for
    review. At the end Slack shows what shipped and what is still open; the report is also a

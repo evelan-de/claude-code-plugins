@@ -3,8 +3,9 @@
 How you hand a ticket to the autopilot and get a reviewed pull request back.
 
 **In one sentence:** you write the plan together with Claude in your own session, Claude
-opens a draft PR with the label `autopilot-ready`, and the queue on the office Mini
-implements it overnight and returns a ready PR with a report, which you review and merge.
+opens a draft PR with the label `autopilot-ready`, and the queue on the office Mini picks
+it up within half an hour, implements it unattended and returns a ready PR with a report,
+which you review and merge.
 
 The full instructions behind this guide:
 [plan skill](../skills/autopilot-plan/SKILL.md) ·
@@ -35,7 +36,7 @@ decisions are. The **run** asks nothing, because every decision is already in th
 ```mermaid
 flowchart TB
     A["1 · Your machine, with Claude<br/>/autopilot-plan KEY writes PLAN.md"] --> B["2 · GitHub<br/>draft PR, label autopilot-ready"]
-    B --> C["3 · Office Mini, nightly at 22:00<br/>implements test-first, reviews,<br/>checks the result in a browser"]
+    B --> C["3 · Office Mini, checks every 30 minutes<br/>implements test-first, reviews,<br/>checks the result in a browser"]
     C --> D["4 · GitHub<br/>ready PR, label autopilot-done,<br/>report as a comment"]
     D --> E["5 · You<br/>review and merge"]
     C -.-> N["Slack message<br/>Jira comment"]
@@ -85,7 +86,7 @@ sequenceDiagram
     CS->>Dev: packages, model and effort (once)
     Dev->>CS: approve
     CS->>GH: branch with PLAN.md, draft PR, label autopilot-ready
-    Note over MC: nightly at 22:00
+    Note over MC: next check (every 30 minutes)
     MC->>GH: finds the labelled PR, posts "Autopilot started"
     MC->>Run: starts the run on your branch
     loop per package
@@ -200,10 +201,11 @@ Good answers to the shape questions name:
 Sonnet always runs at `xhigh` or `max`; a lower value is raised. Say what you want while
 planning ("opus, high"), or change it later with `/autopilot <session dir> opus high`
 (either word alone works too). For a PR already handed to the queue, edit the two lines in
-`PLAN.md` on the branch and push before 22:00.
+`PLAN.md` on the branch and push before the start comment appears.
 
-The plan lands in `docs/autopilot/sessions/<date>-<KEY>-<slug>/PLAN.md`. Read it before the
-night: the goal artifact, the decisions, and whether the packages match what you had in mind.
+The plan lands in `docs/autopilot/sessions/<date>-<KEY>-<slug>/PLAN.md`. Read it before you
+hand it over: the goal artifact, the decisions, and whether the packages match what you had
+in mind.
 
 ### 5.3 Hand it over
 
@@ -217,14 +219,19 @@ The draft status matters: the Claude review bot skips drafts, so it reviews only
 run marks the PR ready. To hand over an existing plan by hand: push the branch, open a draft
 PR and add the label `autopilot-ready`. That is all the queue looks for.
 
+The label means "start now": set it only when the plan is final. A plan you still want to
+change stays a draft PR without the label.
+
 ### 5.4 While it runs
 
-The queue on the office Mini starts **every night at 22:00** and works one PR after another.
-Andreas can also start it right away. Your machine and session can be closed.
+The queue on the office Mini looks for labelled PRs **every 30 minutes**, around the clock,
+and works one PR after another: a PR labelled while a run is active starts when that run has
+finished. Andreas can pause the queue; then nothing starts until he resumes it. Your machine
+and session can be closed.
 
 - **The start comment.** When your PR's turn comes, the runner posts "Autopilot started on
-  ... (model, effort)" on the PR. Until then you may push; from then on, do not push until
-  the result comment arrives.
+  ... (model, effort)" on the PR. From then on, do not push until the result comment
+  arrives.
 - **Jira.** The ticket moves to In Progress; its assignee stays as it is. A ticket without
   an assignee gets Andreas (the Jira account the Mini uses).
 - **Commits.** The run's commits on your branch are made on the Mini under Andreas' Git name.
@@ -297,7 +304,7 @@ stateDiagram-v2
     state "Running<br/>(start comment posted)" as Running
     state "Ready PR<br/>autopilot-done" as Done
     state "PR<br/>autopilot-blocked" as Blocked
-    Waiting --> Running: queue at 22:00
+    Waiting --> Running: next check of the queue
     Running --> Done: finished
     Running --> Blocked: blocked, timeout,<br/>too many hand-offs
     Blocked --> Waiting: you fix the cause,<br/>set autopilot-ready again
@@ -307,7 +314,7 @@ stateDiagram-v2
 
 | Label | Meaning | Your move |
 | --- | --- | --- |
-| `autopilot-ready` | waiting for the queue, or running once the start comment is there | before the start comment: push freely; after it: wait |
+| `autopilot-ready` | waiting for the queue's next check, or running once the start comment is there | set it when the plan is final; after the start comment: wait |
 | `autopilot-done` | finished, PR is ready, report posted | review ([section 8](#8-reviewing-the-result)) |
 | `autopilot-blocked` | stopped, reason in the PR comment and in Slack | fix the cause, relabel ([section 9](#9-when-a-run-is-blocked)) |
 | `claude-re-review` | asks the Claude review bot for one more full review | add it after your own changes if you want a second bot pass; the bot removes it |
