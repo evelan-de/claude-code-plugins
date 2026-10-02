@@ -58,7 +58,7 @@ assert_passthrough "passthrough" "git status --short" "pnpm test # raw" "test -f
 # runner cases (must rewrite)
 assert_rewrites "rewrites" "pnpm test 2>&1" "npm run lint" "npx vitest run src/x.test.ts" "yarn typecheck" "cd apps/web && pnpm run check-types" "npx tsc --noEmit" "bun run build" "npm run build:docs" "pnpm --filter web run test" "pnpm -r test" "yarn workspace foo test" "pnpm exec playwright test" "timeout 600 pnpm test"
 
-# environment in front of a runner: NAME=value assignments and env (must rewrite)
+# in front of a runner: NAME=value assignments, env, cross-env, timeout, an export (must rewrite)
 assert_rewrites "rewrites with an env prefix" "TZ=Europe/Berlin npm run lint" "env TZ=UTC npm run test" "TZ=UTC LANG=C pnpm test" "FOO=\"a b\" npm test" "env TZ=UTC timeout 600 npm test" "timeout 600 env TZ=UTC npm test" "cross-env TZ=UTC npm test" "npx cross-env TZ=UTC npm run lint" "export TZ=Europe/Berlin; npm run typecheck && npm test" "cd apps/web && TZ=UTC npx vitest run"
 # an assignment or env in front of something that is no runner passes through
 assert_passthrough "passthrough" "TZ=UTC git status" "env" "env TZ=UTC date" "FOO=bar" "cross-env TZ=UTC node server.js" "timeout 5 curl -s localhost"
