@@ -115,9 +115,9 @@ before declaring done. At the end print the table of
 ### 1. Gate, branch, ticket
 Gate = `.claude/autopilot.json` `gate`; if missing, compose it from the package manager
 (lockfile) and the existing scripts (`references/init.md`) and persist it. A gate that only
-passes with a fixed environment (a time zone, a locale) carries it in that string
-(`TZ=Europe/Berlin npm run gate`): put it there, commit `.claude/autopilot.json`, one line in
-`DECISIONS.md`; never prefix it per run. No test runner →
+passes with a fixed environment (a time zone, a locale) carries it in that string as an export
+in front (`export TZ=Europe/Berlin; npm run typecheck && npm test`): put it there, commit
+`.claude/autopilot.json`, one line in `DECISIONS.md`; never prefix it per run. No test runner →
 set one up minimally, project-consistent, before implementing. Create
 `.claude/.autopilot-active` whenever `.claude/autopilot.json` exists; remove it (and
 `.claude/.autopilot-gate-blocks`) at the end and on every abort; never commit either.
@@ -153,12 +153,11 @@ For each package with `[ ]`: set `[~]`, then
 - **Failures:** one hypothesis, one change, re-run. After the second failed fix on the same
   failure: write observed vs expected, bisect, then fix. Never weaken an assertion.
 - **Docs** directly affected by the package (inline, the touched area's doc file).
-- **Full gate once** (`.claude/autopilot.json` `gate`, the whole command as written there,
-  not a subset); paste its summary line. The gate filter rewrites that command and writes
-  one line per run into `.claude/autopilot-gate.log`. No `GATE GREEN`/`GATE RED` in the
-  output means the filter did not take the command: write it into a file after a
-  `# CMD: <command>` line and run `bash .claude/hooks/autopilot-gate-filter.sh run <file>`.
-  A package commit without a gate line for the gate command is a defect the reviewer flags. Green → commit (Conventional Commits,
+- **Full gate once** (`.claude/autopilot.json` `gate`, the whole command exactly as written
+  there, not a subset, no further arguments); paste its summary line. The gate filter
+  rewrites that command, prints `GATE GREEN` or `GATE RED` and writes one line per run into
+  `.claude/autopilot-gate.log`; the reviewer takes the gate result from that line.
+  Green → commit (Conventional Commits,
   ticket key). Set `[x]` with a one-line result under the package (commits, gate line), or
   `[!]` with the gap named. Append `DECISIONS.md` for every assumption you made.
 

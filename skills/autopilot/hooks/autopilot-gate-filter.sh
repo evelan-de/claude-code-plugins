@@ -12,8 +12,10 @@
 #         original command. Everything else passes through ({}).
 #         A gate command is: a test/lint/typecheck/build/gate script of a package manager, a
 #         runner binary (vitest, jest, tsc, eslint, ...), or the project's own `gate` or
-#         `gateFull` from .claude/autopilot.json. Each may follow environment assignments
-#         (`TZ=Europe/Berlin npm run gate`), `env NAME=value ...` and `timeout N`.
+#         `gateFull` from .claude/autopilot.json (the whole one-line string, no further
+#         arguments). Each may follow environment assignments
+#         (`TZ=Europe/Berlin npm run gate`), `env NAME=value ...`, `cross-env NAME=value ...`
+#         and `timeout N`, in any order.
 #
 #   run <cmdfile>
 #         Executes the saved command in the saved cwd, in the user's login shell ($SHELL
@@ -38,14 +40,19 @@ LOG="$PROJECT_DIR/.claude/autopilot-gate.log"
 SELF="$PROJECT_DIR/.claude/hooks/autopilot-gate-filter.sh"
 MAX_LINES="${AUTOPILOT_GATE_MAX_LINES:-200}"
 
+# What ends a script or runner name: a blank (arguments follow), an operator, a redirect, the end.
+WORD_END='([[:space:];&|)<>]|$)'
+# What ends the project's own gate: an operator, a redirect or the end. Further arguments make
+# it another command.
+GATE_END='[[:space:]]*([;&|)<>]|[0-9]+[<>]|$)'
 # Package-manager scripts: <pm> [exec|workspace X|--filter X|-r|--recursive|-w X]* [run] <script>
-PM_RE='(npx|pnpm|npm|yarn|bun)( (exec|workspace [^ ]+|--filter [^ ]+|-r|--recursive|-w [^ ]+))*( run)? (test|test:[a-z0-9:_-]+|lint|lint:[a-z0-9:_-]+|typecheck|type-check|check-types|format:check|build|build:[a-z0-9:_-]+|gate|gate:[a-z0-9:_-]+)([[:space:]]|$)'
+PM_RE='(npx|pnpm|npm|yarn|bun)( (exec|workspace [^ ]+|--filter [^ ]+|-r|--recursive|-w [^ ]+))*( run)? (test|test:[a-z0-9:_-]+|lint|lint:[a-z0-9:_-]+|typecheck|type-check|check-types|format:check|build|build:[a-z0-9:_-]+|gate|gate:[a-z0-9:_-]+)'"$WORD_END"
 # Direct runner binaries (with or without npx/exec prefix)
-BIN_RE='((npx|pnpm exec|npm exec|yarn|bunx) )?(vitest|jest|mocha|playwright|tsc|eslint|biome|prettier)([[:space:]]|$)'
-# What may stand in front of a gate command: the start of a command, then `env`, environment
-# assignments (NAME=value, the value bare or quoted) and `timeout N`.
+BIN_RE='((npx|pnpm exec|npm exec|yarn|bunx) )?(vitest|jest|mocha|playwright|tsc|eslint|biome|prettier)'"$WORD_END"
+# What may stand in front of a gate command: the start of a command, then any of `env`,
+# `cross-env`, environment assignments (NAME=value, the value bare or quoted) and `timeout N`.
 ASSIGN='[A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|()]*)'
-PREFIX='(^|[;&|(]|then |do )[[:space:]]*(env[[:space:]]+)?('"$ASSIGN"'[[:space:]]+)*(timeout [0-9]+[smh]? )?'
+PREFIX='(^|[;&|(]|then |do )[[:space:]]*((env|(npx )?cross-env)[[:space:]]+|'"$ASSIGN"'[[:space:]]+|timeout [0-9]+[smh]?[[:space:]]+)*'
 FAIL_RE='FAIL|✗|×|✘|✕|●|Error|error|ERR!|AssertionError|Expected|expected|Received|received|failed|Failed|TS[0-9]{4}|not ok|✖|Timed out|timed out'
 
 tree_hash() {
@@ -125,18 +132,22 @@ case "$cmd" in
 esac
 
 # The project's own gate commands (`gate`, `gateFull` in autopilot.json) as one ERE
-# alternation of literal strings; nothing when neither is a non-empty string.
-own_gates_re() {
-  jq -r '[.gate, .gateFull][] | select(type == "string" and length > 0)' "$CONFIG" 2>/dev/null \
+# alternation of literal strings, each trimmed; nothing when neither is a one-line string.
+project_gates_re() {
+  jq -r '[.gate, .gateFull][] | select(type == "string") | gsub("^\\s+|\\s+$"; "")
+         | select(length > 0 and (test("\n") | not))' "$CONFIG" 2>/dev/null \
     | sed -e 's/[][(){}.*+?^$|\\]/\\&/g' | paste -s -d '|' -
 }
 
+# $1 an ERE for what follows the prefix: true when the command holds a match
+cmd_has() { printf '%s' "$cmd" | grep -q -E "${PREFIX}$1"; }
+
 is_gate=no
-if printf '%s' "$cmd" | grep -q -E "${PREFIX}${PM_RE}" || printf '%s' "$cmd" | grep -q -E "${PREFIX}${BIN_RE}"; then
+if cmd_has "(${PM_RE}|${BIN_RE})"; then
   is_gate=yes
 else
-  own="$(own_gates_re)"
-  if [ -n "$own" ] && printf '%s' "$cmd" | grep -q -E "${PREFIX}(${own})([[:space:];&|)]|\$)"; then
+  project_gates="$(project_gates_re)"
+  if [ -n "$project_gates" ] && cmd_has "(${project_gates})${GATE_END}"; then
     is_gate=yes
   fi
 fi

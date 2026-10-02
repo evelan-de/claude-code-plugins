@@ -9,10 +9,11 @@ Never overwrite existing config.
    Needs the gate in `.claude/autopilot.json`; counts blocks in `.claude/.autopilot-gate-blocks`.
 2. **Gate-output filter** (`autopilot-gate-filter.sh`, PreToolUse on Bash): rewrites gate
    commands to show failures plus summary, keeps the exit status, appends one evidence line
-   per run (with the whole command) to `.claude/autopilot-gate.log`. Gate commands are the
-   package manager's test, lint, typecheck, build and gate scripts, the runner binaries
-   (vitest, jest, tsc, eslint, ...) and the `gate` and `gateFull` of `.claude/autopilot.json`,
-   each also behind `NAME=value` assignments, `env` or `timeout N`.
+   per run (with the command: its first line, up to 160 characters) to
+   `.claude/autopilot-gate.log`. Gate commands are the package manager's test, lint,
+   typecheck, build and gate scripts, the runner binaries (vitest, jest, tsc, eslint, ...)
+   and the `gate` and `gateFull` of `.claude/autopilot.json` exactly as written there,
+   each also behind `NAME=value` assignments, `env`, `cross-env` or `timeout N`.
    Active in every session once `.claude/autopilot.json` exists; `# raw` in a command bypasses it.
    Needs `jq`.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
@@ -62,8 +63,9 @@ runner's `--help` before adding a flag; never break an existing script.
 { "gate": "<composed cheap gate>" }
 ```
 If the file exists with a different gate, show the diff and keep the existing one unless the
-detected commands are clearly better - explain what you chose. A gate that only passes with a
-fixed environment carries it in the string, e.g. `{ "gate": "TZ=Europe/Berlin npm run gate" }`.
+detected commands are clearly better - explain what you chose. The gate is one
+line. A gate that only passes with a fixed environment carries it in the string as an export
+in front, e.g. `{ "gate": "export TZ=Europe/Berlin; npm run typecheck && npm test" }`.
 Optional second key `gateFull`:
 the project's full gate (e.g. `npm run gate:full` with integration tests), run once before
 the push. Wire it only when the project already has such a script; never invent one.

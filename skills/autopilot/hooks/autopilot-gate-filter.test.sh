@@ -26,6 +26,24 @@ hook_json() {
 }
 hook() { CLAUDE_PROJECT_DIR="$P" bash "$P/.claude/hooks/autopilot-gate-filter.sh"; }
 
+# $1 label, then the commands: each must pass through untouched, with nothing on stderr
+assert_passthrough() {
+  local label="$1" c out; shift
+  for c in "$@"; do
+    out="$(hook_json "$P" "$c" | hook 2>&1)"
+    [ "$out" = "{}" ] && ok "$label: $c" || fail "$label: $c (got $out)"
+  done
+}
+# $1 label, then the commands: each must be rewritten to the filter's run mode
+assert_rewrites() {
+  local label="$1" c out new; shift
+  for c in "$@"; do
+    out="$(hook_json "$P" "$c" | hook)"
+    new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
+    case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "$label: $c";; *) fail "$label: $c (got: $out)";; esac
+  done
+}
+
 if ! command -v jq >/dev/null 2>&1; then echo "SKIP - jq not installed"; exit 0; fi
 
 P="$(mk_project)"
@@ -35,42 +53,34 @@ out="$(hook_json "$P" "pnpm test" | hook)"
 echo '{ "gate": "pnpm test" }' >"$P/.claude/autopilot.json"
 
 # passthrough cases (must NOT rewrite)
-for c in "git status --short" "pnpm test # raw" "test -f .env && echo ok" "[ -d x ] || test -d y" "if true; then test 1; fi" "docker build ." "git checkout build" "mkdir build" "git test-branch"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  [ "$out" = "{}" ] && ok "passthrough: $c" || fail "passthrough: $c (got $out)"
-done
+assert_passthrough "passthrough" "git status --short" "pnpm test # raw" "test -f .env && echo ok" "[ -d x ] || test -d y" "if true; then test 1; fi" "docker build ." "git checkout build" "mkdir build" "git test-branch"
 
 # runner cases (must rewrite)
-for c in "pnpm test 2>&1" "npm run lint" "npx vitest run src/x.test.ts" "yarn typecheck" "cd apps/web && pnpm run check-types" "npx tsc --noEmit" "bun run build" "npm run build:docs" "pnpm --filter web run test" "pnpm -r test" "yarn workspace foo test" "pnpm exec playwright test" "timeout 600 pnpm test"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
-  case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites: $c";; *) fail "rewrites: $c (got: $out)";; esac
-done
+assert_rewrites "rewrites" "pnpm test 2>&1" "npm run lint" "npx vitest run src/x.test.ts" "yarn typecheck" "cd apps/web && pnpm run check-types" "npx tsc --noEmit" "bun run build" "npm run build:docs" "pnpm --filter web run test" "pnpm -r test" "yarn workspace foo test" "pnpm exec playwright test" "timeout 600 pnpm test"
 
 # environment in front of a runner: NAME=value assignments and env (must rewrite)
-for c in "TZ=Europe/Berlin npm run lint" "env TZ=UTC npm run test" "TZ=UTC LANG=C pnpm test" "FOO=\"a b\" npm test" "env TZ=UTC timeout 600 npm test" "cd apps/web && TZ=UTC npx vitest run"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
-  case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites with an env prefix: $c";; *) fail "rewrites with an env prefix: $c (got: $out)";; esac
-done
+assert_rewrites "rewrites with an env prefix" "TZ=Europe/Berlin npm run lint" "env TZ=UTC npm run test" "TZ=UTC LANG=C pnpm test" "FOO=\"a b\" npm test" "env TZ=UTC timeout 600 npm test" "timeout 600 env TZ=UTC npm test" "cross-env TZ=UTC npm test" "npx cross-env TZ=UTC npm run lint" "export TZ=Europe/Berlin; npm run typecheck && npm test" "cd apps/web && TZ=UTC npx vitest run"
 # an assignment or env in front of something that is no runner passes through
-for c in "TZ=UTC git status" "env" "env TZ=UTC date" "FOO=bar"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  [ "$out" = "{}" ] && ok "passthrough: $c" || fail "passthrough: $c (got $out)"
-done
+assert_passthrough "passthrough" "TZ=UTC git status" "env" "env TZ=UTC date" "FOO=bar" "cross-env TZ=UTC node server.js" "timeout 5 curl -s localhost"
 
 # the project's own gate commands: a script called gate, and whatever autopilot.json names
 echo '{ "gate": "npm run gate", "gateFull": "./check.sh --mode=a.b (all)" }' >"$P/.claude/autopilot.json"
-for c in "npm run gate" "npm run gate:full" "TZ=Europe/Berlin npm run gate" "env TZ=UTC npm run gate" "cd apps/web && npm run gate" "./check.sh --mode=a.b (all)" "CI=1 ./check.sh --mode=a.b (all) 2>&1"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
-  case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites the project's gate: $c";; *) fail "rewrites the project's gate: $c (got: $out)";; esac
-done
+assert_rewrites "rewrites the project's gate" "npm run gate" "npm run gate:full" "TZ=Europe/Berlin npm run gate" "env TZ=UTC npm run gate" "cd apps/web && npm run gate" "./check.sh --mode=a.b (all)" "CI=1 ./check.sh --mode=a.b (all) 2>&1"
 # a command that only mentions the gate, or looks like it, passes through; # raw still bypasses
-for c in "echo run the gate" "git commit -m 'gate green'" "echo npm run gate" "grep gate package.json" "cat .claude/autopilot-gate.log" "./check.sh --mode=aXb (all)" "./check.sh --mode=a.b (all)-docs" "npm run gate # raw" "TZ=Europe/Berlin npm run gate # raw"; do
-  out="$(hook_json "$P" "$c" | hook)"
-  [ "$out" = "{}" ] && ok "passthrough: $c" || fail "passthrough: $c (got $out)"
-done
+assert_passthrough "passthrough" "echo run the gate" "git commit -m 'gate green'" "echo npm run gate" "grep gate package.json" "cat .claude/autopilot-gate.log" "./check.sh --mode=aXb (all)" "./check.sh --mode=a.b (all)-docs" "npm run gate # raw" "TZ=Europe/Berlin npm run gate # raw"
+# the project's gate counts as a whole command: followed by an operator or a redirect it is
+# the gate, followed by further arguments it is another command
+assert_rewrites "rewrites the project's gate" "./check.sh --mode=a.b (all)>out.txt" "./check.sh --mode=a.b (all);echo done" "./check.sh --mode=a.b (all) | tail -n 5" "npm run gate;echo done" "npm run gate>out.txt" "npx tsc --noEmit;echo done"
+assert_passthrough "passthrough" "./check.sh --mode=a.b (all) --help" "./check.sh --mode=a.b (all) extra"
+echo '{ "gate": "make" }' >"$P/.claude/autopilot.json"
+assert_rewrites "rewrites the project's gate" "make" "TZ=UTC make 2>&1"
+assert_passthrough "passthrough" "make -C docs html" "make clean" "cmake ." "git commit -m make"
+# the gate string is read trimmed; a gate of several lines is no single command to recognise
+printf '{ "gate": "  ./a.sh \\n", "gateFull": "\\n" }\n' >"$P/.claude/autopilot.json"
+assert_rewrites "rewrites the trimmed gate" "./a.sh"
+assert_passthrough "passthrough (blank gateFull)" "git status"
+printf '{ "gate": "./a.sh\\n./b.sh" }\n' >"$P/.claude/autopilot.json"
+assert_passthrough "passthrough (gate of several lines)" "./a.sh" "./b.sh" "git status"
 # a config without a usable gate does not break the hook
 echo '{ "gate": "", "gateFull": 7 }' >"$P/.claude/autopilot.json"
 out="$(hook_json "$P" "git status" | hook)"
@@ -87,6 +97,16 @@ res="$(cd "$P" && CLAUDE_PROJECT_DIR="$P" bash -c "$new")"; rc=$?
 case "$res" in *"GATE GREEN"*"Europe/Berlin"*) ok "the env prefix is in effect for the gate";; *) fail "env prefix not in effect: $res";; esac
 grep -q -E 'exit=0.*cmd=TZ=Europe/Berlin printenv TZ$' "$P/.claude/autopilot-gate.log" \
   && ok "the evidence line keeps the env prefix" || fail "evidence line: $(tail -n1 "$P/.claude/autopilot-gate.log" 2>/dev/null)"
+# a gate made of several commands gets its environment through an export in front: every
+# command of the chain runs with it, and the gate string as a whole is recognised
+echo '{ "gate": "export TZ=Europe/Berlin; printenv TZ && printenv TZ" }' >"$P/.claude/autopilot.json"
+out="$(hook_json "$P" "export TZ=Europe/Berlin; printenv TZ && printenv TZ" | hook)"
+new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
+res="$(cd "$P" && CLAUDE_PROJECT_DIR="$P" bash -c "$new")"; rc=$?
+[ -n "$new" ] && [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$res" | grep -c '^Europe/Berlin$')" = 2 ] \
+  && ok "an exported environment reaches every command of a chained gate" || fail "chained gate with export: '$new' exit $rc ($res)"
+grep -q -E 'cmd=export TZ=Europe/Berlin; printenv TZ && printenv TZ$' "$P/.claude/autopilot-gate.log" \
+  && ok "the evidence line of a chained gate equals the gate string" || fail "chained gate evidence: $(tail -n1 "$P/.claude/autopilot-gate.log")"
 echo '{ "gate": "pnpm test" }' >"$P/.claude/autopilot.json"
 
 # cmdfile keeps cwd and the original command

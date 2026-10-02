@@ -47,10 +47,11 @@ The gate result must be evidence, never a claim. Two acceptable sources, in this
 
 1. **Hook-written evidence log.** If `.claude/autopilot-gate.log` exists, take its last line
    whose `cmd=` is the `gate` in `.claude/autopilot.json` cut to its first line and
-   first 160 characters (the filter logs it that way). A `cmd=` that puts environment
-   assignments in front of the gate (`TZ=... <gate>`, `env ... <gate>`) counts too; name the
-   prefix in your output, and report it as a GAP when `.claude/autopilot.json` does not
-   carry it. Accept the line as the gate result
+   first 160 characters (the filter logs it that way). A `cmd=` with the gate behind
+   `timeout N` counts too. One with the gate behind environment assignments
+   (`TZ=... <gate>`, `env ... <gate>`, `cross-env ... <gate>`) counts as well; report it
+   as a GAP and name the assignments that `.claude/autopilot.json` does not carry.
+   Accept the line as the gate result
    ONLY if `exit=0` AND its `tree=` equals the output of
    `bash .claude/hooks/autopilot-gate-filter.sh tree` run now (the working-tree hash, committed
    or not). Quote that line in your output.
