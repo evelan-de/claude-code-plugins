@@ -83,7 +83,7 @@ def find_codex():
 
 def restore_signals():
     """Hand the binary the default handling of the signals the Python runtime ignores."""
-    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+    for name in ("SIGPIPE", "SIGXFSZ"):
         number = getattr(signal, name, None)
         if number is not None:
             signal.signal(number, signal.SIG_DFL)
