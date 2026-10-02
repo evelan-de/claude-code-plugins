@@ -154,7 +154,8 @@ For each package with `[ ]`: set `[~]`, then
   failure: write observed vs expected, bisect, then fix. Never weaken an assertion.
 - **Docs** directly affected by the package (inline, the touched area's doc file).
 - **Full gate once** (`.claude/autopilot.json` `gate`, the whole command exactly as written
-  there, not a subset, no further arguments); paste its summary line. The gate filter
+  there, not a subset, no further arguments, run from the project root); paste its summary
+  line. The gate filter
   rewrites that command, prints `GATE GREEN` or `GATE RED` and writes one line per run into
   `.claude/autopilot-gate.log`; the reviewer takes the gate result from that line.
   Green → commit (Conventional Commits,

@@ -9,11 +9,12 @@ Never overwrite existing config.
    Needs the gate in `.claude/autopilot.json`; counts blocks in `.claude/.autopilot-gate-blocks`.
 2. **Gate-output filter** (`autopilot-gate-filter.sh`, PreToolUse on Bash): rewrites gate
    commands to show failures plus summary, keeps the exit status, appends one evidence line
-   per run (with the command: its first line, up to 160 characters) to
-   `.claude/autopilot-gate.log`. Gate commands are the package manager's test, lint,
-   typecheck, build and gate scripts, the runner binaries (vitest, jest, tsc, eslint, ...)
-   and the `gate` and `gateFull` of `.claude/autopilot.json` exactly as written there,
-   each also behind `NAME=value` assignments, `env`, `cross-env` or `timeout N`.
+   per run (with the whole command as it ran; a run below the project root as
+   `cd <dir> && <command>`) to `.claude/autopilot-gate.log`. Gate commands are the package
+   manager's test, lint, typecheck, build and gate scripts, the runner binaries (vitest, jest,
+   tsc, eslint, ...) and the `gate` and `gateFull` of `.claude/autopilot.json` exactly as
+   written there, each also behind `NAME=value` assignments, `env`, `cross-env` or
+   `timeout N`, and only at a command position (not inside quotes, a heredoc or a comment).
    Active in every session once `.claude/autopilot.json` exists; `# raw` in a command bypasses it.
    Needs `jq`.
 3. **Context-budget hand-off** (`autopilot-context-budget.sh`, PostToolUse on every tool):
@@ -122,10 +123,10 @@ that the ticket was not updated.
 
 ### 7. Verify and report
 Hooks merged into `settings.json` take effect at the next session start, so test the scripts
-directly. Write the gate command into a temp file preceded by a `# CMD: <gate>` line, run
-`bash .claude/hooks/autopilot-gate-filter.sh run <file>`, and confirm the output starts with
-`GATE GREEN` or `GATE RED` and `.claude/autopilot-gate.log` gained a line whose `tree=` equals
-`bash .claude/hooks/autopilot-gate-filter.sh tree`. Run the budget hook's own test suite from the plugin
+directly. Write the gate command into a temp file preceded by a `# CWD: <project root>` line,
+run `bash .claude/hooks/autopilot-gate-filter.sh run <file>`, and confirm the output starts
+with `GATE GREEN` or `GATE RED` and `.claude/autopilot-gate.log` gained a line whose `cmd=` is
+the gate and whose `tree=` equals `bash .claude/hooks/autopilot-gate-filter.sh tree`. Run the budget hook's own test suite from the plugin
 (`bash "${CLAUDE_PLUGIN_ROOT}/skills/autopilot/hooks/autopilot-context-budget.test.sh"`) and
 confirm `FAIL=0`; then write `{"transcript_path":"<this session's transcript>","agent_id":"init-check"}`
 to a temp file, run `bash .claude/hooks/autopilot-context-budget.sh < <file>` and confirm it
