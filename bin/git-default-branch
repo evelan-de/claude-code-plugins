@@ -1,32 +1,56 @@
-#!/bin/sh
-# git-default-branch - print the repository's default branch name.
-#
-# Resolution order:
-#   1. refs/remotes/origin/HEAD (what the remote calls its default)
-#   2. main   (remote-tracking or local)
-#   3. master (remote-tracking or local)
-# Exit 1 with a message when none of these exists.
-#
-# Usage: git-default-branch
+#!/usr/bin/env python3
+"""git-default-branch - print the repository's default branch name.
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "git-default-branch: not inside a git repository." >&2
-  exit 1
-fi
+usage: git-default-branch
 
-head="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
-if [ -n "$head" ]; then
-  printf '%s\n' "${head#origin/}"
-  exit 0
-fi
+Resolution order:
+  1. refs/remotes/origin/HEAD (what the remote calls its default)
+  2. main   (remote-tracking or local)
+  3. master (remote-tracking or local)
+Exit 1 with a message when none of these exists.
 
-for name in main master; do
-  if git show-ref --verify --quiet "refs/remotes/origin/$name" \
-    || git show-ref --verify --quiet "refs/heads/$name"; then
-    printf '%s\n' "$name"
-    exit 0
-  fi
-done
+Python 3 standard library only; needs git.
+"""
+import subprocess
+import sys
 
-echo "git-default-branch: no default branch found (no origin/HEAD, main or master)." >&2
-exit 1
+
+def git(*args):
+    """Run git in the current directory: (exit code, stdout without the trailing newline)."""
+    try:
+        p = subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           universal_newlines=True)
+    except OSError:
+        return 127, ""
+    return p.returncode, p.stdout.rstrip("\n")
+
+
+def has_ref(ref):
+    return git("show-ref", "--verify", "--quiet", ref)[0] == 0
+
+
+def default_branch():
+    """The default branch name, None when no rule finds one."""
+    head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")[1]
+    if head:
+        return head[len("origin/"):] if head.startswith("origin/") else head
+    for name in ("main", "master"):
+        if has_ref(f"refs/remotes/origin/{name}") or has_ref(f"refs/heads/{name}"):
+            return name
+    return None
+
+
+def main(argv):
+    if git("rev-parse", "--is-inside-work-tree")[0] != 0:
+        print("git-default-branch: not inside a git repository.", file=sys.stderr)
+        return 1
+    branch = default_branch()
+    if branch is None:
+        print("git-default-branch: no default branch found (no origin/HEAD, main or master).", file=sys.stderr)
+        return 1
+    print(branch)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
