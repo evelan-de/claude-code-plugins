@@ -1,6 +1,6 @@
 # `mission-control` - run prepared sessions one after another
 
-A shell script in the plugin's `bin/` (on PATH once the plugin is installed); the
+A Python script in the plugin's `bin/` (on PATH once the plugin is installed); the
 `/mission-control` skill is its control surface from a Claude session. It starts
 `claude -p "/autopilot <item>"` for each queued item in its own worktree, watches the run,
 restarts it when it handed off, reads the outcome from `REPORT.md`, pushes the run's branch,
@@ -16,7 +16,7 @@ time.
 | `queue.txt` | One item per line: `<repo path> <item> [<branch>]`. `#` starts a comment. Item = session directory (`docs/autopilot/sessions/...`), ticket key (`PAUL-2801`) or a `"quoted topic"`. The branch column exists for session directory items only; `add` fills it in. Processed top to bottom; a processed line is removed, an unparsable line (repo without item) is removed and named on stdout. |
 | `repos.txt` | One repo path per line. Every open PR there with the label `autopilot-ready` is processed after the list. Andreas adds a repo once; `doctor` prints the list. |
 | `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
-| `env` | Optional, mode 600. Shell assignments, see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
+| `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
 | `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
@@ -350,6 +350,6 @@ The macOS notification is sent at the end only, as one short line.
 
 ## Test hooks
 
-`CLAUDE_BIN`, `GH_BIN`, `JIRA_BIN`, `DOCKER_BIN`, `JQ_BIN` (fake binaries), `JIRA_HOME`,
+`CLAUDE_BIN`, `GH_BIN`, `JIRA_BIN`, `DOCKER_BIN` (fake binaries), `JIRA_HOME`,
 `NVM_DIR`, `MISSION_CONTROL_WATCH_MIN=0` (no stall check), `MISSION_CONTROL_NO_NOTIFY=1` (no
 osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.
