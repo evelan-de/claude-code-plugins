@@ -1732,7 +1732,7 @@ class MissionControl(unittest.TestCase):
         out, got = mc("status", env=home)
         check("(q) status with a stale lock exits 0", got == 0)
         check("(q) status with a stale lock: running none", has("running: none", out))
-        check("(q) status names the stale lock", has("lock: stale (pid 999999 is dead", out))
+        check("(q) status names the stale lock", has("lock: stale (pid 999999 is no queue run", out))
         shutil.rmtree(f"{qh}/run.lock")
         out, got = mc("stop")
         check("(q) stop without a run says so", has("nothing running", out))
@@ -1888,9 +1888,27 @@ class MissionControl(unittest.TestCase):
         write_plist(fakehome, 22, 0)
         out, got = mc("status", env=home)
         check("(t) status: schedule active without a pause file", has("schedule: installed at 22:00, active", out))
+        # pause without an argument holds until resume
         out, got = mc("pause", env=home)
         check("(t) pause exits 0", got == 0)
-        check("(t) pause says paused until today", out == f"paused until {today}")
+        check("(t) pause without an argument holds until resume", out == "paused until resume")
+        check("(t) pause file holds the until-resume marker", cat(f"{qh}/paused") == "until-resume")
+        out, got = mc("status", env=home)
+        check("(t) status: schedule paused until resume",
+              bool(grep("schedule: installed at 22:00, paused until resume", out, whole=True)))
+        queue("PAUL-79")
+        for _ in range(2):
+            out, got = mc("run", "--scheduled")
+        check("(t) a pause until resume skips every scheduled run",
+              got == 0 and has("paused until resume: scheduled run skipped (manual runs still work)", out))
+        check("(t) a pause until resume is not removed by a scheduled run", cat(f"{qh}/paused") == "until-resume")
+        check("(t) a pause until resume: claude not started", not exists(f"{rec}/claude.args"))
+        out, got = mc("resume", env=home)
+        check("(t) resume lifts a pause until resume", out == "resumed" and not exists(f"{qh}/paused"))
+        queue()
+        # a dated pause: today only
+        out, got = mc("pause", "until", today, env=home)
+        check("(t) pause until today says paused until today", out == f"paused until {today}")
         check("(t) pause file holds today's date", cat(f"{qh}/paused") == today)
         out, got = mc("status", env=home)
         check("(t) status: schedule paused until today, nothing after the date",
@@ -1928,21 +1946,40 @@ class MissionControl(unittest.TestCase):
               grep_q(f"pause expired ({yesterday}), file removed", f"{qh}/logs/queue.log"))
         out, got = mc("status", env=home)
         check("(t) status: active again after the expired pause", has("schedule: installed at 22:00, active", out))
-        # unreadable pause file (empty, garbage): removed and said, run proceeds
-        for junk in ("", "garbage"):
-            write(f"{qh}/paused", junk)
+        # a pause file that cannot be read (empty, garbage, a directory): it stays and counts as
+        # a pause, so a damaged veto never starts a run
+        for junk in ("", "garbage", None):
+            if junk is None:
+                os.makedirs(f"{qh}/paused")
+            else:
+                write(f"{qh}/paused", junk)
             queue("PAUL-81")
             out, got = mc("run", "--scheduled")
             shown = junk or "empty"
-            check(f"(t) unreadable pause '{shown}': scheduled run exits 0", got == 0)
-            check(f"(t) unreadable pause '{shown}': said on stdout",
-                  has(f"[mission-control] pause file unreadable ({shown}), removed, run goes ahead", out))
-            check(f"(t) unreadable pause '{shown}': logged",
-                  grep_q(f"pause file unreadable ({shown}), removed, run goes ahead", f"{qh}/logs/queue.log"))
-            check(f"(t) unreadable pause '{shown}': not called expired", lacks(f"expired ({shown})", out))
-            check(f"(t) unreadable pause '{shown}': file removed", not exists(f"{qh}/paused"))
-            check(f"(t) unreadable pause '{shown}': item processed", grep_q(" PAUL-81 done ", f"{qh}/done.txt"))
-        check("(t) unreadable pause: run went ahead both times", grep_c(" PAUL-81 done ", f"{qh}/done.txt") == 3)
+            kind = "a directory" if junk is None else f"'{shown}'"
+            check(f"(t) unreadable pause {kind}: scheduled run exits 0", got == 0)
+            check(f"(t) unreadable pause {kind}: said on stdout",
+                  has(f"[mission-control] pause file unreadable ({shown}): kept as a pause, scheduled run skipped",
+                      out))
+            check(f"(t) unreadable pause {kind}: logged",
+                  grep_q(f"pause file unreadable ({shown}): kept as a pause", f"{qh}/logs/queue.log", fixed=True))
+            check(f"(t) unreadable pause {kind}: the file stays", os.path.lexists(f"{qh}/paused"))
+            check(f"(t) unreadable pause {kind}: item not processed",
+                  grep_c(" PAUL-81 done ", f"{qh}/done.txt") == 1 and live_lines(f"{qh}/queue.txt") == 1)
+            out, got = mc("status", env=home)
+            check(f"(t) unreadable pause {kind}: status says paused",
+                  has("schedule: installed at 22:00, paused (pause file unreadable", out))
+            out, got = mc("resume", env=home)
+            check(f"(t) unreadable pause {kind}: resume lifts it",
+                  out == "resumed" and not os.path.lexists(f"{qh}/paused"))
+        queue()
+        # an empty scheduled check: one line on stdout, nothing in queue.log
+        size = os.path.getsize(f"{qh}/logs/queue.log")
+        out, got = mc("run", "--scheduled")
+        check("(t) a scheduled check with nothing to do prints one line",
+              got == 0 and out == "[mission-control] run finished")
+        check("(t) a scheduled check with nothing to do writes nothing to queue.log",
+              os.path.getsize(f"{qh}/logs/queue.log") == size)
         # pause until <date>, pause <N>d, invalid dates, a date in the past
         out, got = mc("pause", "until", "2099-12-31", env=home)
         check("(t) pause until exits 0", got == 0)
@@ -1984,6 +2021,18 @@ class MissionControl(unittest.TestCase):
         check("(t) the next scheduled run is paused again",
               has(f"paused until {in3days}: scheduled run skipped", out))
         check("(t) the next scheduled run left the item queued", live_lines(f"{qh}/queue.txt") == 1)
+        # a force-once left behind by a start that never ran: too old to override the pause,
+        # and a new pause removes one
+        write(f"{qh}/force-once", "")
+        hour_ago = time.time() - 3600
+        os.utime(f"{qh}/force-once", (hour_ago, hour_ago))
+        out, got = mc("run", "--scheduled")
+        check("(t) an old force-once does not override the pause",
+              has("scheduled run skipped", out) and live_lines(f"{qh}/queue.txt") == 1)
+        check("(t) an old force-once is removed", not exists(f"{qh}/force-once"))
+        write(f"{qh}/force-once", "")
+        mc("pause", env=home)
+        check("(t) pause removes a force-once left behind", not exists(f"{qh}/force-once"))
         out, got = mc("run", "--bogus")
         check("(t) run rejects an unknown flag with exit 2", got == 2)
         out, got = mc("bogus")
@@ -2022,7 +2071,7 @@ class MissionControl(unittest.TestCase):
         check("(t2) kickstart called launchctl kickstart", has("kickstart gui/", last_line(f"{rec}/launchctl.args")))
         check("(t2) kickstart wrote force-once", exists(f"{qh}/force-once"))
         check("(t2) kickstart says the pause is overridden once",
-              has(f"the pause until {S.today} is overridden for this run only", out))
+              has("the pause until resume is overridden for this run only", out))
         ENV["FAKE_SCENARIO"] = "report"
         queue("PAUL-84")
         out, got = mc("run", "--scheduled")
@@ -2043,7 +2092,7 @@ class MissionControl(unittest.TestCase):
               has("started: de.evelan.mission-control runs now in the GUI session", out))
         out, got = mc("status", env=mac)
         check("(t2) status shows the on-demand schedule",
-              has('schedule: on demand only ("mission-control start"), no nightly run', out))
+              bool(grep('schedule: on demand only ("mission-control start")', out, fixed=True, whole=True)))
         remove(f"{qh}/force-once")
         os.makedirs(f"{qh}/run.lock", exist_ok=True)
         write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
@@ -2057,12 +2106,11 @@ class MissionControl(unittest.TestCase):
     def test_410_t3_legacy_plist(self):
         """(t3) legacy plist (no --scheduled): pause, resume and status warn"""
         qh, rec = fresh_home("t3")
-        today = S.today
         fakehome = f"{S.tmp}/fakehome-t3"
         home = {"HOME": fakehome}
         write_plist(fakehome, 21, 15, legacy=True)
         legacy_warn = ('schedule installed without --scheduled: run "mission-control install-schedule 21:15" again, '
-                       "otherwise the nightly job ignores the pause")
+                       "otherwise the scheduled job ignores the pause")
         out, got = mc("status", env=home)
         check("(t3) status exits 0 with a legacy plist", got == 0)
         check("(t3) status shows the legacy schedule line",
@@ -2070,8 +2118,8 @@ class MissionControl(unittest.TestCase):
         check("(t3) status prints the warning with the plist time", has(legacy_warn, out))
         out, got = mc("pause", env=home)
         check("(t3) pause exits 0 with a legacy plist", got == 0)
-        check("(t3) pause still writes the file", cat(f"{qh}/paused") == today)
-        check("(t3) pause says paused", has(f"paused until {today}", out))
+        check("(t3) pause still writes the file", cat(f"{qh}/paused") == "until-resume")
+        check("(t3) pause says paused", has("paused until resume", out))
         check("(t3) pause prints the warning", has(legacy_warn, out))
         out, got = mc("status", env=home)
         check("(t3) status with a legacy plist and a pause still says legacy",
@@ -2083,12 +2131,182 @@ class MissionControl(unittest.TestCase):
         check("(t3) resume prints the warning", has(legacy_warn, out))
         write_plist(fakehome, 21, 15)
         out, got = mc("pause", env=home)
-        check("(t3) a plist with --scheduled gets no warning from pause", out == f"paused until {today}")
+        check("(t3) a plist with --scheduled gets no warning from pause", out == "paused until resume")
         out, got = mc("status", env=home)
         check("(t3) a plist with --scheduled gets no warning from status", lacks("without --scheduled", out))
         remove(f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist")
         out, got = mc("resume", env=home)
         check("(t3) no plist: no warning from resume", out == "resumed")
+
+    def test_412_t4_interval_schedule(self):
+        """(t4) a schedule that checks every N minutes: status, pause, a check during a run"""
+        qh, rec = fresh_home("t4")
+        ENV["FAKE_SCENARIO"] = "report"
+        fakehome = f"{S.tmp}/fakehome-t4"
+        home = {"HOME": fakehome}
+        plist = f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist"
+        os.makedirs(os.path.dirname(plist), exist_ok=True)
+        interval = ("<dict><key>ProgramArguments</key><array><string>/x/mission-control</string><string>run</string>"
+                    "%s</array><key>StartInterval</key><integer>1800</integer></dict>\n")
+        write(plist, interval % "<string>--scheduled</string>")
+        out, got = mc("status", env=home)
+        check("(t4) status shows the interval", bool(grep("schedule: every 30 min, active", out, whole=True)))
+        check("(t4) an interval schedule is not called on demand", lacks("on demand", out))
+        mc("pause", env=home)
+        out, got = mc("status", env=home)
+        check("(t4) status shows the interval and the pause",
+              bool(grep("schedule: every 30 min, paused until resume", out, whole=True)))
+        mc("resume", env=home)
+        write(plist, interval % "")
+        out, got = mc("status", env=home)
+        check("(t4) a legacy interval schedule is named by its interval",
+              has("schedule: every 30 min (legacy, ignores pause)", out)
+              and has('run "mission-control install-schedule 30m" again', out))
+        # a scheduled check while another run holds the lock: skipped quietly; a manual run is refused
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        queue("PAUL-85")
+        out, got = mc("run", "--scheduled")
+        check("(t4) a scheduled check during a run exits 0", got == 0)
+        check("(t4) a scheduled check during a run prints nothing", out == "")
+        check("(t4) a scheduled check during a run is logged",
+              grep_q(f"another run is active (pid {os.getpid()}): scheduled check skipped", f"{qh}/logs/queue.log",
+                     fixed=True))
+        check("(t4) a scheduled check during a run leaves the queue and the lock alone",
+              live_lines(f"{qh}/queue.txt") == 1 and cat(f"{qh}/run.lock/pid") == str(os.getpid()))
+        out, got = mc("run")
+        check("(t4) a manual run during a run is still refused", got == 1 and has("another run is active", out))
+        write(f"{qh}/force-once", "")
+        mc("run", "--scheduled")
+        check("(t4) a check during a run leaves force-once for the check after it", exists(f"{qh}/force-once"))
+        remove(f"{qh}/force-once")
+        shutil.rmtree(f"{qh}/run.lock")
+        queue()
+        # a plist someone reformatted, and an interval that is not whole minutes
+        scheduled = ("<dict>\n<key>ProgramArguments</key>\n<array><string>/x/mission-control</string>"
+                     "<string>run</string><string>--scheduled</string></array>\n<key>StartInterval</key>\n"
+                     "\t<integer>%d</integer>\n</dict>\n")
+        write(plist, scheduled % 1800)
+        out, got = mc("status", env=home)
+        check("(t4) a reformatted plist still reads as every 30 min", has("schedule: every 30 min, active", out))
+        write(plist, scheduled % 90)
+        out, got = mc("status", env=home)
+        check("(t4) an interval that is not whole minutes is shown in seconds",
+              has("schedule: every 90 s, active", out))
+        # the marker written by hand, with other case and a space
+        write(f"{qh}/paused", "Until Resume\n")
+        queue("PAUL-86")
+        out, got = mc("run", "--scheduled")
+        check("(t4) a hand-written until-resume marker still pauses",
+              has("paused until resume: scheduled run skipped", out) and exists(f"{qh}/paused"))
+        mc("resume", env=home)
+        queue()
+
+    @unittest.skipUnless(DARWIN, "LaunchAgents exist on macOS only")
+    def test_414_t5_install_an_interval_schedule(self):
+        """(t5) install-schedule <N>m writes a LaunchAgent that checks every N minutes"""
+        script(f"{S.fakes}/launchctl", FAKE_LAUNCHCTL)
+        qh, rec = fresh_home("t5")
+        fakehome = f"{S.tmp}/fakehome-t5"
+        os.makedirs(fakehome, exist_ok=True)
+        plist = f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist"
+        mac = {"HOME": fakehome, "PATH": f"{S.fakes}:{ENV['PATH']}"}
+        out, got = mc("install-schedule", "30m", env=mac)
+        check("(t5) install-schedule 30m exits 0", got == 0)
+        check("(t5) plist starts the job every 1800 seconds",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        check("(t5) plist has no daily time", not grep_q("StartCalendarInterval", plist))
+        check("(t5) plist runs run --scheduled", grep_q("<string>run</string><string>--scheduled</string>", plist))
+        check("(t5) install-schedule says the interval", has("(every 30 min, runs ", out))
+        out, got = mc("status", env=mac)
+        check("(t5) status reads the installed interval", has("schedule: every 30 min, active", out))
+        usage = "usage: mission-control install-schedule [HH:MM | <N>m]"
+        for bad in ("0m", "30", "m", "25:00", "30min"):
+            out, got = mc("install-schedule", bad, env=mac)
+            check(f"(t5) install-schedule {bad} is refused with the usage", got == 1 and has(usage, out))
+        check("(t5) a refused install-schedule left the plist alone",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        # installing boots the job out, which would end a run in progress
+        write(f"{rec}/launchctl.args", "")
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        out, got = mc("install-schedule", "22:00", env=mac)
+        check("(t5) install-schedule during a run is refused",
+              got == 1 and has(f"a run is active (pid {os.getpid()}, no item yet), stop it first", out))
+        check("(t5) a refused install-schedule did not call launchctl", cat(f"{rec}/launchctl.args") == "")
+        check("(t5) a refused install-schedule kept the interval",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        out, got = mc("uninstall-schedule", env=mac)
+        check("(t5) uninstall-schedule during a run is refused",
+              got == 1 and has("a run is active", out) and os.path.isfile(plist))
+        shutil.rmtree(f"{qh}/run.lock")
+        out, got = mc("uninstall-schedule", env=mac)
+        check("(t5) uninstall-schedule without a run removes the plist", got == 0 and not exists(plist))
+
+    def test_416_t6_label_that_cannot_be_changed(self):
+        """(t6) a PR whose label cannot be changed after its run is not run again at the next check"""
+        qh, rec = fresh_home("t6")
+        proj = S.proj
+        write(f"{rec}/prs.txt", "11 feat/PAUL-9-thing https://github.com/e/r/pull/11\n")
+        write(f"{qh}/repos.txt", f"{proj}\n")
+        ENV.update(FAKE_SCENARIO="report", FAKE_GH_PRS=f"{rec}/prs.txt", FAKE_GH_FAIL="pr edit")
+        out, got = mc("run", "--scheduled")
+        check("(t6) the run ends done with labels-failed", grep_q(" done .*labels-failed", f"{qh}/done.txt"))
+        check("(t6) the labels were created and the swap tried again",
+              has("label create autopilot-done", cat(f"{rec}/gh.args"))
+              and len(grep("pr edit 11 --remove-label autopilot-ready", cat(f"{rec}/gh.args"))) == 2)
+        check("(t6) the PR is held", grep_q(f"{proj} 11 done", f"{qh}/held.txt", fixed=True, whole=True))
+        runs = count_lines(f"{rec}/claude.args")
+        out, got = mc("run", "--scheduled")
+        check("(t6) the next check does not run the PR again", count_lines(f"{rec}/claude.args") == runs)
+        check("(t6) the next check says why",
+              has("proj #11: still labelled autopilot-ready although its run ended (done)", out))
+        check("(t6) the next check exits 0", got == 0)
+        check("(t6) no second done.txt line", count_lines(f"{qh}/done.txt") == 1)
+        ENV.pop("FAKE_GH_FAIL", None)
+        out, got = mc("run", "--scheduled")
+        check("(t6) once gh works the label is set without a run",
+              count_lines(f"{rec}/claude.args") == runs
+              and has("pr edit 11 --remove-label autopilot-ready --add-label autopilot-done",
+                      last_line(f"{rec}/gh.args")))
+        check("(t6) the PR is no longer held", read(f"{qh}/held.txt").strip() == "")
+        # retry releases a held PR, so it runs again
+        write(f"{qh}/held.txt", f"{proj} 11 blocked\n{proj} 12 done\n")
+        out, got = mc("retry", proj, "#11")
+        check("(t6) retry releases the held PR and keeps the others",
+              got == 0 and read(f"{qh}/held.txt") == f"{proj} 12 done\n")
+        remove(f"{qh}/held.txt")
+        remove(f"{qh}/repos.txt")
+        ENV.pop("FAKE_GH_PRS", None)
+
+    def test_418_t7_pause_during_a_scheduled_run(self):
+        """(t7) a pause set while a scheduled run is under way: no further item starts"""
+        qh, rec = fresh_home("t7")
+        ENV["FAKE_SCENARIO"] = "report"
+        fake = f"{S.fakes}/claude"
+        pausing = f"{S.tmp}/pausing-claude"
+        # a claude that sets the pause while it runs, as the owner would during an item
+        script(pausing, "#!/usr/bin/env python3\nimport os, sys\n"
+               "with open(os.environ['MISSION_CONTROL_HOME'] + '/paused', 'w') as f:\n"
+               "    f.write('until-resume\\n')\n"
+               f"os.execv({fake!r}, [{fake!r}] + sys.argv[1:])\n")
+        queue("PAUL-187", "PAUL-188")
+        out, got = mc("run", "--scheduled", env={"CLAUDE_BIN": pausing})
+        done = read(f"{qh}/done.txt")
+        check("(t7) the item that was running finishes", got == 0 and has(" PAUL-187 done ", done))
+        check("(t7) the next item does not start",
+              lacks("PAUL-188", done) and count_lines(f"{rec}/claude.args") == 1)
+        check("(t7) the next item stays queued", live_lines(f"{qh}/queue.txt") == 1)
+        check("(t7) the veto is said", has("paused: no further item starts in this run", out))
+        # a run that start let through during a pause works the whole queue
+        write(f"{qh}/force-once", "")
+        queue("PAUL-188", "PAUL-189")
+        out, got = mc("run", "--scheduled")
+        done = read(f"{qh}/done.txt")
+        check("(t7) a started run during a pause works every queued item",
+              has(" PAUL-188 done ", done) and has(" PAUL-189 done ", done))
+        check("(t7) the pause is still set afterwards", cat(f"{qh}/paused") == "until-resume")
+        mc("resume")
 
     def test_420_v_pr_items_against_the_target_branch(self):
         """(v) PR items resolve their plan against the PR's target branch"""
@@ -2410,7 +2628,7 @@ class MissionControl(unittest.TestCase):
         os.makedirs(f"{qh}/run.lock")
         write(f"{qh}/run.lock/pid", "1\n")
         out, got = mc("status")
-        check("(z5) status calls the lock stale", has("lock: stale (pid 1 is dead", out))
+        check("(z5) status calls the lock stale", has("lock: stale (pid 1 is no queue run", out))
         queue("PAUL-305")
         out, got = mc("run")
         check("(z5) the run takes the lock over", got == 0 and grep_q(" PAUL-305 done ", f"{qh}/done.txt"))
@@ -2450,6 +2668,24 @@ class MissionControl(unittest.TestCase):
         check("(z7) log named the same way", len(ls(f"{qh}/logs/*-Gr____e___ndern.log")) == 1)
         git("-C", S.proj, "worktree", "remove", "--force", wt)
         ENV["FAKE_SCENARIO"] = "report"
+
+    def test_580_z8_lock_pid_of_another_program(self):
+        """(z8) a lock whose pid now belongs to another program of this user is taken over"""
+        qh, rec = fresh_home("z8")
+        other = subprocess.Popen(["sleep", "60"])
+        try:
+            os.makedirs(f"{qh}/run.lock")
+            write(f"{qh}/run.lock/pid", f"{other.pid}\n")
+            out, got = mc("status")
+            check("(z8) status calls the lock stale", has(f"lock: stale (pid {other.pid} is no queue run", out))
+            queue("PAUL-307")
+            out, got = mc("run", "--scheduled")
+            check("(z8) a scheduled check takes the lock over and runs",
+                  got == 0 and grep_q(" PAUL-307 done ", f"{qh}/done.txt"))
+            check("(z8) the other program is left alone", other.poll() is None)
+        finally:
+            other.kill()
+            other.wait()
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 | Document | For | Covers |
 | --- | --- | --- |
 | [Autopilot for developers](autopilot-developer-guide.md) | every developer | planning a ticket, handing it to the queue, what a run does, PR labels, reviewing the result, blocked runs |
-| [Mission control](../skills/autopilot/references/mission-control.md) | whoever runs the queue on the office Mini | queue files, commands, nightly schedule, Slack, Jira credentials, logs |
+| [Mission control](../skills/autopilot/references/mission-control.md) | whoever runs the queue on the office Mini | queue files, commands, schedule and pause, Slack, Jira credentials, logs |
 | [Plan template](../skills/autopilot-plan/references/plan-template.md) | plan writers | the `PLAN.md` format, including the `Model:` and `Effort:` lines |
 | [Project setup](../skills/autopilot/references/init.md) | once per project | what `/autopilot init` installs |
 | [Browser checks](../skills/autopilot/references/browser.md) | projects with a UI | how a run checks the app with `agent-browser`, login state files |

@@ -134,7 +134,7 @@ uses another label name (read the workflow file), report it: the run follows the
 
 **Queue labels.** Run `mission-control labels` in the project: it creates `autopilot-ready`,
 `autopilot-done` and `autopilot-blocked` when missing (colours and descriptions live in the
-script), so a developer's hand-over from `/autopilot-plan` and the nightly queue can label PRs.
+script), so a developer's hand-over from `/autopilot-plan` and the queue can label PRs.
 
 Then print: detected package manager, the resolved gate command and `gateFull` when wired,
 the files created/modified, whether each merge was a no-op (already initialized), whether `jq`
