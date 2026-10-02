@@ -1507,14 +1507,39 @@ git -C "$proj" add -A; commit "$proj" -m "plan on develop"; git -C "$proj" push 
 git -C "$proj" checkout -q main
 printf '%s docs/autopilot/sessions/2026-09-27-PAUL-89-dev develop\n' "$proj" >"$QH/queue.txt"
 out="$(sh "$TOOL" run 2>&1)"
-# (the hooks commit made before the run may reach develop - that is the older, separate
-# ensure_hooks step; the run's own work must not)
 check "(y4) the run's work is not on origin's develop" \
   bash -c '! git -C "$1" log --format=%s develop | grep -q "^fake run"' _ "$tmp/origin.git"
+# the hooks installed before the run are not committed on a base branch, so nothing of the
+# runner's reaches origin's develop either (issue #31)
+check "(y4) origin's develop did not move" \
+  [ "$(git -C "$tmp/origin.git" log -1 --format=%s develop)" = "plan on develop" ]
+check "(y4) no hooks commit on the local develop" \
+  bash -c '! git -C "$1" log --format=%s develop | grep -q "install or update the autopilot hooks"' _ "$proj"
+check "(y4) the hooks are in the worktree for the run" \
+  [ -x "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-89-dev/.claude/hooks/autopilot-gate.sh" ]
+check "(y4) hooks on a base branch: said" \
+  has "2026-09-27-PAUL-89-dev: autopilot hooks installed for this run, not committed (base branch develop)" "$out"
 check "(y4) and it says why" has "ended on the base branch develop; not pushed" "$out"
 check "(y4) recorded as push-failed" grep -q "2026-09-27-PAUL-89-dev blocked .*push-failed" "$QH/done.txt"
 check "(y4) the project checkout stays clean" is_main_clean
 git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-89-dev"
+
+# (y5) the repo's default branch counts as a base branch whatever its name
+git -C "$proj" checkout -q -b trunk main
+mkdir -p "$proj/docs/autopilot/sessions/2026-09-27-PAUL-91-trunk"
+printf '# PLAN\nBranch: trunk   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-27-PAUL-91-trunk/PLAN.md"
+git -C "$proj" add -A; commit "$proj" -m "plan on trunk"; git -C "$proj" push -q origin trunk
+git -C "$proj" checkout -q main
+git -C "$proj" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+printf '%s docs/autopilot/sessions/2026-09-27-PAUL-91-trunk trunk\n' "$proj" >"$QH/queue.txt"
+out="$(sh "$TOOL" run 2>&1)"
+git -C "$proj" symbolic-ref -d refs/remotes/origin/HEAD
+check "(y5) origin's default branch did not move" \
+  [ "$(git -C "$tmp/origin.git" log -1 --format=%s trunk)" = "plan on trunk" ]
+check "(y5) hooks on the default branch: said" \
+  has "2026-09-27-PAUL-91-trunk: autopilot hooks installed for this run, not committed (base branch trunk)" "$out"
+check "(y5) the run's work is not pushed there" has "ended on the base branch trunk; not pushed" "$out"
+git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-91-trunk"
 
 echo "---"; echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

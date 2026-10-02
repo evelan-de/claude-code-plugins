@@ -860,12 +860,23 @@ prepare_worktree() {
   fi
 }
 
+# is_base_branch <worktree> <branch>: true for main, master, preview, develop and the repo's
+# default branch. The runner never commits on such a branch and never pushes to it.
+is_base_branch() {
+  ib_def="$(cd "$1" && "$DEFBRANCH" 2>/dev/null || true)"
+  case "$2" in
+    "$ib_def"|main|master|preview|develop) return 0 ;;
+  esac
+  return 1
+}
+
 # ensure_hooks <worktree>: when the autopilot hooks in the worktree are missing or old
 # (autopilot-hooks check), installs them and, on a branch, commits only the hook files,
 # .claude/settings.json and .gitignore (no git hooks of the project run) and pushes the
 # commit when the branch is on origin, so the run has the hooks, a later fast-forward still
-# works and the PR carries them into the project. Without a branch (a detached worktree)
-# they stay uncommitted for this run. A failure is said and the run goes ahead.
+# works and the PR carries them into the project. Without a branch (a detached worktree) and
+# on a base branch they stay uncommitted for this run. A failure is said and the run goes
+# ahead.
 ensure_hooks() {
   eh_wt="$1"
   command -v "$HOOKS_BIN" >/dev/null 2>&1 || { log "autopilot-hooks not found, hooks not checked"; return 0; }
@@ -877,6 +888,9 @@ ensure_hooks() {
   eh_branch="$(current_branch "$eh_wt")"
   if [ -z "$eh_branch" ]; then
     say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (no branch yet): $eh_out"; return 0
+  fi
+  if is_base_branch "$eh_wt" "$eh_branch"; then
+    say "$pi_rb $pi_item: autopilot hooks installed for this run, not committed (base branch $eh_branch): $eh_out"; return 0
   fi
   set -- .claude/hooks/autopilot-gate.sh .claude/hooks/autopilot-gate-filter.sh .claude/hooks/autopilot-context-budget.sh \
     .claude/hooks/autopilot-session-start.sh .claude/settings.json .gitignore
@@ -1178,12 +1192,10 @@ push_branch() {
     fi
     pi_branch="$pb_b"
   fi
-  pb_def="$(cd "$pi_wt" && "$DEFBRANCH" 2>/dev/null || true)"
-  case "$pb_b" in
-    "$pb_def"|main|master|preview|develop)
-      say "$pi_rb $pi_item: the run ended on the base branch $pb_b; not pushed, its commits stay in $pi_wt"
-      pi_push_failed=push-failed; return 0 ;;
-  esac
+  if is_base_branch "$pi_wt" "$pb_b"; then
+    say "$pi_rb $pi_item: the run ended on the base branch $pb_b; not pushed, its commits stay in $pi_wt"
+    pi_push_failed=push-failed; return 0
+  fi
   if git -C "$pi_wt" push -q --no-verify -u origin "HEAD:refs/heads/$pb_b" >>"$ITEM_LOG" 2>&1 \
      && [ "$(git -C "$pi_wt" ls-remote origin "refs/heads/$pb_b" 2>/dev/null | cut -f1)" = "$(git -C "$pi_wt" rev-parse HEAD)" ]; then
     pi_pushed="$pb_b"
