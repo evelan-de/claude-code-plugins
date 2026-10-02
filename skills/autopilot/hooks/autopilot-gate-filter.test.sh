@@ -90,7 +90,10 @@ assert_rewrites "rewrites (second command)" \
   $'cat <<EOF\nnotes\nEOF\nnpm run gate' \
   $'TZ=UTC \\\n  npm test' \
   'echo "done" ; npm run gate' \
-  "echo 'it''s' && npm run gate"
+  "echo 'it''s' && npm run gate" \
+  $'cat <<<"hello"\nnpm test' \
+  $'cat <<< hello\nnpm test' \
+  $'x=$((1<<2))\nnpm test'
 
 # assignment values with substitutions and escaped quotes, env with options
 assert_rewrites "rewrites with an env prefix" 'FOO=$(date) npm test' 'FOO="a \"b\"" npm test' "FOO='a b'c npm test" 'env -i TZ=UTC npm test' 'env -u FOO npm test' 'env --ignore-environment npm test' 'env -i -u FOO TZ=UTC npm run gate'

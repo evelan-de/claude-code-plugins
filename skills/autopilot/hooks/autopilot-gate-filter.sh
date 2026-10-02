@@ -103,10 +103,12 @@ scan() {
         if (c == "\047" || c == "\"") { q = c; out = out c; continue }
         if (c == "$" && nx == "\047") { q = "$\047"; out = out c nx; i++; continue }
         if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;&|(]/)) break
-        if (c == "<" && nx == "<" && substr(line, i + 2, 1) != "<") {
+        if (c == "<" && nx == "<" && substr(line, i + 2, 1) == "<") { out = out "<<<"; i += 2; continue }
+        if (c == "<" && nx == "<") {                 # heredoc when a word follows (not a shift)
           j = i + 2; s = 0
           if (substr(line, j, 1) == "-") { s = 1; j++ }
           while (substr(line, j, 1) ~ /[ \t]/) j++
+          if (substr(line, j, 1) !~ /[A-Za-z_"\047\\]/) { out = out "<<"; i++; continue }
           w = ""
           while (j <= n) {
             ch = substr(line, j, 1)
