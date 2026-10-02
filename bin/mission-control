@@ -1742,9 +1742,9 @@ def cmd_run(args):
     if scheduled:
         scheduled_gate()
     acquire_lock()
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
     try:
+        signal.signal(signal.SIGINT, on_signal)
+        signal.signal(signal.SIGTERM, on_signal)
         os.makedirs(LOGDIR, exist_ok=True)
         while True:
             line = first_queue_line()
