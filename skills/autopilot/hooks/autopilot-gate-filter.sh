@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Autopilot gate-output filter (TEMPLATE).
 # Copied into a project's .claude/hooks/ by `autopilot-hooks install` (from /autopilot init and the runner).
-# autopilot-hook-version: 3   (raise it with every change to this file)
+# autopilot-hook-version: 4   (raise it with every change to this file)
 #
 # Entry points:
 #
 #   hook  (default; PreToolUse hook for Bash)
 #         Reads the hook JSON on stdin. When the project is autopilot-enabled
-#         (.claude/autopilot.json exists) and the command is a test/lint/typecheck/build
-#         runner, it rewrites the command to `<this script> run <cmdfile>`. The cmdfile keeps
-#         the caller's cwd and the original command. Everything else passes through ({}).
+#         (.claude/autopilot.json exists) and the command is a gate command, it rewrites the
+#         command to `<this script> run <cmdfile>`. The cmdfile keeps the caller's cwd and the
+#         original command. Everything else passes through ({}).
+#         A gate command is: a test/lint/typecheck/build/gate script of a package manager, a
+#         runner binary (vitest, jest, tsc, eslint, ...), or the project's own `gate` or
+#         `gateFull` from .claude/autopilot.json. Each may follow environment assignments
+#         (`TZ=Europe/Berlin npm run gate`), `env NAME=value ...` and `timeout N`.
 #
 #   run <cmdfile>
 #         Executes the saved command in the saved cwd, in the user's login shell ($SHELL
@@ -35,10 +39,13 @@ SELF="$PROJECT_DIR/.claude/hooks/autopilot-gate-filter.sh"
 MAX_LINES="${AUTOPILOT_GATE_MAX_LINES:-200}"
 
 # Package-manager scripts: <pm> [exec|workspace X|--filter X|-r|--recursive|-w X]* [run] <script>
-PM_RE='(npx|pnpm|npm|yarn|bun)( (exec|workspace [^ ]+|--filter [^ ]+|-r|--recursive|-w [^ ]+))*( run)? (test|test:[a-z0-9:_-]+|lint|lint:[a-z0-9:_-]+|typecheck|type-check|check-types|format:check|build|build:[a-z0-9:_-]+)([[:space:]]|$)'
+PM_RE='(npx|pnpm|npm|yarn|bun)( (exec|workspace [^ ]+|--filter [^ ]+|-r|--recursive|-w [^ ]+))*( run)? (test|test:[a-z0-9:_-]+|lint|lint:[a-z0-9:_-]+|typecheck|type-check|check-types|format:check|build|build:[a-z0-9:_-]+|gate|gate:[a-z0-9:_-]+)([[:space:]]|$)'
 # Direct runner binaries (with or without npx/exec prefix)
 BIN_RE='((npx|pnpm exec|npm exec|yarn|bunx) )?(vitest|jest|mocha|playwright|tsc|eslint|biome|prettier)([[:space:]]|$)'
-PREFIX='(^|[;&|(]|then |do )[[:space:]]*(timeout [0-9]+[smh]? )?'
+# What may stand in front of a gate command: the start of a command, then `env`, environment
+# assignments (NAME=value, the value bare or quoted) and `timeout N`.
+ASSIGN='[A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|()]*)'
+PREFIX='(^|[;&|(]|then |do )[[:space:]]*(env[[:space:]]+)?('"$ASSIGN"'[[:space:]]+)*(timeout [0-9]+[smh]? )?'
 FAIL_RE='FAIL|✗|×|✘|✕|●|Error|error|ERR!|AssertionError|Expected|expected|Received|received|failed|Failed|TS[0-9]{4}|not ok|✖|Timed out|timed out'
 
 tree_hash() {
@@ -117,9 +124,23 @@ case "$cmd" in
   *"# raw"*|*autopilot-gate-filter*|*autopilot-gate.sh*) echo '{}'; exit 0;;
 esac
 
-if ! printf '%s' "$cmd" | grep -q -E "${PREFIX}${PM_RE}" && ! printf '%s' "$cmd" | grep -q -E "${PREFIX}${BIN_RE}"; then
-  echo '{}'; exit 0
+# The project's own gate commands (`gate`, `gateFull` in autopilot.json) as one ERE
+# alternation of literal strings; nothing when neither is a non-empty string.
+own_gates_re() {
+  jq -r '[.gate, .gateFull][] | select(type == "string" and length > 0)' "$CONFIG" 2>/dev/null \
+    | sed -e 's/[][(){}.*+?^$|\\]/\\&/g' | paste -s -d '|' -
+}
+
+is_gate=no
+if printf '%s' "$cmd" | grep -q -E "${PREFIX}${PM_RE}" || printf '%s' "$cmd" | grep -q -E "${PREFIX}${BIN_RE}"; then
+  is_gate=yes
+else
+  own="$(own_gates_re)"
+  if [ -n "$own" ] && printf '%s' "$cmd" | grep -q -E "${PREFIX}(${own})([[:space:];&|)]|\$)"; then
+    is_gate=yes
+  fi
 fi
+[ "$is_gate" = yes ] || { echo '{}'; exit 0; }
 
 cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)"
 [ -n "$cwd" ] && [ -d "$cwd" ] || cwd="$PROJECT_DIR"

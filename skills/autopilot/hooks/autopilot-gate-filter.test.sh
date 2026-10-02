@@ -47,6 +47,48 @@ for c in "pnpm test 2>&1" "npm run lint" "npx vitest run src/x.test.ts" "yarn ty
   case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites: $c";; *) fail "rewrites: $c (got: $out)";; esac
 done
 
+# environment in front of a runner: NAME=value assignments and env (must rewrite)
+for c in "TZ=Europe/Berlin npm run lint" "env TZ=UTC npm run test" "TZ=UTC LANG=C pnpm test" "FOO=\"a b\" npm test" "env TZ=UTC timeout 600 npm test" "cd apps/web && TZ=UTC npx vitest run"; do
+  out="$(hook_json "$P" "$c" | hook)"
+  new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
+  case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites with an env prefix: $c";; *) fail "rewrites with an env prefix: $c (got: $out)";; esac
+done
+# an assignment or env in front of something that is no runner passes through
+for c in "TZ=UTC git status" "env" "env TZ=UTC date" "FOO=bar"; do
+  out="$(hook_json "$P" "$c" | hook)"
+  [ "$out" = "{}" ] && ok "passthrough: $c" || fail "passthrough: $c (got $out)"
+done
+
+# the project's own gate commands: a script called gate, and whatever autopilot.json names
+echo '{ "gate": "npm run gate", "gateFull": "./check.sh --mode=a.b (all)" }' >"$P/.claude/autopilot.json"
+for c in "npm run gate" "npm run gate:full" "TZ=Europe/Berlin npm run gate" "env TZ=UTC npm run gate" "cd apps/web && npm run gate" "./check.sh --mode=a.b (all)" "CI=1 ./check.sh --mode=a.b (all) 2>&1"; do
+  out="$(hook_json "$P" "$c" | hook)"
+  new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
+  case "$new" in *autopilot-gate-filter.sh\"\ run\ *) ok "rewrites the project's gate: $c";; *) fail "rewrites the project's gate: $c (got: $out)";; esac
+done
+# a command that only mentions the gate, or looks like it, passes through; # raw still bypasses
+for c in "echo run the gate" "git commit -m 'gate green'" "echo npm run gate" "grep gate package.json" "cat .claude/autopilot-gate.log" "./check.sh --mode=aXb (all)" "./check.sh --mode=a.b (all)-docs" "npm run gate # raw" "TZ=Europe/Berlin npm run gate # raw"; do
+  out="$(hook_json "$P" "$c" | hook)"
+  [ "$out" = "{}" ] && ok "passthrough: $c" || fail "passthrough: $c (got $out)"
+done
+# a config without a usable gate does not break the hook
+echo '{ "gate": "", "gateFull": 7 }' >"$P/.claude/autopilot.json"
+out="$(hook_json "$P" "git status" | hook)"
+[ "$out" = "{}" ] && ok "empty gate in autopilot.json: other commands pass through" || fail "empty gate: $out"
+out="$(hook_json "$P" "pnpm test" | hook)"
+case "$out" in *autopilot-gate-filter.sh*) ok "empty gate in autopilot.json: runners are still rewritten";; *) fail "empty gate: runner not rewritten ($out)";; esac
+
+# the evidence line keeps the whole command, env prefix included, and the prefix is in effect
+echo '{ "gate": "printenv TZ" }' >"$P/.claude/autopilot.json"
+out="$(hook_json "$P" "TZ=Europe/Berlin printenv TZ" | hook)"
+new="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command // empty')"
+res="$(cd "$P" && CLAUDE_PROJECT_DIR="$P" bash -c "$new")"; rc=$?
+[ -n "$new" ] && [ "$rc" -eq 0 ] && ok "the rewritten gate with an env prefix runs green" || fail "env-prefixed gate: rewritten to '$new', exit $rc ($res)"
+case "$res" in *"GATE GREEN"*"Europe/Berlin"*) ok "the env prefix is in effect for the gate";; *) fail "env prefix not in effect: $res";; esac
+grep -q -E 'exit=0.*cmd=TZ=Europe/Berlin printenv TZ$' "$P/.claude/autopilot-gate.log" \
+  && ok "the evidence line keeps the env prefix" || fail "evidence line: $(tail -n1 "$P/.claude/autopilot-gate.log" 2>/dev/null)"
+echo '{ "gate": "pnpm test" }' >"$P/.claude/autopilot.json"
+
 # cmdfile keeps cwd and the original command
 out="$(hook_json "$P" "pnpm test -- --reporter=dot" "$P/apps/web" | hook)"
 cmdfile="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command' | sed -E 's/.* run "([^"]+)"$/\1/')"
