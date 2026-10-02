@@ -1524,7 +1524,7 @@ check "(y4) recorded as push-failed" grep -q "2026-09-27-PAUL-89-dev blocked .*p
 check "(y4) the project checkout stays clean" is_main_clean
 git -C "$proj" worktree remove --force "$proj/.claude/worktrees/autopilot-2026-09-27-PAUL-89-dev"
 
-# (y5) the repo's default branch counts as a base branch whatever its name
+# (y5) a default branch with another name (origin/HEAD points to it) counts as a base branch
 git -C "$proj" checkout -q -b trunk main
 mkdir -p "$proj/docs/autopilot/sessions/2026-09-27-PAUL-91-trunk"
 printf '# PLAN\nBranch: trunk   Base: main   Ticket: none\n' >"$proj/docs/autopilot/sessions/2026-09-27-PAUL-91-trunk/PLAN.md"
