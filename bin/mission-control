@@ -4,7 +4,7 @@
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
-       mission-control install-schedule [HH:MM] | uninstall-schedule
+       mission-control install-schedule [HH:MM | <N>m] | uninstall-schedule
 
 One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-control):
   queue.txt   one item per line: <repo path> <item> [<branch>]   (# comments; item = session
@@ -21,8 +21,9 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
               the project on the item's next attempt
   run.lock/   pid of the active run and current (the item it is on), removed after the run
-  paused      one date (YYYY-MM-DD, local): the schedule is paused through that day; the
-              LaunchAgent's "run --scheduled" skips while it is valid, a manual run ignores it
+  paused      "until-resume", or one date (YYYY-MM-DD, local): the schedule is paused until
+              resume, or through that day; the LaunchAgent's "run --scheduled" skips while it
+              is valid, a manual run ignores it
   force-once  written by start; the next scheduled run consumes it and ignores the pause
 
 Each item runs in its own worktree inside the project, <repo>/.claude/worktrees/
@@ -100,6 +101,7 @@ CONFIG_VARS = (
 ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
 READ_AT_START = ("HOME", "MISSION_CONTROL_HOME", "CLAUDE_BIN", "GH_BIN", "DOCKER_BIN", "JIRA_BIN", "JIRA_HOME")
 LAUNCHD_LABEL = "de.evelan.mission-control"
+PAUSE_UNTIL_RESUME = "until-resume"   # what the pause file holds for a pause without an end
 QUEUE_COMMANDS = ("run", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause", "resume")
 COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
                  "install-schedule | uninstall-schedule")
@@ -363,11 +365,14 @@ def date_plus_days(days):
     return (datetime.date.today() + datetime.timedelta(days=int(days))).isoformat()
 
 
-def pause_date():
-    """The date in the pause file when the pause is still valid (today or later), else nothing."""
+def pause_until():
+    """What the pause file holds while the pause counts: "resume" for a pause without an end,
+    the date of a dated pause that is still valid (today or later), else nothing."""
     if not os.path.isfile(PAUSE):
         return ""
     until = "".join(first_line(PAUSE).split())
+    if until == PAUSE_UNTIL_RESUME:
+        return "resume"
     if not valid_date(until) or until < today():
         return ""
     return until
@@ -381,9 +386,17 @@ def plist_time():
     return "%02d:%02d" % (int(hour.group(1) or 0) if hour else 0, int(minute.group(1) or 0) if minute else 0)
 
 
+def plist_interval():
+    """The minutes between two checks of the installed LaunchAgent (its StartInterval), 0 when
+    it has none."""
+    seconds = re.search(r"<key>StartInterval</key><integer>(\d+)</integer>", read_text(PLIST))
+    return int(seconds.group(1)) // 60 if seconds else 0
+
+
 def plist_on_demand():
-    """The installed LaunchAgent has no StartCalendarInterval: it runs only on "start"."""
-    return os.path.isfile(PLIST) and "<key>StartCalendarInterval</key>" not in read_text(PLIST)
+    """The installed LaunchAgent has neither a daily time nor an interval: it runs only on "start"."""
+    return (os.path.isfile(PLIST) and "<key>StartCalendarInterval</key>" not in read_text(PLIST)
+            and not plist_interval())
 
 
 def plist_legacy():
@@ -393,8 +406,9 @@ def plist_legacy():
 
 def warn_legacy_plist():
     if plist_legacy():
-        out(f"schedule installed without --scheduled: run \"mission-control install-schedule {plist_time()}\" "
-            "again, otherwise the nightly job ignores the pause")
+        again = f"{plist_interval()}m" if plist_interval() else plist_time()
+        out(f"schedule installed without --scheduled: run \"mission-control install-schedule {again}\" "
+            "again, otherwise the scheduled job ignores the pause")
 
 
 # ---------- lock and current item ----------
@@ -1816,9 +1830,10 @@ def finish_item(it):
 
 def scheduled_gate():
     """For "run --scheduled" only. A force-once file (start) is consumed and overrides a pause
-    once; a valid pause skips the run before the lock or the queue is touched; an expired pause
-    file is removed; an unreadable one (empty, no date) is removed and said, the run goes ahead."""
-    until = pause_date()
+    once; a valid pause (until resume, or a date that has not passed) skips the run before the
+    lock or the queue is touched; an expired pause file is removed; an unreadable one (empty,
+    no date) is removed and said, the run goes ahead."""
+    until = pause_until()
     if os.path.exists(FORCE):
         remove_file(FORCE)
         log(f"force-once consumed: scheduled run goes ahead{f' (pause until {until} kept)' if until else ''}")
@@ -1846,6 +1861,11 @@ def cmd_run(args):
     warn_env_mode()
     if scheduled:
         scheduled_gate()
+        active = lock_pid()
+        if active:
+            # a check that falls into a run: nothing to do, the run takes the queue as it finds it
+            log(f"another run is active (pid {active}): scheduled check skipped")
+            return 0
     acquire_lock()
     try:
         signal.signal(signal.SIGINT, on_signal)
@@ -2037,13 +2057,15 @@ def last_phase(logfile, repo_base, item):
 
 
 def schedule_line():
+    """The schedule as status shows it: every N min or a daily time, with the pause."""
+    when = f"every {plist_interval()} min" if plist_interval() else f"installed at {plist_time()}"
     if plist_legacy():
-        return f"schedule: installed at {plist_time()} (legacy, ignores pause)"
+        return f"schedule: {when} (legacy, ignores pause)"
     if plist_on_demand():
-        return 'schedule: on demand only ("mission-control start"), no nightly run'
+        return 'schedule: on demand only ("mission-control start")'
     if os.path.isfile(PLIST):
-        until = pause_date()
-        return f"schedule: installed at {plist_time()}, " + (f"paused until {until}" if until else "active")
+        until = pause_until()
+        return f"schedule: {when}, " + (f"paused until {until}" if until else "active")
     return "schedule: not installed"
 
 
@@ -2213,10 +2235,7 @@ def cmd_start(args):
     it. Refuses while a run is active. "kickstart" is the old name."""
     if platform.system() != "Darwin":
         die("start needs macOS (launchd)")
-    pid = lock_pid()
-    if pid:
-        item = (read_lines(LOCK + "/current") + ["", ""])[1]
-        die(f"a run is active (pid {pid}, {item or 'no item yet'}), stop it first")
+    refuse_while_running()
     if not os.path.isfile(PLIST):
         cmd_install_schedule([])
     here = SCRIPT_DIR + "/mission-control"
@@ -2232,25 +2251,40 @@ def cmd_start(args):
     if launchctl("kickstart", f"gui/{os.getuid()}/{LAUNCHD_LABEL}") != 0:
         remove_file(FORCE)
         die("launchctl kickstart failed")
-    until = pause_date()
+    until = pause_until()
     out(f"started: {LAUNCHD_LABEL} runs now in the GUI session (output in {LOGDIR}/launchd.log, then "
         f"\"mission-control status\")" + (f"; the pause until {until} is overridden for this run only" if until else ""))
     return 0
 
 
+def refuse_while_running():
+    """Ends the command while a run is active: booting the LaunchAgent out or kickstarting it
+    would end that run."""
+    pid = lock_pid()
+    if pid:
+        item = (read_lines(LOCK + "/current") + ["", ""])[1]
+        die(f"a run is active (pid {pid}, {item or 'no item yet'}), stop it first")
+
+
 def cmd_install_schedule(args):
-    """The LaunchAgent. With a time it runs daily at that time; without one it only runs when
-    "start" kickstarts it."""
+    """The LaunchAgent. "<N>m" checks for work every N minutes, "HH:MM" runs daily at that
+    time; without an argument it only runs when "start" kickstarts it. Refuses while a run is
+    active."""
     if platform.system() != "Darwin":
         die("install-schedule needs macOS (launchd)")
     at = args[0] if args else ""
-    calendar = ""
-    if at:
-        if not re.fullmatch(r"[0-2][0-9]:[0-5][0-9]", at):
-            die("usage: mission-control install-schedule [HH:MM]")
+    when = ""
+    if re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", at):
         hour, minute = (int(part) for part in at.split(":"))
-        calendar = ("  <key>StartCalendarInterval</key>\n"
-                    f"  <dict><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict>\n")
+        when = ("  <key>StartCalendarInterval</key>\n"
+                f"  <dict><key>Hour</key><integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict>\n")
+        shown = f"daily at {at}"
+    elif re.fullmatch(r"[1-9][0-9]{0,3}m", at):
+        when = f"  <key>StartInterval</key><integer>{int(at[:-1]) * 60}</integer>\n"
+        shown = f"every {int(at[:-1])} min"
+    elif at:
+        die("usage: mission-control install-schedule [HH:MM | <N>m]")
+    refuse_while_running()
     if is_executable(MARKETPLACE_BIN + "/mission-control"):
         bin_dir = MARKETPLACE_BIN
     else:
@@ -2267,7 +2301,7 @@ def cmd_install_schedule(args):
   <key>Label</key><string>{LAUNCHD_LABEL}</string>
   <key>ProgramArguments</key>
   <array><string>{bin_dir}/mission-control</string><string>run</string><string>--scheduled</string></array>
-{calendar}  <key>WorkingDirectory</key><string>{HOME}</string>
+{when}  <key>WorkingDirectory</key><string>{HOME}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:{HOME}/.local/bin:{bin_dir}:/usr/bin:/bin</string>
@@ -2283,7 +2317,7 @@ def cmd_install_schedule(args):
     if launchctl("bootstrap", f"gui/{os.getuid()}", PLIST) != 0:
         die(f"launchctl bootstrap failed for {PLIST}")
     if at:
-        out(f"installed: {PLIST} (daily at {at}, runs {bin_dir}/mission-control in the GUI session so the "
+        out(f"installed: {PLIST} ({shown}, runs {bin_dir}/mission-control in the GUI session so the "
             "Keychain login is readable)")
     else:
         out(f"installed: {PLIST} (no schedule, runs on \"mission-control start\" in the GUI session so the "
@@ -2292,11 +2326,11 @@ def cmd_install_schedule(args):
 
 
 def cmd_pause(args):
-    """No argument pauses today only. The file holds the last paused day; the scheduled run
-    skips through that day inclusive. A date before today is refused (exit 2): it would be a
-    pause that is over before it starts."""
+    """No argument pauses until resume. With a date or a number of days the file holds the last
+    paused day; the scheduled run skips through that day inclusive. A date before today is
+    refused (exit 2): it would be a pause that is over before it starts."""
     if not args:
-        until = today()
+        until = "resume"
     elif len(args) == 2 and args[0] == "until":
         until = args[1]
         if not valid_date(until):
@@ -2315,7 +2349,7 @@ def cmd_pause(args):
     os.makedirs(QHOME, exist_ok=True)
     try:
         with open(PAUSE, "w") as f:
-            f.write(until + "\n")
+            f.write((PAUSE_UNTIL_RESUME if until == "resume" else until) + "\n")
     except OSError:
         die(f"cannot write {PAUSE}")
     log(f"paused until {until}")

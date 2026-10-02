@@ -1888,9 +1888,27 @@ class MissionControl(unittest.TestCase):
         write_plist(fakehome, 22, 0)
         out, got = mc("status", env=home)
         check("(t) status: schedule active without a pause file", has("schedule: installed at 22:00, active", out))
+        # pause without an argument holds until resume
         out, got = mc("pause", env=home)
         check("(t) pause exits 0", got == 0)
-        check("(t) pause says paused until today", out == f"paused until {today}")
+        check("(t) pause without an argument holds until resume", out == "paused until resume")
+        check("(t) pause file holds the until-resume marker", cat(f"{qh}/paused") == "until-resume")
+        out, got = mc("status", env=home)
+        check("(t) status: schedule paused until resume",
+              bool(grep("schedule: installed at 22:00, paused until resume", out, whole=True)))
+        queue("PAUL-79")
+        for _ in range(2):
+            out, got = mc("run", "--scheduled")
+        check("(t) a pause until resume skips every scheduled run",
+              got == 0 and has("paused until resume: scheduled run skipped (manual runs still work)", out))
+        check("(t) a pause until resume is not removed by a scheduled run", cat(f"{qh}/paused") == "until-resume")
+        check("(t) a pause until resume: claude not started", not exists(f"{rec}/claude.args"))
+        out, got = mc("resume", env=home)
+        check("(t) resume lifts a pause until resume", out == "resumed" and not exists(f"{qh}/paused"))
+        queue()
+        # a dated pause: today only
+        out, got = mc("pause", "until", today, env=home)
+        check("(t) pause until today says paused until today", out == f"paused until {today}")
         check("(t) pause file holds today's date", cat(f"{qh}/paused") == today)
         out, got = mc("status", env=home)
         check("(t) status: schedule paused until today, nothing after the date",
@@ -2022,7 +2040,7 @@ class MissionControl(unittest.TestCase):
         check("(t2) kickstart called launchctl kickstart", has("kickstart gui/", last_line(f"{rec}/launchctl.args")))
         check("(t2) kickstart wrote force-once", exists(f"{qh}/force-once"))
         check("(t2) kickstart says the pause is overridden once",
-              has(f"the pause until {S.today} is overridden for this run only", out))
+              has("the pause until resume is overridden for this run only", out))
         ENV["FAKE_SCENARIO"] = "report"
         queue("PAUL-84")
         out, got = mc("run", "--scheduled")
@@ -2043,7 +2061,7 @@ class MissionControl(unittest.TestCase):
               has("started: de.evelan.mission-control runs now in the GUI session", out))
         out, got = mc("status", env=mac)
         check("(t2) status shows the on-demand schedule",
-              has('schedule: on demand only ("mission-control start"), no nightly run', out))
+              bool(grep('schedule: on demand only ("mission-control start")', out, fixed=True, whole=True)))
         remove(f"{qh}/force-once")
         os.makedirs(f"{qh}/run.lock", exist_ok=True)
         write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
@@ -2057,12 +2075,11 @@ class MissionControl(unittest.TestCase):
     def test_410_t3_legacy_plist(self):
         """(t3) legacy plist (no --scheduled): pause, resume and status warn"""
         qh, rec = fresh_home("t3")
-        today = S.today
         fakehome = f"{S.tmp}/fakehome-t3"
         home = {"HOME": fakehome}
         write_plist(fakehome, 21, 15, legacy=True)
         legacy_warn = ('schedule installed without --scheduled: run "mission-control install-schedule 21:15" again, '
-                       "otherwise the nightly job ignores the pause")
+                       "otherwise the scheduled job ignores the pause")
         out, got = mc("status", env=home)
         check("(t3) status exits 0 with a legacy plist", got == 0)
         check("(t3) status shows the legacy schedule line",
@@ -2070,8 +2087,8 @@ class MissionControl(unittest.TestCase):
         check("(t3) status prints the warning with the plist time", has(legacy_warn, out))
         out, got = mc("pause", env=home)
         check("(t3) pause exits 0 with a legacy plist", got == 0)
-        check("(t3) pause still writes the file", cat(f"{qh}/paused") == today)
-        check("(t3) pause says paused", has(f"paused until {today}", out))
+        check("(t3) pause still writes the file", cat(f"{qh}/paused") == "until-resume")
+        check("(t3) pause says paused", has("paused until resume", out))
         check("(t3) pause prints the warning", has(legacy_warn, out))
         out, got = mc("status", env=home)
         check("(t3) status with a legacy plist and a pause still says legacy",
@@ -2083,12 +2100,89 @@ class MissionControl(unittest.TestCase):
         check("(t3) resume prints the warning", has(legacy_warn, out))
         write_plist(fakehome, 21, 15)
         out, got = mc("pause", env=home)
-        check("(t3) a plist with --scheduled gets no warning from pause", out == f"paused until {today}")
+        check("(t3) a plist with --scheduled gets no warning from pause", out == "paused until resume")
         out, got = mc("status", env=home)
         check("(t3) a plist with --scheduled gets no warning from status", lacks("without --scheduled", out))
         remove(f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist")
         out, got = mc("resume", env=home)
         check("(t3) no plist: no warning from resume", out == "resumed")
+
+    def test_412_t4_interval_schedule(self):
+        """(t4) a schedule that checks every N minutes: status, pause, a check during a run"""
+        qh, rec = fresh_home("t4")
+        ENV["FAKE_SCENARIO"] = "report"
+        fakehome = f"{S.tmp}/fakehome-t4"
+        home = {"HOME": fakehome}
+        plist = f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist"
+        os.makedirs(os.path.dirname(plist), exist_ok=True)
+        interval = ("<dict><key>ProgramArguments</key><array><string>/x/mission-control</string><string>run</string>"
+                    "%s</array><key>StartInterval</key><integer>1800</integer></dict>\n")
+        write(plist, interval % "<string>--scheduled</string>")
+        out, got = mc("status", env=home)
+        check("(t4) status shows the interval", bool(grep("schedule: every 30 min, active", out, whole=True)))
+        check("(t4) an interval schedule is not called on demand", lacks("on demand", out))
+        mc("pause", env=home)
+        out, got = mc("status", env=home)
+        check("(t4) status shows the interval and the pause",
+              bool(grep("schedule: every 30 min, paused until resume", out, whole=True)))
+        mc("resume", env=home)
+        write(plist, interval % "")
+        out, got = mc("status", env=home)
+        check("(t4) a legacy interval schedule is named by its interval",
+              has("schedule: every 30 min (legacy, ignores pause)", out)
+              and has('run "mission-control install-schedule 30m" again', out))
+        # a scheduled check while another run holds the lock: skipped quietly; a manual run is refused
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        queue("PAUL-85")
+        out, got = mc("run", "--scheduled")
+        check("(t4) a scheduled check during a run exits 0", got == 0)
+        check("(t4) a scheduled check during a run prints nothing", out == "")
+        check("(t4) a scheduled check during a run is logged",
+              grep_q(f"another run is active (pid {os.getpid()}): scheduled check skipped", f"{qh}/logs/queue.log",
+                     fixed=True))
+        check("(t4) a scheduled check during a run leaves the queue and the lock alone",
+              live_lines(f"{qh}/queue.txt") == 1 and cat(f"{qh}/run.lock/pid") == str(os.getpid()))
+        out, got = mc("run")
+        check("(t4) a manual run during a run is still refused", got == 1 and has("another run is active", out))
+        shutil.rmtree(f"{qh}/run.lock")
+        queue()
+
+    @unittest.skipUnless(DARWIN, "LaunchAgents exist on macOS only")
+    def test_414_t5_install_an_interval_schedule(self):
+        """(t5) install-schedule <N>m writes a LaunchAgent that checks every N minutes"""
+        script(f"{S.fakes}/launchctl", FAKE_LAUNCHCTL)
+        qh, rec = fresh_home("t5")
+        fakehome = f"{S.tmp}/fakehome-t5"
+        os.makedirs(fakehome, exist_ok=True)
+        plist = f"{fakehome}/Library/LaunchAgents/de.evelan.mission-control.plist"
+        mac = {"HOME": fakehome, "PATH": f"{S.fakes}:{ENV['PATH']}"}
+        out, got = mc("install-schedule", "30m", env=mac)
+        check("(t5) install-schedule 30m exits 0", got == 0)
+        check("(t5) plist starts the job every 1800 seconds",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        check("(t5) plist has no daily time", not grep_q("StartCalendarInterval", plist))
+        check("(t5) plist runs run --scheduled", grep_q("<string>run</string><string>--scheduled</string>", plist))
+        check("(t5) install-schedule says the interval", has("(every 30 min, runs ", out))
+        out, got = mc("status", env=mac)
+        check("(t5) status reads the installed interval", has("schedule: every 30 min, active", out))
+        usage = "usage: mission-control install-schedule [HH:MM | <N>m]"
+        for bad in ("0m", "30", "m", "25:00", "30min"):
+            out, got = mc("install-schedule", bad, env=mac)
+            check(f"(t5) install-schedule {bad} is refused with the usage", got == 1 and has(usage, out))
+        check("(t5) a refused install-schedule left the plist alone",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        # installing boots the job out, which would end a run in progress
+        write(f"{rec}/launchctl.args", "")
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        out, got = mc("install-schedule", "22:00", env=mac)
+        check("(t5) install-schedule during a run is refused",
+              got == 1 and has(f"a run is active (pid {os.getpid()}, no item yet), stop it first", out))
+        check("(t5) a refused install-schedule did not call launchctl", cat(f"{rec}/launchctl.args") == "")
+        check("(t5) a refused install-schedule kept the interval",
+              grep_q("<key>StartInterval</key><integer>1800</integer>", plist))
+        shutil.rmtree(f"{qh}/run.lock")
 
     def test_420_v_pr_items_against_the_target_branch(self):
         """(v) PR items resolve their plan against the PR's target branch"""
