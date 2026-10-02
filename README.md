@@ -126,8 +126,8 @@ Adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see
 ## Helper scripts
 
 The scripts in `bin/` are on the PATH once the plugin is installed. They are Python 3
-(standard library only) and need `python3` 3.9 or newer on the PATH. macOS brings it along;
-on Windows install Python 3 first.
+(standard library only) and need `python3` 3.9 or newer on the PATH, which macOS brings
+along. They are tested on macOS only.
 
 | Script | What it does |
 | --- | --- |
