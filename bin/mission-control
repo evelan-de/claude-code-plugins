@@ -88,6 +88,7 @@ import sys
 import tempfile
 import time
 import traceback
+import typing
 import urllib.error
 import urllib.request
 
@@ -305,9 +306,23 @@ def execute(cmd, **how):
         check_stop()
 
 
+class Captured(typing.NamedTuple):
+    """What a command left behind: its exit code and its output without trailing newlines
+    (`rc, out = capture(...)` still works)."""
+    rc: int
+    out: str
+
+
+class CapturedBoth(typing.NamedTuple):
+    """As Captured, with stderr of its own."""
+    rc: int
+    out: str
+    err: str
+
+
 def capture(cmd, cwd=None, err="drop", stdin_text=None):
-    """(exit code, stdout without trailing newlines). err: drop, log (item log) or merge
-    (into stdout). 127 when the command cannot be started."""
+    """The exit code and stdout of the command. err: drop, log (item log) or merge (into
+    stdout). 127 when the command cannot be started."""
     errfile = None
     try:
         if err == "merge":
@@ -320,22 +335,22 @@ def capture(cmd, cwd=None, err="drop", stdin_text=None):
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=stderr,
             input=None if stdin_text is None else stdin_text.encode("utf-8"),
             stdin=subprocess.DEVNULL if stdin_text is None else None)
-        return exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n")
+        return Captured(exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"))
     except OSError as e:
-        return 127, (str(e) if err == "merge" else "")
+        return Captured(127, str(e) if err == "merge" else "")
     finally:
         if errfile:
             errfile.close()
 
 
 def capture_both(cmd, cwd=None):
-    """(exit code, stdout, stderr), both without trailing newlines."""
+    """The exit code, stdout and stderr of the command, both without trailing newlines."""
     try:
         done = execute(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
     except OSError as e:
-        return 127, "", str(e)
-    return (exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
-            done.stderr.decode("utf-8", "replace").rstrip("\n"))
+        return CapturedBoth(127, "", str(e))
+    return CapturedBoth(exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
+                        done.stderr.decode("utf-8", "replace").rstrip("\n"))
 
 
 def to_log(cmd, cwd=None):
@@ -351,7 +366,7 @@ def to_log(cmd, cwd=None):
 
 def quiet(cmd, cwd=None):
     """Runs the command without any output; its exit code."""
-    return capture(cmd, cwd=cwd)[0]
+    return capture(cmd, cwd=cwd).rc
 
 
 def git(tree, *args, err="drop"):
@@ -359,7 +374,7 @@ def git(tree, *args, err="drop"):
 
 
 def git_ok(tree, *args):
-    return git(tree, *args)[0] == 0
+    return git(tree, *args).rc == 0
 
 
 def git_log(tree, *args):
@@ -767,7 +782,7 @@ def ticket_from(text):
 
 
 def current_branch(tree):
-    return git(tree, "symbolic-ref", "--short", "-q", "HEAD")[1]
+    return git(tree, "symbolic-ref", "--short", "-q", "HEAD").out
 
 
 def wt_path(repo, item):
@@ -855,7 +870,7 @@ def base_sha(tree, target=""):
         rc, sha = git(tree, "merge-base", ref, "HEAD")
         if rc == 0:
             return sha
-    return git(tree, "rev-parse", "HEAD")[1]
+    return git(tree, "rev-parse", "HEAD").out
 
 
 # ---------- plan header ----------
@@ -910,8 +925,8 @@ def plan_ticket(plan):
 
 def changed_session_dirs(tree, base):
     """Session directories (relative) with tracked changes since the base or untracked files."""
-    names = git(tree, "diff", "--name-only", base, "--", SESSIONS)[1].splitlines()
-    names += git(tree, "ls-files", "--others", "--exclude-standard", "--", SESSIONS)[1].splitlines()
+    names = git(tree, "diff", "--name-only", base, "--", SESSIONS).out.splitlines()
+    names += git(tree, "ls-files", "--others", "--exclude-standard", "--", SESSIONS).out.splitlines()
     dirs = set()
     for name in names:
         parts = name.split("/")
@@ -1029,7 +1044,7 @@ def jira_start(it, key):
         log(f"jira: {text}")
         return
     say(f"{it.who}: jira start {key} failed: {last_line(text)}")
-    it.jira_failed = "jira-failed"
+    it.jira_failed = True
 
 
 def jira_comment(it, report):
@@ -1052,7 +1067,7 @@ def jira_comment(it, report):
         log(f"jira: {text}")
     else:
         say(f"{it.who}: jira comment {it.ticket} failed: {last_line(text)}")
-        it.jira_failed = "jira-failed"
+        it.jira_failed = True
 
 
 # ---------- gh ----------
@@ -1077,8 +1092,8 @@ def review_bot_comments(it):
     rc, repo = gh_in(it.gh_dir, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
     if rc != 0 or not repo:
         return None
-    author = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "author", "--jq", ".author.login")[1]
-    me = gh_in(it.gh_dir, "api", "user", "--jq", ".login")[1]
+    author = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "author", "--jq", ".author.login").out
+    me = gh_in(it.gh_dir, "api", "user", "--jq", ".login").out
     us = {author, me or author}
 
     def login(comment):
@@ -1106,7 +1121,7 @@ def branch_of_dir(repo, directory):
     if current and os.path.isdir(f"{repo}/{directory}"):
         return current
     quiet(["git", "-C", repo, "fetch", "-q", "origin"])
-    for name in git(repo, "log", "--all", "--format=%D", "-1", "--", directory)[1].split(","):
+    for name in git(repo, "log", "--all", "--format=%D", "-1", "--", directory).out.split(","):
         name = name.lstrip(" ")
         if name.startswith("HEAD -> "):
             name = name[8:]
@@ -1177,12 +1192,12 @@ def ensure_labels(repo):
     """Creates the three queue labels when missing; prints one line per label; False when one
     is missing and could not be created."""
     base = os.path.basename(repo)
-    have = gh_in(repo, "label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name")[1].splitlines()
+    have = gh_in(repo, "label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name").out.splitlines()
     ok = True
     for name, color, description in LABELS:
         if name in have:
             out(f"ok   - label {name} exists in {base}")
-        elif gh_in(repo, "label", "create", name, "--color", color, "--description", description)[0] == 0:
+        elif gh_in(repo, "label", "create", name, "--color", color, "--description", description).rc == 0:
             out(f"ok   - label {name} created in {base}")
         else:
             out(f"FAIL - label {name} missing in {base} and gh label create failed")
@@ -1207,7 +1222,7 @@ def item_title(it):
     PLAN.md ("# PLAN - <topic> - <date>"), else the item itself."""
     title = ""
     if it.pr_number and it.gh_dir:
-        title = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "title", "--jq", ".title")[1]
+        title = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "title", "--jq", ".title").out
     plan = f"{it.wt}/{it.sd0}/PLAN.md"
     if not title and it.sd0 and os.path.isfile(plan):
         title = re.sub(r"^#\s*", "", first_line(plan))
@@ -1369,7 +1384,8 @@ class Item:
         self.pr_url = "-"
         self.status = self.reason = self.shown = ""
         self.restarts = 0
-        self.gh_failed = self.jira_failed = self.pushed = self.push_failed = ""
+        self.pushed = ""   # the branch name once the push succeeded
+        self.gh_failed = self.jira_failed = self.push_failed = False
         self.model = self.effort = self.fallback = self.budget = ""
         self.result = ""   # of the last attempt: exited, stalled or timeout
         self.exit = 0      # the claude exit code of the last attempt
@@ -1445,7 +1461,7 @@ def prepare_worktree(repo, wt, branch=""):
 def worktree_of_branch(repo, branch):
     """The worktree that has the branch checked out, or nothing."""
     worktree = ""
-    for line in git(repo, "worktree", "list", "--porcelain")[1].splitlines():
+    for line in git(repo, "worktree", "list", "--porcelain").out.splitlines():
         if line.startswith("worktree "):
             worktree = line.split()[1]
         elif line == f"branch refs/heads/{branch}":
@@ -1538,7 +1554,7 @@ def stop_compose(it):
     if not shutil.which(DOCKER_BIN):
         return
     listing = capture([DOCKER_BIN, "ps", "-a", "--format",
-                       '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}'])[1]
+                       '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}']).out
     projects = set()
     for line in listing.splitlines():
         fields = line.split("|")
@@ -1599,7 +1615,7 @@ def run_attempt(it, state_file):
             break
         if Config.watch_s > 0 and now - tick >= Config.watch_s:
             tick = now
-            verdict = capture([WATCHDOG, it.wt, current_branch(it.wt) or "HEAD", state_file], err="merge")[1]
+            verdict = capture([WATCHDOG, it.wt, current_branch(it.wt) or "HEAD", state_file], err="merge").out
             log(f"watchdog: {verdict}")
             stalls = verdict.rsplit("stalls=", 1)[-1]
             if verdict.startswith("STALL") and stalls.isdigit() and int(stalls) >= 4:
@@ -1692,7 +1708,7 @@ def prepare_and_run(it):
 
     if not it.status and kind == "pr":
         view = gh_in(it.repo, "pr", "view", ref, "--json", "number,headRefName,baseRefName,url", "--jq",
-                     r'"\(.number) \(.headRefName) \(.baseRefName) \(.url)"', err="log")[1].split(" ", 3)
+                     r'"\(.number) \(.headRefName) \(.baseRefName) \(.url)"', err="log").out.split(" ", 3)
         if len(view) < 4:
             it.block(f"gh pr view {ref} failed")
         else:
@@ -1813,7 +1829,7 @@ def gh_step(it, what, *args):
         log(f"{what} on PR #{it.pr_number}: ok")
     else:
         say(f"{it.who}: {what} failed (see {State.item_log})")
-        it.gh_failed = "labels-failed"
+        it.gh_failed = True
 
 
 def swap_label(directory, number, status):
@@ -1882,27 +1898,27 @@ def push_branch(it):
     branch = current_branch(wt)
     if not branch:
         # detached: only commits of its own need a branch
-        if not git(wt, "rev-list", "--max-count=1", "HEAD", "--not", "--remotes")[1]:
+        if not git(wt, "rev-list", "--max-count=1", "HEAD", "--not", "--remotes").out:
             return
         branch = f"autopilot/{safe_name(it.item)}"
         if git_log(wt, "checkout", "-q", "-b", branch) != 0:
             say(f"{it.who}: could not create the branch {branch} for the run's commits (see {State.item_log}); "
                 f"they stay in {wt}")
-            it.push_failed = "push-failed"
+            it.push_failed = True
             return
         it.branch = branch
     if is_base_branch(wt, branch):
         say(f"{it.who}: the run ended on the base branch {branch}; not pushed, its commits stay in {wt}")
-        it.push_failed = "push-failed"
+        it.push_failed = True
         return
     pushed = git_log(wt, "push", "-q", "--no-verify", "-u", "origin", f"HEAD:refs/heads/{branch}") == 0
-    on_origin = git(wt, "ls-remote", "origin", f"refs/heads/{branch}")[1].split("\t")[0]
-    if pushed and on_origin == git(wt, "rev-parse", "HEAD")[1]:
+    on_origin = git(wt, "ls-remote", "origin", f"refs/heads/{branch}").out.split("\t")[0]
+    if pushed and on_origin == git(wt, "rev-parse", "HEAD").out:
         it.pushed = branch
         say(f"{it.who}: branch {branch} pushed to origin")
     else:
         say(f"{it.who}: pushing {branch} to origin failed (see {State.item_log}); its commits are only in {wt}")
-        it.push_failed = "push-failed"
+        it.push_failed = True
 
 
 def pr_comment(it):
@@ -1925,7 +1941,7 @@ def finish_item(it):
     gh_usable = bool(it.gh_dir) and os.path.isdir(it.gh_dir)
     if it.branch and gh_usable:
         found = gh_in(it.gh_dir, "pr", "list", "--head", it.branch, "--state", "open", "--json", "url,number,isDraft",
-                      "--jq", r'.[0] // empty | "\(.number) \(.isDraft) \(.url)"', err="log")[1].split(" ", 2)
+                      "--jq", r'.[0] // empty | "\(.number) \(.isDraft) \(.url)"', err="log").out.split(" ", 2)
         if len(found) == 3:
             it.pr_number, it.draft, it.pr_url = found
 
@@ -1937,7 +1953,7 @@ def finish_item(it):
         else:
             # the PR keeps autopilot-ready: held, so that the next check does not run it again
             say(f"{it.who}: gh pr edit (labels) failed (see {State.item_log})")
-            it.gh_failed = "labels-failed"
+            it.gh_failed = True
             hold_pr(it.repo, it.pr_number, it.status)
         handle, body_file = tempfile.mkstemp(prefix="mission-control.")
         with os.fdopen(handle, "w", encoding="utf-8") as f:
@@ -1961,7 +1977,8 @@ def finish_item(it):
                     "(fixed or not changed), check them")
 
     notes = [f"restarts={it.restarts}"] if it.restarts > 0 else []
-    notes += [note for note in (it.noplan, it.gh_failed, it.jira_failed, it.push_failed, review) if note]
+    notes += [note for note in (it.noplan, "labels-failed" if it.gh_failed else "", "jira-failed" if it.jira_failed else "",
+                                "push-failed" if it.push_failed else "", review) if note]
     extra = "".join(" " + note for note in notes)
     with open(DONE, "a", encoding="utf-8") as f:
         f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} {it.status} {it.pr_url}{extra}\n")
@@ -1969,7 +1986,7 @@ def finish_item(it):
     if it.line:
         remove_queue_line(it.line)
 
-    it.shown = it.status + (f" {it.gh_failed}" if it.gh_failed else "")
+    it.shown = it.status + (" labels-failed" if it.gh_failed else "")
     if it.status == "done":
         say(f"{it.who}: {it.shown} (PR {it.pr_url}{',' + extra if extra else ''})")
     else:
@@ -2172,12 +2189,12 @@ def cmd_doctor(args):
         failed = True
 
     if shutil.which("git"):
-        ok("git " + (capture(["git", "--version"])[1].split(" ") + ["", "", ""])[2])
+        ok("git " + (capture(["git", "--version"]).out.split(" ") + ["", "", ""])[2])
     else:
         bad("git not found")
 
     answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", "0.05"],
-                     err="merge")[1]
+                     err="merge").out
     if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
         ok("claude -p answers (logged in)")
     else:
@@ -2275,7 +2292,7 @@ def cmd_status(args):
             status_file = wt + "/.claude/.autopilot-status"
             out(f"  run: {last_line(read_text(status_file))}" if os.path.isfile(status_file) else "  run: no status line yet")
             base = base or base_sha(wt)
-            diff = git(wt, "diff", "--shortstat", base or "HEAD")[1].lstrip(" ")
+            diff = git(wt, "diff", "--shortstat", base or "HEAD").out.lstrip(" ")
             out(f"  diff since base: {diff or 'none'}")
     elif pid:
         out(f"running: pid {pid}, no item yet")
