@@ -177,8 +177,8 @@ class CodexSnapshot(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(self.git("rev-parse", "HEAD").strip() + ":", out)
         self.assertEqual(self.leftovers(snapdir), [])
-        if os.geteuid() == 0:
-            self.skipTest("root reads a file without read permission, so git add cannot be made to fail")
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("a file without read permission (chmod 0) does not stop git add here")
         write(f"{self.repo}/unreadable.txt", "secret\n")
         os.chmod(f"{self.repo}/unreadable.txt", 0)
         try:
@@ -209,6 +209,7 @@ class CodexSnapshot(unittest.TestCase):
         self.assertEqual(self.run_tool("diff", f"deadbeef:{tree}"),
                          (0, f"commits since snapshot: HEAD moved from deadbeef to {head}\n", ""))
 
+    @unittest.skipIf(os.name == "nt", "a signal handler never runs on Windows; a signal ends the process at once")
     def test_signal_ends_with_exit_1_and_removes_the_temp_directory(self):
         # A git that hangs in `add`, so the signal arrives while the temporary index exists.
         fakebin, snapdir, marker = (os.path.join(self.t, name) for name in ("fakebin", "snaptmp", "git-add-started"))
