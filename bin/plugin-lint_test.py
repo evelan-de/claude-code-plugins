@@ -17,11 +17,17 @@ def script_launcher():
     Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
     if os.name != "nt":
         return []
-    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
-    if not bash:
-        git = shutil.which("git") or ""
-        bash = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
-    return [bash]
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+    if os.path.isfile(bash):
+        return [bash]
+    here = os.path.dirname(shutil.which("git") or "")
+    while here and os.path.dirname(here) != here:
+        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            candidate = os.path.join(here, *rel)
+            if os.path.isfile(candidate):
+                return [candidate]
+        here = os.path.dirname(here)
+    return [r"C:\Program Files\Git\bin\bash.exe"]
 EM_DASH = chr(0x2014)  # never written literally: bin/ itself is scanned for it
 OK = "plugin-lint: OK (2 skills, 1 agents)\n"
 NOT_QUOTED = "but is not quoted (invalid YAML, wrap the value in double quotes)"
