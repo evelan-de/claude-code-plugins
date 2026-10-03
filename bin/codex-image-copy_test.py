@@ -156,7 +156,7 @@ class CodexImageCopy(unittest.TestCase):
     def test_runs_as_a_program(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL) as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         put(f"{self.images}/s/ig_a.png", "image\n")
         env = dict(os.environ, CODEX_IMAGES_DIR=self.images)
         p = subprocess.run([sys.executable, TOOL, f"{self.t}/out/h.png"], env=env, stdout=subprocess.PIPE,

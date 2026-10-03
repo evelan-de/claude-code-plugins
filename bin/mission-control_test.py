@@ -2723,7 +2723,7 @@ class MissionControl(unittest.TestCase):
         slow = f"{S.tmp}/slowgit"
         os.makedirs(slow, exist_ok=True)
         real_git = shutil.which("git", path=ENV["PATH"])
-        script(f"{slow}/git", "#!/usr/bin/env python3\n"
+        script(f"{slow}/git", "#!/bin/sh\n"
                "import os, sys, time\n"
                "rec = os.environ['FAKE_RECORD']\n"
                "if 'worktree' in sys.argv and 'add' in sys.argv:\n"

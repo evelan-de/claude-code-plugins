@@ -87,8 +87,9 @@ Then `git check-ignore -q .claude/hooks/autopilot-gate.sh`: when it is ignored (
 line in `.gitignore`), stage the four hooks, `.claude/settings.json` and
 `.claude/autopilot.json` with `git add -f` and say so.
 
-The filter and context-budget hooks need `jq` on the machine; without it they are no-ops.
-Say so in the report when `jq` is missing.
+The filter and context-budget hooks need `jq` on the machine (`brew install jq`, Windows:
+`winget install jqlang.jq`); without it they are no-ops. Say so in the report when `jq` is
+missing (`autopilot-hooks check .` names it too).
 
 ### 5. Browser: `agent-browser`
 Run `agent-browser --version`. Missing → print the two install lines and continue:

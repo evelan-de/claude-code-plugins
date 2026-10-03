@@ -185,11 +185,11 @@ class PluginLint(unittest.TestCase):
 
     def test_em_dash_is_found_in_every_scanned_place(self):
         dash = f"x\ntwo {EM_DASH} on one line {EM_DASH}\n"
-        for rel in ("skills/alpha/assets/deep/x.txt", "bin/tool", "CLAUDE.md", ".claude-plugin/marketplace.json"):
+        for rel in ("skills/alpha/assets/deep/x.txt", "bin/notes.txt", "CLAUDE.md", ".claude-plugin/marketplace.json"):
             self.write(rel, dash)
         self.append("README.md", dash)
         self.assert_problems("skills/alpha/assets/deep/x.txt: line 2: em dash (U+2014)",
-                             "bin/tool: line 2: em dash (U+2014)",
+                             "bin/notes.txt: line 2: em dash (U+2014)",
                              "README.md: line 5: em dash (U+2014)",
                              "CLAUDE.md: line 2: em dash (U+2014)",
                              ".claude-plugin/marketplace.json: line 2: em dash (U+2014)")
@@ -283,8 +283,22 @@ class PluginLint(unittest.TestCase):
     def test_runs_as_an_executable(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         self.assertEqual(self.run_tool(self.p, tool=[TOOL]), (0, OK, ""))
+
+    def test_helpers_carry_the_launcher_header_and_compile(self):
+        with open(TOOL, encoding="utf-8") as f:
+            header = "".join(f.readline() for _ in range(4))
+        self.write("bin/good", header + '__doc__ = """good"""\nprint(1)\n')
+        self.assertEqual(self.run_tool(self.p), (0, OK, ""))
+        self.write("bin/shebang", '#!/usr/bin/env python3\n"""old"""\nprint(1)\n')
+        self.write("bin/broken", header + 'def (\n')
+        self.write("bin/notes.txt", "not a helper\n")
+        rc, out, _ = self.run_tool(self.p)
+        self.assertEqual(rc, 1)
+        self.assertIn("bin/broken: does not compile: ", out)
+        self.assertIn("bin/shebang: does not start with the four launcher lines", out)
+        self.assertNotIn("notes.txt", out)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+name: gate
+
+on: [push, pull_request]
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - name: Tool versions
+        run: |
+          uname -a
+          git --version
+          python3 --version || python --version
+          jq --version
+          bash --version | head -n 1
+      - name: plugin-lint
+        run: bin/plugin-lint
+      - name: Helper tests
+        run: |
+          for t in bin/*.test.sh; do echo "== $t"; bash "$t" || exit 1; done
+      - name: Hook tests
+        run: |
+          for t in skills/autopilot/hooks/*.test.sh; do echo "== $t"; bash "$t" || exit 1; done

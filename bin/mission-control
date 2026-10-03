@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""mission-control - run prepared autopilot sessions one after another, unattended.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """mission-control - run prepared autopilot sessions one after another, unattended.
 
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
@@ -2598,6 +2601,8 @@ COMMANDS = {
 def main(argv):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    if os.name == "nt":
+        die("mission-control runs on macOS only (the queue machine is the office Mini; reach it over SSH)")
     command, args = (argv[0] if argv else ""), argv[1:]
     if command in ("", "-h", "--help", "help"):
         out(USAGE)

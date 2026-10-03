@@ -237,7 +237,7 @@ class CodexSnapshot(unittest.TestCase):
     def test_runs_by_its_shebang(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL) as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         p = subprocess.run([TOOL, "save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=60)
         self.assertEqual(p.returncode, 0)

@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""autopilot-watchdog - one progress tick for mission-control, the autopilot queue script (or anyone watching a run).
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """autopilot-watchdog - one progress tick for mission-control, the autopilot queue script (or anyone watching a run).
 
 usage: autopilot-watchdog <repo-dir> <branch> [state-file] [status-file]
 

@@ -173,7 +173,7 @@ class CodexCli(unittest.TestCase):
 
     def test_runs_by_its_shebang(self):
         with open(WRAPPER) as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         os.makedirs(self.path("pybin"))
         write_script(self.path("pybin/python3"), f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
         rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pybin", "pathbin"), command=[WRAPPER])

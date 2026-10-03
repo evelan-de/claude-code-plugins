@@ -27,10 +27,14 @@ claude-code-plugins/
 
 Anything in `bin/` is on PATH when the plugin is installed, so skills call the
 helper by bare name (`codex-cli`, `jira`) instead of hardcoding paths.
-Helpers are Python 3, standard library only (`#!/usr/bin/env python3`, no pip), and run on
-Python 3.9, the system Python of macOS. Each has a `<tool>_test.py` unittest file and a
-`<tool>.test.sh` wrapper that runs it. No shell helpers, no other dependencies - they run on
-teammates' machines, not just yours.
+Helpers are Python 3, standard library only (no pip), and run on Python 3.9, the system
+Python of macOS. Each starts with the same four launcher lines (copy them from any helper;
+`bin/plugin-lint` checks them): `python3` where it exists, `python` on a Windows without it.
+Each has a `<tool>_test.py` unittest file and a `<tool>.test.sh` wrapper that runs it. No
+shell helpers, no other dependencies - they run on teammates' machines, not just yours, on
+macOS and on Windows under Git Bash. Only `mission-control` is macOS-only (it refuses to run
+elsewhere). `.github/workflows/gate.yml` runs lint and every test suite on macOS, Ubuntu and
+Windows for every push.
 
 ## Plugin Configuration
 
@@ -68,8 +72,10 @@ See `README.md` for full installation instructions including auto-prompt setup f
 ## Before every release
 
 Run `bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
-README coverage, removed concepts) and every `bin/*.test.sh` and `skills/autopilot/hooks/*.test.sh`;
-all must pass. Then `claude plugin validate .` and the version bump in `.claude-plugin/plugin.json`.
+README coverage, removed concepts, helper launcher lines) and every `bin/*.test.sh` and
+`skills/autopilot/hooks/*.test.sh`; all must pass here and in the GitHub Actions run of the
+branch (macOS, Ubuntu, Windows). Then `claude plugin validate .` and the version bump in
+`.claude-plugin/plugin.json`.
 
 A change to a hook in `skills/autopilot/hooks/` raises the number in its
 `# autopilot-hook-version:` line; only then do projects with an older copy get the update.

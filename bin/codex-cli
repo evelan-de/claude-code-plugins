@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""codex-cli - locate the locally installed Codex CLI and run it in place of this process.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """codex-cli - locate the locally installed Codex CLI and run it in place of this process.
 
 usage: codex-cli <codex arguments ...>
 
@@ -30,6 +33,7 @@ Python 3 standard library only.
 import os
 import shutil
 import signal
+import subprocess
 import sys
 
 APP_BINS = (
@@ -52,11 +56,15 @@ def runnable(path):
 
 
 def on_path():
-    """The first `codex` on PATH that is not this wrapper, None when there is none."""
+    """The first `codex` on PATH that is not this wrapper, None when there is none. On Windows
+    the npm install is `codex.cmd` (or `codex.exe`); the extensionless `codex` there is a
+    shell script Windows cannot start."""
+    names = ("codex.exe", "codex.cmd", "codex") if os.name == "nt" else ("codex",)
     for directory in os.environ.get("PATH", os.defpath).split(os.pathsep):
-        found = shutil.which("codex", path=directory or os.curdir)
-        if found and not is_self(found):
-            return found
+        for name in names:
+            found = shutil.which(name, path=directory or os.curdir)
+            if found and not is_self(found):
+                return found
     return None
 
 
@@ -100,6 +108,10 @@ def main(argv):
         return 127
     restore_signals()
     try:
+        if os.name == "nt":
+            # Windows has no exec that replaces the process: run the binary as a child with
+            # the same stdin/stdout/stderr and end with its exit code.
+            return subprocess.call([binary] + argv)
         os.execv(binary, [binary] + argv)
     except OSError as e:
         print(f"codex-cli: cannot run {binary}: {e.strerror}", file=sys.stderr)

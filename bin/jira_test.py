@@ -129,6 +129,7 @@ class JiraCli(unittest.TestCase):
         self.assertIn("ok   - login: Andreas Straub (acc-1)", out)
         self.assertNotIn("SECRET-TOKEN-XYZ", out)
 
+    @unittest.skipIf(os.name == "nt", "file modes do not apply on Windows")
     def test_doctor_mode(self):
         os.chmod(os.path.join(self.home, "env"), 0o644)
         rc, out, _ = self.run_cli("doctor")
@@ -290,6 +291,7 @@ class JiraCli(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("needs a terminal", err)
 
+    @unittest.skipIf(os.name == "nt", "file modes do not apply on Windows")
     def test_setup_writes_env_file_mode_600(self):
         os.environ["JIRA_HOME"] = os.path.join(self.tmp.name, "fresh")
         answers = iter(["https://jira.test/", "a@b.c"])

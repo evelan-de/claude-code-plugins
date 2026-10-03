@@ -196,7 +196,7 @@ class AutopilotUsage(unittest.TestCase):
     def test_runs_as_an_executable(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         self.session()
         p = subprocess.run([TOOL, self.main], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual((p.returncode, p.stdout, p.stderr), (0, TABLE, ""))

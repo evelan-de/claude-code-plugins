@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""autopilot-usage - where did the tokens of one Claude Code session go?
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """autopilot-usage - where did the tokens of one Claude Code session go?
 
 usage: autopilot-usage <main-session-transcript.jsonl>
 
