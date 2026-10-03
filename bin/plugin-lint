@@ -57,11 +57,11 @@ def read_text(path):
 
 
 def lines_of(text):
-    """The lines of a text without their newline."""
+    """The lines of a text without their line end (LF or CRLF)."""
     lines = text.split("\n")
     if lines[-1] == "":
         lines.pop()
-    return lines
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
 def is_binary(path):
