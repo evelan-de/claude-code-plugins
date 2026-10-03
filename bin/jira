@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 
 USAGE = __doc__.split("\n\n")[1]
+MODE_HINT = "" if os.name == "nt" else " (chmod 600)"   # file modes exist on POSIX only
 ask = input                      # module-level so tests can replace them
 ask_hidden = getpass.getpass
 is_tty = lambda: sys.stdin.isatty()  # noqa: E731
@@ -78,7 +79,7 @@ def load_env():
 def need_env():
     cfg = load_env()
     if not (cfg["JIRA_SITE"] and cfg.get("JIRA_EMAIL") and cfg.get("JIRA_TOKEN")):
-        die(f"no Jira credentials: write JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into {env_file()} (chmod 600)")
+        die(f"no Jira credentials: write JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into {env_file()}{MODE_HINT}")
     return cfg
 
 
@@ -230,7 +231,7 @@ def cmd_doctor(_args, transport):
         else:
             bad(f"{path} has mode {mode:o}, expected 600 (chmod 600 {path})")
     else:
-        bad(f"{path} missing (JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN; chmod 600)")
+        bad(f"{path} missing (JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN{MODE_HINT.replace(' (', '; ').rstrip(')')})")
     for k in ("JIRA_SITE", "JIRA_EMAIL", "JIRA_TOKEN"):
         if cfg.get(k):
             ok(f"{k} set")

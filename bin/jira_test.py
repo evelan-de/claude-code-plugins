@@ -104,7 +104,7 @@ class JiraCli(unittest.TestCase):
         rc, out, err = self.run_cli("view", "WEB-1")
         self.assertEqual(rc, 1)
         self.assertIn("JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into", err)
-        self.assertIn("nohome/env", err)
+        self.assertIn(os.path.join("nohome", "env"), err)
 
     def test_env_var_overrides_file(self):
         os.environ["JIRA_TOKEN"] = "OTHER"
@@ -141,7 +141,7 @@ class JiraCli(unittest.TestCase):
         rc, out, _ = self.run_cli("doctor")
         self.assertEqual(rc, 1)
         self.assertIn("FAIL - ", out)
-        self.assertIn("nohome/env missing", out)
+        self.assertIn(os.path.join("nohome", "env") + " missing", out)
 
     # ---- view
     def test_view(self):
