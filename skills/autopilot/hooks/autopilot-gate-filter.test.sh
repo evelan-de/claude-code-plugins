@@ -143,7 +143,10 @@ echo '{ "gate": "pnpm test" }' >"$P/.claude/autopilot.json"
 # cmdfile: a `# CWD:` line, then the command verbatim
 out="$(hook_json "$P" "pnpm test -- --reporter=dot" "$P/apps/web" | hook)"
 cmdfile="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command' | sed -E 's/.* run "([^"]+)"$/\1/')"
-[ "$(head -n1 "$cmdfile")" = "# CWD: $P/apps/web" ] && ok "cmdfile starts with the caller cwd" || fail "cmdfile cwd: $(head -n1 "$cmdfile")"
+# the cwd line names the caller's directory (compared resolved: Git Bash on Windows hands jq the Windows spelling)
+cwd_line="$(head -n1 "$cmdfile")"
+[ "${cwd_line#\# CWD: }" != "$cwd_line" ] && [ "$(cd "${cwd_line#\# CWD: }" && pwd -P)" = "$(cd "$P/apps/web" && pwd -P)" ] \
+  && ok "cmdfile starts with the caller cwd" || fail "cmdfile cwd: $cwd_line"
 [ "$(tail -n +2 "$cmdfile")" = "pnpm test -- --reporter=dot" ] && ok "cmdfile holds the original command" || fail "cmdfile body: $(tail -n +2 "$cmdfile")"
 
 # $1 cwd, $2 command -> a command file
