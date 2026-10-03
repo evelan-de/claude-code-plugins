@@ -20,7 +20,7 @@ time.
 | `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. A line starting with `export` also reaches the run's environment (a token, a `PATH`); any other name the runner does not use is named in a warning. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
 | `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
-| `run.lock/` | Exists while a run is active: `pid` of the run and `current` (the item it is on, read by `status`). Removed when the run ends. |
+| `run.lock/` | Exists while a run is active: `pid` of the run, `started` (that process's start time as `ps` prints it) and `current` (the item it is on, read by `status`). Removed when the run ends. |
 | `paused` | `until-resume`, or one date `YYYY-MM-DD` (local time): the schedule is paused until `resume`, or through that day. Written by `pause`, removed by `resume` or, for a date, by the first scheduled run after it. See "Pause the schedule". |
 | `force-once` | Written by `start`; the scheduled run it starts consumes it and goes ahead although a pause is set. Counts for five minutes; removed by `pause`. |
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
@@ -242,7 +242,11 @@ column and runs from the default branch.
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
 A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
-process is taken over. Before polling the repos, `run`, `list` and `status` check once
+process, or by a pid that now belongs to another process (a number reused after a reboot),
+is taken over. Every `git` call ends after 10 minutes and every `gh` call after 2
+(`MISSION_CONTROL_GIT_TIMEOUT_MIN`, `MISSION_CONTROL_GH_TIMEOUT_MIN` in the env file or the
+environment, fractions allowed): the call is killed, counts as failed and is logged as
+`timed out after <n> s: <command>`. Before polling the repos, `run`, `list` and `status` check once
 whether `gh` can read its token (`gh auth status`). When it cannot, they print one notice
 instead of one line per repo and skip the polling: over SSH (`SSH_CONNECTION` or `SSH_TTY`
 set) `gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown
@@ -346,8 +350,9 @@ Once, by a workspace admin: in Slack create an app (api.slack.com/apps), enable 
 Webhooks" and add a webhook for the target channel. Copy the webhook URL into
 `~/.claude/mission-control/env` on the queue machine as `SLACK_WEBHOOK_URL=https://hooks.slack.com/...`
 and `chmod 600` the file. Never paste the URL into a chat, a ticket or a commit; the script
-never prints it either (curl's stderr is dropped, only the exit code is logged). Without it,
-notifications are macOS-only plus the PR comment.
+never prints it either: the message is posted from the script itself (no `curl`, so the URL
+never appears in the process list), and a failure is logged as `HTTP <status>` or the
+error's kind only. Without it, notifications are macOS-only plus the PR comment.
 
 Two messages per item:
 
@@ -362,7 +367,7 @@ Two messages per item:
 
 Text from titles, plans and reports is escaped for Slack (`&`, `<`, `>`; so no `<!channel>`
 ever pings), Markdown bold and links are turned into Slack's form. A message Slack rejects
-is logged with curl's exit code.
+is logged with its HTTP status (`Slack webhook failed (HTTP 400)`).
 
 The macOS notification is sent at the end only, as one short line.
 
@@ -370,4 +375,5 @@ The macOS notification is sent at the end only, as one short line.
 
 `CLAUDE_BIN`, `GH_BIN`, `JIRA_BIN`, `DOCKER_BIN` (fake binaries), `JIRA_HOME`,
 `NVM_DIR`, `MISSION_CONTROL_WATCH_MIN=0` (no stall check), `MISSION_CONTROL_NO_NOTIFY=1` (no
-osascript, no Slack). Tests: `bash bin/mission-control.test.sh`.
+osascript, no Slack), `MISSION_CONTROL_GIT_TIMEOUT_MIN` and `MISSION_CONTROL_GH_TIMEOUT_MIN`
+(short limits). Tests: `bash bin/mission-control.test.sh` (macOS only, like the runner).

@@ -2,7 +2,8 @@
 """Tests for bin/mission-control. Run: bash bin/mission-control.test.sh
 
 Black box: every check starts the runner as a subprocess against temporary git repositories.
-Fake claude, gh, docker, jira, curl, osascript and launchctl scripts record their arguments;
+Fake claude, gh, docker, jira, osascript and launchctl scripts record their arguments; a
+local HTTP server stands in for the Slack webhook;
 no network, no real runs.
 
 One project repository and its bare origin are built once and collect branches over the
@@ -16,12 +17,14 @@ the summary line "PASS=<n> FAIL=<m>".
 import atexit
 import datetime
 import glob
+import http.server
 import json
 import os
 import platform
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -240,6 +243,9 @@ def jq(expr, data):
 
 
 record("gh.args")
+if env("FAKE_GH_SLEEP"):
+    import time
+    time.sleep(float(env("FAKE_GH_SLEEP")))
 if (env("FAKE_GH_FAIL") or "@@none@@") in LINE:
     sys.stderr.write("fake gh: failing on purpose\n")
     sys.exit(1)
@@ -347,11 +353,6 @@ elif ARGS[:1] == ["comment"]:
         f.write(sys.stdin.buffer.read())
     say("commented: %s comment 9001 (12 chars read back)" % key)
 sys.exit(0)
-'''
-
-FAKE_CURL = FAKE_HEAD + r'''
-record("curl.args")
-sys.exit(int(os.environ.get("FAKE_CURL_EXIT") or 0))
 '''
 
 FAKE_OSASCRIPT = FAKE_HEAD + r'''
@@ -668,13 +669,13 @@ def write_plist(home, hour, minute, legacy=False):
 
 
 def slack_message(path, needle):
-    """(text, exit code): the text of the first Slack message in the curl record whose line
+    """(text, exit code): the text of the first Slack message in the webhook record whose line
     contains the needle. Exit code 1 when there is none, or the record is not UTF-8, or the
     payload is not JSON."""
     try:
         with open(path, encoding="utf-8") as f:
             for recorded in f:
-                m = re.search(r"--data (\{.*\}) https://hooks", recorded)
+                m = re.match(SLACK_POST, recorded)
                 if m and needle in recorded:
                     return json.loads(m.group(1))["text"].rstrip("\n"), 0
     except (OSError, ValueError, KeyError, TypeError):
@@ -682,10 +683,76 @@ def slack_message(path, needle):
     return "", 1
 
 
+SLACK_POST = r"^POST \S+ (\{.*\})$"   # one line of the webhook record: method, path, JSON body
+
+
+def slack_log():
+    """The webhook record: one "POST <path> <body>" line per message the runner sent."""
+    return f"{S.tmp}/slack.posts"
+
+
+class SlackHandler(http.server.BaseHTTPRequestHandler):
+    """The stand-in for the Slack webhook: records every POST, answers 200, or 500 when the
+    path contains "fail"."""
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8", "replace")
+        with open(slack_log(), "a", encoding="utf-8") as f:
+            f.write(f"POST {self.path} {body}\n")
+        self.send_response(500 if "fail" in self.path else 200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass
+
+
+def start_slack_server():
+    """The webhook stand-in on a free port of the loopback interface; its port."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SlackHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1]
+
+
+def silent_port():
+    """A port on the loopback interface that accepts a connection and never answers (the
+    socket stays open for the rest of the tests)."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    S.silent_sockets.append(sock)
+    return sock.getsockname()[1]
+
+
+def closed_port():
+    """A port on the loopback interface nobody listens on."""
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def proc_start(pid):
+    """The start time of the process as ps prints it, blanks normalised."""
+    done = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], stdout=subprocess.PIPE)
+    return " ".join(done.stdout.decode().split())
+
+
+def hold_lock(qh, pid=None, started=None):
+    """A lock as a live runner leaves it: the pid (this test process unless given) and that
+    process's start time (or the given text)."""
+    pid = pid or os.getpid()
+    os.makedirs(f"{qh}/run.lock", exist_ok=True)
+    write(f"{qh}/run.lock/pid", f"{pid}\n")
+    write(f"{qh}/run.lock/started", f"{proc_start(pid) if started is None else started}\n")
+
+
 def build_fakes():
     os.makedirs(S.fakes)
     for name, text in (("claude", FAKE_CLAUDE), ("gh", FAKE_GH), ("docker", FAKE_DOCKER), ("jira", FAKE_JIRA),
-                       ("curl", FAKE_CURL), ("osascript", FAKE_OSASCRIPT)):
+                       ("osascript", FAKE_OSASCRIPT)):
         script(f"{S.fakes}/{name}", text)
 
 
@@ -757,6 +824,8 @@ def setUpModule():
     atexit.register(shutil.rmtree, S.tmp, ignore_errors=True)   # also after Ctrl-C
     S.proj, S.origin, S.fakes = S.tmp + "/proj", S.tmp + "/origin.git", S.tmp + "/fakes"
     S.host = subprocess.run(["hostname", "-s"], stdout=subprocess.PIPE).stdout.decode().strip()
+    S.silent_sockets = []
+    S.slack_port = start_slack_server()
     ENV.clear()
     ENV.update(os.environ)
     build_fakes()
@@ -1215,31 +1284,44 @@ class MissionControl(unittest.TestCase):
         qh, rec = fresh_home("h")
         ENV["FAKE_SCENARIO"] = "report"
         queue("PAUL-6")
-        os.makedirs(f"{qh}/run.lock")
-        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        hold_lock(qh)
         out, got = mc("run")
         check("(h) second run refused while the lock is held by a live pid", got == 1)
         check("(h) refusal names the lock", has("another run is active", out))
         check("(h) refused run did not start claude", not exists(f"{rec}/claude.args"))
+        shutil.rmtree(f"{qh}/run.lock")
+        os.makedirs(f"{qh}/run.lock")
+        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        out, got = mc("run")
+        check("(h) a lock of an older runner (pid only) still counts while the pid is a live queue run", got == 1)
+        hold_lock(qh, started="Mon Jan  1 00:00:00 2001")
+        out, got = mc("run")
+        check("(h) a lock whose pid is alive but started at another time is stale (pid reused) and taken over",
+              got == 0)
+        queue("PAUL-6b")
+        os.makedirs(f"{qh}/run.lock", exist_ok=True)
         write(f"{qh}/run.lock/pid", "999999\n")
         out, got = mc("run")
         check("(h) stale lock (dead pid) is taken over", got == 0)
         check("(h) lock released after the run", not exists(f"{qh}/run.lock"))
 
     def test_210_i_notifications(self):
-        """(i) no secret printed, curl failure logged with its exit code"""
+        """(i) no secret printed, webhook failure logged with its status, never the URL"""
         qh, rec = fresh_home("i")
         proj = S.proj
         ENV["FAKE_SCENARIO"] = "report"
         ENV.pop("MISSION_CONTROL_NO_NOTIFY", None)
-        secret = "https://hooks.slack.com/services/T000/B000/SECRETXYZ"
+        secret = f"http://127.0.0.1:{S.slack_port}/services/T000/B000/SECRETXYZ"
         write(f"{qh}/env", f"SLACK_WEBHOOK_URL={secret}\n")
         os.chmod(f"{qh}/env", 0o600)
         fakes = {"PATH": f"{S.fakes}:{ENV['PATH']}"}
+        write(slack_log(), "")
         queue("PAUL-7")
         out, got = mc("run", env=fakes)
         check("(i) run exits 0 with notifications on", got == 0)
-        check("(i) Slack webhook was called", has("SECRETXYZ", cat(f"{rec}/curl.args")))
+        check("(i) Slack webhook was called", has("POST /services/T000/B000/SECRETXYZ {", cat(slack_log())))
+        check("(i) the webhook call is logged as sent", grep_q("Slack message sent", *ls(f"{qh}/logs/*-PAUL-7.log")))
+        check("(i) the runner never starts curl for Slack", not exists(f"{rec}/curl.args"))
         check("(i) macOS notification was sent", has("PAUL-7: done", cat(f"{rec}/osascript.args")))
         check("(i) done notification plays Glass", has('sound name "Glass"', cat(f"{rec}/osascript.args")))
         queue("PAUL-7b")
@@ -1250,14 +1332,29 @@ class MissionControl(unittest.TestCase):
         check("(i) logs never contain the webhook URL",
               lacks("SECRETXYZ", "".join(read(path) for path in ls(f"{qh}/logs/*.log"))))
         queue("PAUL-8")
-        out, got = mc("run", env=dict(fakes, FAKE_CURL_EXIT="22"))
-        check("(i) curl failure logged with its exit code",
-              grep_q("Slack webhook failed (curl exit 22)", *ls(f"{qh}/logs/*-PAUL-8.log")))
+        write(f"{qh}/env", f"SLACK_WEBHOOK_URL=http://127.0.0.1:{S.slack_port}/fail/SECRETXYZ\n")
+        out, got = mc("run", env=fakes)
+        check("(i) a webhook error status is logged as HTTP <code>",
+              grep_q("Slack webhook failed (HTTP 500)", *ls(f"{qh}/logs/*-PAUL-8.log")))
+        check("(i) a failed webhook call does not fail the run", got == 0)
+        queue("PAUL-8b")
+        write(f"{qh}/env", f"SLACK_WEBHOOK_URL=http://127.0.0.1:{closed_port()}/x/SECRETXYZ\n")
+        out, got = mc("run", env=fakes)
+        check("(i) an unreachable webhook is logged by the error's kind, without the URL",
+              grep_q("Slack webhook failed (ConnectionRefusedError)", *ls(f"{qh}/logs/*-PAUL-8b.log"))
+              and lacks("SECRETXYZ", "".join(read(path) for path in ls(f"{qh}/logs/*-PAUL-8b.log"))))
+        queue("PAUL-8c")
+        write(f"{qh}/env", "SLACK_WEBHOOK_URL=hooks.slack.com/SECRETXYZ\n")
+        out, got = mc("run", env=fakes)
+        check("(i) a malformed webhook URL is logged by the error's kind, without the URL",
+              grep_q("Slack webhook failed (ValueError)", *ls(f"{qh}/logs/*-PAUL-8c.log"))
+              and lacks("SECRETXYZ", "".join(read(path) for path in ls(f"{qh}/logs/*-PAUL-8c.log")) + out))
+        write(f"{qh}/env", f"SLACK_WEBHOOK_URL={secret}\n")
         # Slack at the start and a detailed message at the end
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         queue("PAUL-7c")
         out, got = mc("run", env=dict(fakes, FAKE_SCENARIO="report-full"))
-        slack = cat(f"{rec}/curl.args")
+        slack = cat(slack_log())
         check("(i) Slack at the start: title, model and effort",
               has(f"*Autopilot started* on {S.host}: proj - PAUL-7c", slack))
         check("(i) Slack at the start: model and effort", has("Model sonnet, effort xhigh", slack))
@@ -1269,10 +1366,10 @@ class MissionControl(unittest.TestCase):
         check("(i) Slack at the end: the ninth shipped line is not listed", lacks("shipped line 9", slack))
         check("(i) Slack at the end: open items", has("- ask Markus about the copy", slack))
         check("(i) Slack at the end: other report sections stay out", lacks("gate green", slack))
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         queue("PAUL-7d")
         out, got = mc("run", env=dict(fakes, FAKE_SCENARIO="report-blocked-open"))
-        slack = cat(f"{rec}/curl.args")
+        slack = cat(slack_log())
         check("(i) Slack when blocked: status, reason and open items",
               has("*Autopilot blocked*: proj - PAUL-7d", slack) and has("Reason: gate needs a database", slack)
               and has("- start Postgres on the Mini", slack))
@@ -1284,10 +1381,10 @@ class MissionControl(unittest.TestCase):
                     "export plan")
         write(f"{rec}/prs.txt", "21 feat/PAUL-220-export https://github.com/e/r/pull/21\n")
         write(f"{qh}/repos.txt", f"{proj}\n")
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         out, got = mc("run", env=dict(fakes, FAKE_GH_PRS=f"{rec}/prs.txt",
                                       FAKE_PR_TITLE="WEB-9: CSV export on /reports <Select> & co"))
-        slack = cat(f"{rec}/curl.args")
+        slack = cat(slack_log())
         check("(i) PR item: Slack start with the PR's title, escaped",
               has(f"*Autopilot started* on {S.host}: proj - WEB-9: CSV export on /reports &lt;Select&gt; &amp; co",
                   slack))
@@ -1302,13 +1399,13 @@ class MissionControl(unittest.TestCase):
                     '# PLAN - Quote "fix" - 2026-09-26\nBranch: feat/PAUL-221-topic   Base: main   Ticket: none\n',
                     "topic plan")
         mc("add", proj, topic, "feat/PAUL-221-topic")
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         out, got = mc("run", env=dict(fakes, FAKE_SCENARIO="report-full", FAKE_GH_NO_PR="1"))
-        payloads = [m.group(1) for recorded in lines_of(read(f"{rec}/curl.args"))
-                    for m in re.finditer(r"--data (\{.*\}) https://hooks", recorded)]
+        payloads = [m.group(1) for recorded in lines_of(read(slack_log()))
+                    for m in re.finditer(SLACK_POST, recorded)]
         check("(i) plan topic as the title when there is no PR",
               has('proj - Quote \\"fix\\"',
-                  "\n".join(grep("Autopilot started", read(f"{rec}/curl.args"), fixed=True))))
+                  "\n".join(grep("Autopilot started", read(slack_log()), fixed=True))))
         try:
             text = json.loads(payloads[-1])["text"]
             valid = "\n*What shipped*\n" in text and '"quotes"' in text and "back\\slash" in text
@@ -1317,10 +1414,10 @@ class MissionControl(unittest.TestCase):
         check("(i) the Slack payload is valid JSON with newlines, quotes and a backslash", valid)
         # Slack-safe text: escaping, links, umlauts cut by characters, control characters,
         # heading variants
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         queue("PAUL-7e")
         out, got = mc("run", env=dict(fakes, FAKE_SCENARIO="report-edge"))
-        msg, got = slack_message(f"{rec}/curl.args", "Autopilot done")
+        msg, got = slack_message(slack_log(), "Autopilot done")
         check("(i) the end message is valid JSON and UTF-8", got == 0)
         check("(i) <, > and & escaped, a Markdown link in Slack form",
               has("ping &lt;!channel&gt; &amp; see <https://x.y/z?a=1&amp;b=2|docs>", msg))
@@ -1329,21 +1426,48 @@ class MissionControl(unittest.TestCase):
               bool(umlauts) and len(umlauts[0]) == 220)
         check('(i) "## Open Items:" with CRLF found', has("*Open items*\n- none left", msg))
         check("(i) the escape character is dropped", has("- esc [31mred[0m end", msg))
-        write(f"{rec}/curl.args", "")
+        write(slack_log(), "")
         queue("PAUL-7f")
         out, got = mc("run", env=dict(fakes, LC_ALL="de_DE.UTF-8", FAKE_SCENARIO="report"))
-        check("(i) a German locale still writes the cost with a point", has("· $0.10", cat(f"{rec}/curl.args")))
-        write(f"{rec}/curl.args", "")
+        check("(i) a German locale still writes the cost with a point", has("· $0.10", cat(slack_log())))
+        write(slack_log(), "")
         queue("PAUL-7g")
         out, got = mc("run", env=dict(fakes, FAKE_SCENARIO="sleep", FAKE_GH_NO_PR="1",
                                       MISSION_CONTROL_TIMEOUT_MIN="0.02"))
-        slack = cat(f"{rec}/curl.args")
+        slack = cat(slack_log())
         check("(i) timeout: status, reason and the stopped attempt in Slack",
               has("*Autopilot timeout*: proj - PAUL-7g", slack) and has("Reason: wall-clock timeout", slack)
               and has("+ a stopped attempt", slack))
         check("(i) no PR: the log instead of a PR link", has(f"log {qh}/logs/", slack))
         kill9(pid_in(f"{rec}/claude.pid"))
         ENV["MISSION_CONTROL_NO_NOTIFY"] = "1"
+
+    def test_215_i2_command_timeouts(self):
+        """(i2) git and gh calls end at their time limit, counted as failed and logged"""
+        qh, rec = fresh_home("i2")
+        ENV["FAKE_SCENARIO"] = "report"
+        # gh: every call sleeps longer than the limit (0.02 min = 1 s)
+        queue("PAUL-9g")
+        began = time.time()
+        out, got = mc("run", env={"FAKE_GH_SLEEP": "3", "MISSION_CONTROL_GH_TIMEOUT_MIN": "0.02"})
+        check("(i2) a run whose gh calls all time out still ends (within 60 s)", time.time() - began < 60)
+        check("(i2) the gh timeout is logged with the limit and the command",
+              grep_q("timed out after 1 s: gh ", f"{qh}/logs/queue.log", *ls(f"{qh}/logs/*-PAUL-9g.log")))
+        check("(i2) the run did not hang on claude either", exists(f"{rec}/claude.args"))
+        # git: origin is a port that accepts the connection and never answers
+        hang = f"{S.tmp}/hang"
+        git("clone", "-q", S.proj, hang)
+        git("-C", hang, "remote", "set-url", "origin", f"git://127.0.0.1:{silent_port()}/x")
+        write(f"{qh}/queue.txt", f"{hang} PAUL-9h\n")
+        began = time.time()
+        out, got = mc("run", env={"MISSION_CONTROL_GIT_TIMEOUT_MIN": "0.02"})
+        check("(i2) a run whose fetch and push hang still ends (within 90 s)", time.time() - began < 90)
+        logs = "".join(read(path) for path in ls(f"{qh}/logs/*-PAUL-9h.log"))
+        check("(i2) the git timeout is logged with the limit and the command",
+              has("timed out after 1 s: git -C", logs) and has("fetch", logs))
+        check("(i2) the timed-out fetch counts as failed (local default branch used)",
+              has("fetch failed, using the local default branch", logs))
+        check("(i2) the run itself went ahead", grep_q(" PAUL-9h ", f"{qh}/done.txt"))
 
     def test_220_j_reused_worktree(self):
         """(j) reused worktree: fetch and fast-forward before the retry"""
@@ -1733,6 +1857,10 @@ class MissionControl(unittest.TestCase):
         check("(q) status with a stale lock exits 0", got == 0)
         check("(q) status with a stale lock: running none", has("running: none", out))
         check("(q) status names the stale lock", has("lock: stale (pid 999999 is no queue run", out))
+        hold_lock(qh, started="Mon Jan  1 00:00:00 2001")
+        out, got = mc("status", env=home)
+        check("(q) status with a lock of a reused pid: running none, lock stale",
+              has("running: none", out) and has("lock: stale", out))
         shutil.rmtree(f"{qh}/run.lock")
         out, got = mc("stop")
         check("(q) stop without a run says so", has("nothing running", out))
@@ -2094,8 +2222,7 @@ class MissionControl(unittest.TestCase):
         check("(t2) status shows the on-demand schedule",
               bool(grep('schedule: on demand only ("mission-control start")', out, fixed=True, whole=True)))
         remove(f"{qh}/force-once")
-        os.makedirs(f"{qh}/run.lock", exist_ok=True)
-        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        hold_lock(qh)
         out, got = mc("start", env=mac)
         check("(t2) start during a run exits 1", got == 1)
         check("(t2) refused start (active run) wrote no force-once", not exists(f"{qh}/force-once"))
@@ -2163,8 +2290,7 @@ class MissionControl(unittest.TestCase):
               has("schedule: every 30 min (legacy, ignores pause)", out)
               and has('run "mission-control install-schedule 30m" again', out))
         # a scheduled check while another run holds the lock: skipped quietly; a manual run is refused
-        os.makedirs(f"{qh}/run.lock")
-        write(f"{qh}/run.lock/pid", f"{os.getpid()}\n")
+        hold_lock(qh)
         queue("PAUL-85")
         out, got = mc("run", "--scheduled")
         check("(t4) a scheduled check during a run exits 0", got == 0)

@@ -23,7 +23,8 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
               outside an item
   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
               the project on the item's next attempt
-  run.lock/   pid of the active run and current (the item it is on), removed after the run
+  run.lock/   pid and start time (started) of the active run and current (the item it is on),
+              removed after the run
   paused      "until-resume", or one date (YYYY-MM-DD, local): the schedule is paused until
               resume, or through that day; the LaunchAgent's "run --scheduled" skips while it
               is valid, a manual run ignores it
@@ -46,6 +47,10 @@ run's branch to origin (no PR, never a base branch, never forced, without the pr
 hooks), so a blocked run is visible on GitHub and its commits never exist on one Mac only.
 A detached run with commits of its own gets the branch autopilot/<item> first.
 
+Every git call ends after 10 minutes and every gh call after 2 (MISSION_CONTROL_GIT_TIMEOUT_MIN,
+MISSION_CONTROL_GH_TIMEOUT_MIN); a call that reaches its limit is killed, counts as failed
+(exit 124) and is logged with its command.
+
 Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
 wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 200 USD
@@ -57,7 +62,7 @@ Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then S
 INT and TERM (stop) end the run within a second while it waits for claude; a git or gh
 command that is running finishes first.
 
-Dependencies: git, gh, curl (Slack), osascript (macOS notification).
+Dependencies: git, gh, osascript (macOS notification). Slack is reached over HTTPS from here.
 Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, NVM_DIR,
 MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
 Python 3 standard library only. Never prints a secret: the Slack webhook URL is only ever
@@ -66,6 +71,7 @@ held in a variable.
 import datetime
 import filecmp
 import glob
+import http.client
 import json
 import os
 import platform
@@ -79,6 +85,8 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
+import urllib.request
 
 USAGE = __doc__.split("\n\n")[1]
 SESSIONS = "docs/autopilot/sessions"
@@ -99,7 +107,8 @@ HOOK_FILES = (
 CONFIG_VARS = (
     "SLACK_WEBHOOK_URL", "MISSION_CONTROL_MODEL", "MISSION_CONTROL_EFFORT", "MISSION_CONTROL_ADVISOR",
     "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
-    "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN",
+    "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN", "MISSION_CONTROL_GIT_TIMEOUT_MIN",
+    "MISSION_CONTROL_GH_TIMEOUT_MIN",
 )
 # what the env file may hold besides the launch settings, and what is read before it
 ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
@@ -267,12 +276,28 @@ def check_stop():
         raise Stopped()
 
 
+def command_timeout(cmd):
+    """The time limit in seconds for a git or gh call, None for anything else."""
+    name = os.path.basename(cmd[0]) if cmd else ""
+    if name == "git":
+        return getattr(Config, "git_timeout_s", 600)
+    if cmd and cmd[0] == GH_BIN:
+        return getattr(Config, "gh_timeout_s", 120)
+    return None
+
+
 def execute(cmd, **how):
     """subprocess.run between two stop checks: a stop request never ends a command half way
-    (a git call finishes what it began), and no command starts after one."""
+    (a git call finishes what it began), and no command starts after one. A git or gh call
+    that reaches its time limit is killed (a child of its own, such as ssh, may survive),
+    logged and reported as exit 124 with empty output."""
     check_stop()
+    how.setdefault("timeout", command_timeout(cmd))
     try:
         return subprocess.run(cmd, **how)
+    except subprocess.TimeoutExpired as e:
+        log(f"timed out after {int(e.timeout)} s: {' '.join([os.path.basename(cmd[0])] + list(cmd[1:5]))}")
+        return subprocess.CompletedProcess(cmd, 124, e.stdout or b"", e.stderr or b"")
     finally:
         check_stop()
 
@@ -450,15 +475,26 @@ def pid_alive(pid):
         return False
 
 
+def proc_start(pid):
+    """When the process started, as ps prints it with blanks normalised; nothing when ps
+    cannot tell."""
+    rc, text = capture(["ps", "-p", str(pid), "-o", "lstart="])
+    return " ".join(text.split()) if rc == 0 else ""
+
+
 def lock_pid():
-    """The pid recorded in the lock when that process is alive and is a mission-control run,
-    else nothing. A pid that went to another program (a number reused after a reboot) makes
-    the lock stale."""
+    """The pid recorded in the lock when that process is alive, is a mission-control run and
+    started when the lock says, else nothing. A pid that went to another program or to another
+    mission-control process (a number reused after a reboot) makes the lock stale. A lock
+    without a start time (an older runner) counts by pid and command alone."""
     pid = first_line(LOCK + "/pid").strip()
     if not pid or not pid_alive(pid):
         return ""
     rc, command = capture(["ps", "-p", pid, "-o", "command="])
     if rc == 0 and "mission-control" not in command:
+        return ""
+    started = " ".join(first_line(LOCK + "/started").split())
+    if started and proc_start(pid) not in ("", started):
         return ""
     return pid
 
@@ -488,8 +524,8 @@ def current_package(wt, item):
 
 def acquire_lock():
     """Takes the lock, or ends the command when a live run holds it. The lock directory is
-    prepared with the pid inside and then renamed into place, so nobody ever sees a lock
-    without a pid; a stale lock is replaced."""
+    prepared with the pid and the process start time inside and then renamed into place, so
+    nobody ever sees a lock without a pid; a stale lock is replaced."""
     os.makedirs(QHOME, exist_ok=True)
     mine = f"{LOCK}.{os.getpid()}"
     shutil.rmtree(mine, ignore_errors=True)
@@ -497,6 +533,8 @@ def acquire_lock():
         os.mkdir(mine)
         with open(mine + "/pid", "w") as f:
             f.write(f"{os.getpid()}\n")
+        with open(mine + "/started", "w") as f:
+            f.write(f"{proc_start(os.getpid())}\n")
     except OSError:
         die(f"cannot take the lock {LOCK}")
     for attempt in (1, 2):
@@ -599,6 +637,8 @@ def load_env():
     Config.timeout_min = setting("MISSION_CONTROL_TIMEOUT_MIN", "480")
     Config.timeout_s = to_seconds(Config.timeout_min)
     Config.watch_s = to_seconds(setting("MISSION_CONTROL_WATCH_MIN", "20"))
+    Config.git_timeout_s = to_seconds(setting("MISSION_CONTROL_GIT_TIMEOUT_MIN", "10")) or None
+    Config.gh_timeout_s = to_seconds(setting("MISSION_CONTROL_GH_TIMEOUT_MIN", "2")) or None
 
 
 def setting(name, default=""):
@@ -1278,13 +1318,29 @@ def notify(text, sound="", slack=""):
             log("notification: osascript failed")
     url = Config.values.get("SLACK_WEBHOOK_URL")
     if url:
-        # the output is dropped on purpose: curl error messages can quote the URL
-        rc = quiet(["curl", "-sS", "--fail", "--max-time", "20", "-X", "POST", "-H", "Content-type: application/json",
-                    "--data", slack_json(slack or text), url])
-        if rc == 0:
-            log("notification: Slack message sent")
+        failure = post_json(url, slack_json(slack or text))
+        if failure:
+            log(f"notification: Slack webhook failed ({failure})")
         else:
-            log(f"notification: Slack webhook failed (curl exit {rc})")
+            log("notification: Slack message sent")
+
+
+def post_json(url, body):
+    """POSTs the JSON text to the URL (20 s limit) and returns nothing on a 2xx answer, else
+    the failure as "HTTP <status>" or the error's class name. The URL stays out of the
+    process list and out of the return value: error messages may quote it."""
+    try:
+        request = urllib.request.Request(url, data=body.encode("utf-8"), method="POST",
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=20) as answer:
+            answer.read()
+        return ""
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return type(e.reason).__name__ if isinstance(e.reason, BaseException) else "URLError"
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        return type(e).__name__
 
 
 # ---------- run ----------
