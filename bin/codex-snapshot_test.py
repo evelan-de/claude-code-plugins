@@ -6,6 +6,7 @@ through, so the tests start it as a subprocess inside throwaway repositories.
 """
 import glob
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -15,6 +16,18 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "codex-snapshot")
+
+
+def script_launcher():
+    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
+    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
+    if os.name != "nt":
+        return []
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if not bash:
+        git = shutil.which("git") or ""
+        bash = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
+    return [bash]
 USAGE = "usage: codex-snapshot save\n       codex-snapshot diff <id>\n       codex-snapshot patch <id>\n"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}  # the user's git config stays out
 
@@ -238,8 +251,7 @@ class CodexSnapshot(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL) as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
-        p = subprocess.run(launch + ["save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
+        p = subprocess.run(script_launcher() + [TOOL, "save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=60)
         self.assertEqual(p.returncode, 0)
         self.assertRegex(p.stdout, r"\A[0-9a-f]{40}:[0-9a-f]{40}\n\Z")

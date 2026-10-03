@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for bin/plugin-lint. Run: bash bin/plugin-lint.test.sh"""
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -9,6 +10,18 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "plugin-lint")
+
+
+def script_launcher():
+    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
+    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
+    if os.name != "nt":
+        return []
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if not bash:
+        git = shutil.which("git") or ""
+        bash = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
+    return [bash]
 EM_DASH = chr(0x2014)  # never written literally: bin/ itself is scanned for it
 OK = "plugin-lint: OK (2 skills, 1 agents)\n"
 NOT_QUOTED = "but is not quoted (invalid YAML, wrap the value in double quotes)"
@@ -284,8 +297,7 @@ class PluginLint(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
-        self.assertEqual(self.run_tool(self.p, tool=launch), (0, OK, ""))
+        self.assertEqual(self.run_tool(self.p, tool=script_launcher() + [TOOL]), (0, OK, ""))
 
     def test_helpers_carry_the_launcher_header_and_compile(self):
         with open(TOOL, encoding="utf-8") as f:

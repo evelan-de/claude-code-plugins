@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import shutil
 import shlex
 import subprocess
 import sys
@@ -19,6 +20,18 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WRAPPER = os.path.join(HERE, "codex-cli")
+
+
+def script_launcher():
+    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
+    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
+    if os.name != "nt":
+        return []
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if not bash:
+        git = shutil.which("git") or ""
+        bash = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
+    return [bash]
 loader = importlib.machinery.SourceFileLoader("codex_cli", WRAPPER)
 spec = importlib.util.spec_from_loader("codex_cli", loader)
 codex_cli = importlib.util.module_from_spec(spec)
@@ -176,8 +189,8 @@ class CodexCli(unittest.TestCase):
             self.assertEqual(f.readline(), "#!/bin/sh\n")
         os.makedirs(self.path("pybin"))
         write_script(self.path("pybin/python3"), f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
-        launch = [WRAPPER] if os.name != "nt" else ["bash", WRAPPER]   # Windows starts scripts through Git Bash
-        rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pybin", "pathbin"), command=launch)
+        rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pybin", "pathbin"),
+                                        command=script_launcher() + [WRAPPER])
         self.assertEqual((rc, out, err), (0, "FROM_PATH\narg:exec\narg:hello\n", ""))
 
 

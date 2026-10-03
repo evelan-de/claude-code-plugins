@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -14,6 +15,18 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "autopilot-watchdog")
+
+
+def script_launcher():
+    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
+    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
+    if os.name != "nt":
+        return []
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if not bash:
+        git = shutil.which("git") or ""
+        bash = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
+    return [bash]
 loader = importlib.machinery.SourceFileLoader("autopilot_watchdog", TOOL)
 spec = importlib.util.spec_from_loader("autopilot_watchdog", loader)
 watchdog = importlib.util.module_from_spec(spec)
@@ -162,8 +175,7 @@ class AutopilotWatchdog(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
-        p = subprocess.run(launch + [self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        p = subprocess.run(script_launcher() + [TOOL, self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         self.assertEqual((p.returncode, p.stderr), (0, ""))
         self.assertTrue(re.match(r"^PROGRESS commit=[0-9a-f]+ age=\d+ plan_age=\d+ status_age=-1 stalls=0\n$", p.stdout))
