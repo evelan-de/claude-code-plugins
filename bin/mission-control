@@ -2625,7 +2625,7 @@ COMMANDS = {
 def main(argv):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    if not DARWIN:
+    if platform.system() != "Darwin":
         die("mission-control runs on macOS only (the queue machine is the office Mini; reach it over SSH)")
     command, args = (argv[0] if argv else ""), argv[1:]
     if command in ("", "-h", "--help", "help"):
