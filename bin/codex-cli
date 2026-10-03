@@ -151,7 +151,10 @@ def run_on_windows(binary, argv):
     script = binary[:-4] if name.endswith(".cmd") else binary
     bash = git_bash()
     if bash and os.path.isfile(script):
-        return subprocess.call([bash, script] + argv)
+        # Started from a Windows program, Git Bash globs and path-converts the arguments it
+        # receives; both are switched off so a prompt with `*` or `/x` arrives as typed.
+        env = dict(os.environ, MSYS=(os.environ.get("MSYS", "") + " noglob").strip(), MSYS_NO_PATHCONV="1")
+        return subprocess.call([bash, script] + argv, env=env)
     print(f"codex-cli: {binary} would re-read the arguments; the shell shim next to it and "
           "Git for Windows are needed to run Codex with them intact", file=sys.stderr)
     return 126
