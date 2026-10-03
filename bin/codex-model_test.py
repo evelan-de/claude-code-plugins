@@ -218,7 +218,7 @@ class CodexModel(unittest.TestCase):
     def test_runs_as_a_program_next_to_codex_cli(self):
         self.assertTrue(os.access(RESOLVER, os.X_OK))
         with open(RESOLVER) as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         self.assertEqual(codex_model.CODEX_CLI, os.path.join(HERE, "codex-cli"))
         env = dict(os.environ, **self.env)
         p = subprocess.run([sys.executable, RESOLVER, "resolve", "Luna"], env=env, stdout=subprocess.PIPE,

@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""codex-snapshot - record the working tree before a Codex run and show what changed
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """codex-snapshot - record the working tree before a Codex run and show what changed
 afterwards, isolated from edits that were already there.
 
 usage: codex-snapshot save
@@ -16,8 +19,9 @@ with "none" as the sha in a repository without a commit. `diff <id>` compares th
 a fresh one and lists commits made since, so the output is exactly what changed in between,
 even when the tree was already dirty or HEAD moved.
 
-The temporary index lives in a directory under $TMPDIR (default /tmp) that is removed on
-every exit path: normal, error, and the signals HUP, INT and TERM (exit 1).
+The temporary index lives in a directory under $TMPDIR (else the system's temporary
+directory) that is removed on every exit path: normal, error, and the signals HUP, INT and
+TERM (exit 1).
 
 Python 3 standard library only.
 Exit codes: 0 ok | 1 not a git repo or bad id | 64 usage error
@@ -82,7 +86,7 @@ def is_tree_id(text):
 def snapshot_tree():
     """Write the current working tree as a tree object through a temporary index and return
     its id. Every failure ends the command with exit 1."""
-    base = os.environ.get("TMPDIR") or "/tmp"
+    base = os.environ.get("TMPDIR") or tempfile.gettempdir()
     try:
         snap_dir = tempfile.mkdtemp(prefix="codex-snapshot-", dir=base)
     except OSError:

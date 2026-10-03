@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""codex-cli - locate the locally installed Codex CLI and run it in place of this process.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """codex-cli - locate the locally installed Codex CLI and run it in place of this process.
 
 usage: codex-cli <codex arguments ...>
 
@@ -30,6 +33,7 @@ Python 3 standard library only.
 import os
 import shutil
 import signal
+import subprocess
 import sys
 
 APP_BINS = (
@@ -52,11 +56,15 @@ def runnable(path):
 
 
 def on_path():
-    """The first `codex` on PATH that is not this wrapper, None when there is none."""
+    """The first `codex` on PATH that is not this wrapper, None when there is none. On Windows
+    the npm install is `codex.cmd` (or `codex.exe`); the extensionless `codex` there is a
+    shell script Windows cannot start."""
+    names = ("codex.exe", "codex.cmd", "codex") if os.name == "nt" else ("codex",)
     for directory in os.environ.get("PATH", os.defpath).split(os.pathsep):
-        found = shutil.which("codex", path=directory or os.curdir)
-        if found and not is_self(found):
-            return found
+        for name in names:
+            found = shutil.which(name, path=directory or os.curdir)
+            if found and not is_self(found):
+                return found
     return None
 
 
@@ -74,7 +82,10 @@ def find_codex():
     if found:
         return found, []
     probed = ["codex on PATH"]
-    for candidate in app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]:
+    candidates = app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]
+    if os.name == "nt":   # the desktop-app bundles and ~/.local/bin are macOS and Linux places
+        candidates = app_candidates() if os.environ.get("CODEX_CLI_APP_BIN") else []
+    for candidate in candidates:
         if runnable(candidate):
             return candidate, probed
         probed.append(candidate)
@@ -100,10 +111,53 @@ def main(argv):
         return 127
     restore_signals()
     try:
+        if os.name == "nt":
+            return run_on_windows(binary, argv)
         os.execv(binary, [binary] + argv)
     except OSError as e:
         print(f"codex-cli: cannot run {binary}: {e.strerror}", file=sys.stderr)
         return 126
+
+
+GIT_BASH_DEFAULT = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def git_bash():
+    """Git for Windows' bash.exe: CLAUDE_CODE_GIT_BASH_PATH, else found upwards from git (the
+    bash.exe in System32 is WSL's), else the default install path; None when there is none."""
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+    if os.path.isfile(bash):
+        return bash
+    here = os.path.dirname(shutil.which("git") or "")
+    while here and os.path.dirname(here) != here:
+        for parts in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            candidate = os.path.join(here, *parts)
+            if os.path.isfile(candidate):
+                return candidate
+        here = os.path.dirname(here)
+    return GIT_BASH_DEFAULT if os.path.isfile(GIT_BASH_DEFAULT) else None
+
+
+def run_on_windows(binary, argv):
+    """Runs the binary as a child (Windows has no exec that replaces the process) and returns
+    its exit code. An .exe runs as it is. A `.cmd` started directly goes through cmd.exe,
+    which reads `&`, `|` and `%NAME%` inside the arguments as its own syntax; the npm install
+    puts a shell shim without extension next to the .cmd, and that one runs under Git Bash
+    with the arguments intact. A file without extension is such a shell script and runs under
+    Git Bash too."""
+    name = binary.lower()
+    if name.endswith(".exe"):
+        return subprocess.call([binary] + argv)
+    script = binary[:-4] if name.endswith(".cmd") else binary
+    bash = git_bash()
+    if bash and os.path.isfile(script):
+        # Started from a Windows program, Git Bash globs and path-converts the arguments it
+        # receives; both are switched off so a prompt with `*` or `/x` arrives as typed.
+        env = dict(os.environ, MSYS=(os.environ.get("MSYS", "") + " noglob").strip(), MSYS_NO_PATHCONV="1")
+        return subprocess.call([bash, script] + argv, env=env)
+    print(f"codex-cli: {binary} would re-read the arguments; the shell shim next to it and "
+          "Git for Windows are needed to run Codex with them intact", file=sys.stderr)
+    return 126
 
 
 if __name__ == "__main__":

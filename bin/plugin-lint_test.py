@@ -8,7 +8,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "plugin-lint")
+
 EM_DASH = chr(0x2014)  # never written literally: bin/ itself is scanned for it
 OK = "plugin-lint: OK (2 skills, 1 agents)\n"
 NOT_QUOTED = "but is not quoted (invalid YAML, wrap the value in double quotes)"
@@ -79,7 +82,7 @@ class PluginLint(unittest.TestCase):
 
     def write(self, rel, text, mode="w"):
         os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
-        with open(self.path(rel), mode) as f:
+        with open(self.path(rel), mode, encoding="utf-8") as f:   # UTF-8 on every platform, as the repo's files are
             f.write(text)
 
     def append(self, rel, text):
@@ -87,7 +90,7 @@ class PluginLint(unittest.TestCase):
 
     def sub(self, rel, pattern, replacement):
         """Replace a pattern (matched per line) in a file of the root."""
-        with open(self.path(rel)) as f:
+        with open(self.path(rel), encoding="utf-8") as f:
             text = f.read()
         changed = re.sub(pattern, lambda m: replacement, text, flags=re.M)
         self.assertNotEqual(changed, text)
@@ -185,11 +188,11 @@ class PluginLint(unittest.TestCase):
 
     def test_em_dash_is_found_in_every_scanned_place(self):
         dash = f"x\ntwo {EM_DASH} on one line {EM_DASH}\n"
-        for rel in ("skills/alpha/assets/deep/x.txt", "bin/tool", "CLAUDE.md", ".claude-plugin/marketplace.json"):
+        for rel in ("skills/alpha/assets/deep/x.txt", "bin/notes.txt", "CLAUDE.md", ".claude-plugin/marketplace.json"):
             self.write(rel, dash)
         self.append("README.md", dash)
         self.assert_problems("skills/alpha/assets/deep/x.txt: line 2: em dash (U+2014)",
-                             "bin/tool: line 2: em dash (U+2014)",
+                             "bin/notes.txt: line 2: em dash (U+2014)",
                              "README.md: line 5: em dash (U+2014)",
                              "CLAUDE.md: line 2: em dash (U+2014)",
                              ".claude-plugin/marketplace.json: line 2: em dash (U+2014)")
@@ -218,8 +221,11 @@ class PluginLint(unittest.TestCase):
 
     def test_symlinks_are_not_followed(self):
         self.write("outside/notes.md", f"evelan:nothing wayfinder {EM_DASH}\n")
-        os.symlink(self.path("outside/notes.md"), self.path("skills/alpha/link.md"))
-        os.symlink(self.path("outside"), self.path("skills/alpha/linkdir"))
+        try:
+            os.symlink(self.path("outside/notes.md"), self.path("skills/alpha/link.md"))
+            os.symlink(self.path("outside"), self.path("skills/alpha/linkdir"))
+        except OSError as e:   # Windows without developer mode
+            self.skipTest(f"cannot create symlinks here: {e}")
         self.assertEqual(self.lint(), (0, OK, ""))
 
     def test_unquoted_description_with_colon_space(self):
@@ -283,8 +289,22 @@ class PluginLint(unittest.TestCase):
     def test_runs_as_an_executable(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
-        self.assertEqual(self.run_tool(self.p, tool=[TOOL]), (0, OK, ""))
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
+        self.assertEqual(self.run_tool(self.p, tool=script_launcher() + [TOOL]), (0, OK, ""))
+
+    def test_helpers_carry_the_launcher_header_and_compile(self):
+        with open(TOOL, encoding="utf-8") as f:
+            header = "".join(f.readline() for _ in range(4))
+        self.write("bin/good", header + '__doc__ = """good"""\nprint(1)\n')
+        self.assertEqual(self.run_tool(self.p), (0, OK, ""))
+        self.write("bin/shebang", '#!/usr/bin/env python3\n"""old"""\nprint(1)\n')
+        self.write("bin/broken", header + 'def (\n')
+        self.write("bin/notes.txt", "not a helper\n")
+        rc, out, _ = self.run_tool(self.p)
+        self.assertEqual(rc, 1)
+        self.assertIn("bin/broken: does not compile: ", out)
+        self.assertIn("bin/shebang: does not start with the four launcher lines", out)
+        self.assertNotIn("notes.txt", out)
 
 
 if __name__ == "__main__":

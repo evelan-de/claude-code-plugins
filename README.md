@@ -130,8 +130,15 @@ Adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see
 ## Helper scripts
 
 The scripts in `bin/` are on the PATH once the plugin is installed. They are Python 3
-(standard library only) and need `python3` 3.9 or newer on the PATH, which macOS brings
-along. They are tested on macOS only.
+(standard library only) and need Python 3.9 or newer: on macOS the system `python3`, on
+Windows (with Git for Windows installed) a Python from python.org or the Microsoft Store,
+found as `python3` or `python`. The autopilot hooks need `jq` (`brew install jq`, Windows:
+`winget install jqlang.jq`). Every push runs the test suites on macOS, Ubuntu and Windows
+(GitHub Actions, Git Bash on Windows); `mission-control` runs on macOS only.
+
+A hook that fails on Windows with `\r: command not found` was checked out with CRLF line
+endings: update the plugin; if that does not help, delete its folder under
+`~/.claude/plugins/cache/evelan-plugins` and install it again.
 
 | Script | What it does |
 | --- | --- |

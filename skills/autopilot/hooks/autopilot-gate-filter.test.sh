@@ -143,13 +143,16 @@ echo '{ "gate": "pnpm test" }' >"$P/.claude/autopilot.json"
 # cmdfile: a `# CWD:` line, then the command verbatim
 out="$(hook_json "$P" "pnpm test -- --reporter=dot" "$P/apps/web" | hook)"
 cmdfile="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.updatedInput.command' | sed -E 's/.* run "([^"]+)"$/\1/')"
-[ "$(head -n1 "$cmdfile")" = "# CWD: $P/apps/web" ] && ok "cmdfile starts with the caller cwd" || fail "cmdfile cwd: $(head -n1 "$cmdfile")"
+# the cwd line names the caller's directory (compared resolved: Git Bash on Windows hands jq the Windows spelling)
+cwd_line="$(head -n1 "$cmdfile")"
+[ "${cwd_line#\# CWD: }" != "$cwd_line" ] && [ "$(cd "${cwd_line#\# CWD: }" && pwd -P)" = "$(cd "$P/apps/web" && pwd -P)" ] \
+  && ok "cmdfile starts with the caller cwd" || fail "cmdfile cwd: $cwd_line"
 [ "$(tail -n +2 "$cmdfile")" = "pnpm test -- --reporter=dot" ] && ok "cmdfile holds the original command" || fail "cmdfile body: $(tail -n +2 "$cmdfile")"
 
 # $1 cwd, $2 command -> a command file
 mkcmd() { local f; f="$(mktemp)"; printf '# CWD: %s\n%s\n' "$1" "$2" >"$f"; echo "$f"; }
 run_mode() { CLAUDE_PROJECT_DIR="$P" bash "$P/.claude/hooks/autopilot-gate-filter.sh" run "$@"; }
-last_cmd() { tail -n1 "$P/.claude/autopilot-gate.log" | sed $'s/.*\\tcmd=//'; }
+last_cmd() { tail -n1 "$P/.claude/autopilot-gate.log" | sed $'s/.*\tcmd=//'; }
 
 # run mode: cwd honoured and named in the evidence when it is not the project root
 f="$(mkcmd "$P/apps/web" "pwd")"
@@ -177,14 +180,14 @@ case "$res" in *"GATE GREEN"*"12 passed"*) ok "green run prints GREEN + summary"
 lines="$(printf '%s\n' "$res" | wc -l | tr -d ' ')"
 [ "$lines" -le 14 ] && ok "green run suppresses body ($lines lines)" || fail "green run too long ($lines lines)"
 [ "$(last_cmd)" = 'seq 1 50; echo "Tests  12 passed (12)"' ] && ok "green run logged with the whole command" || fail "green run log: $(last_cmd)"
-grep -q -E $'\\texit=0\\tcmd=seq' "$P/.claude/autopilot-gate.log" && ok "green run logged with exit=0" || fail "green run log: $(tail -n1 "$P/.claude/autopilot-gate.log")"
+grep -q -E $'\texit=0\tcmd=seq' "$P/.claude/autopilot-gate.log" && ok "green run logged with exit=0" || fail "green run log: $(tail -n1 "$P/.claude/autopilot-gate.log")"
 
 # run mode: red keeps exit code, shows failures
 f="$(mkcmd "$P" "$(printf 'echo "noise 1"\necho "FAIL src/x.test.ts > adds"\necho "AssertionError: expected 2 to be 3"\necho "Tests  1 failed | 11 passed (12)"\nexit 3')")"
 res="$(run_mode "$f")"; rc=$?
 [ "$rc" -eq 3 ] && ok "red run keeps exit 3" || fail "red run exit (got $rc)"
 case "$res" in *"GATE RED (exit 3)"*"AssertionError"*"1 failed"*) ok "red run prints RED + failure + summary";; *) fail "red output: $res";; esac
-grep -q -E $'\\texit=3\\t' "$P/.claude/autopilot-gate.log" && ok "red run logged with exit=3" || fail "red run log missing"
+grep -q -E $'\texit=3\t' "$P/.claude/autopilot-gate.log" && ok "red run logged with exit=3" || fail "red run log missing"
 
 # pipefail honoured
 f="$(mkcmd "$P" "false | cat")"

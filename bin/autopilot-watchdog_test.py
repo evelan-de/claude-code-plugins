@@ -13,7 +13,10 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "autopilot-watchdog")
+
 loader = importlib.machinery.SourceFileLoader("autopilot_watchdog", TOOL)
 spec = importlib.util.spec_from_loader("autopilot_watchdog", loader)
 watchdog = importlib.util.module_from_spec(spec)
@@ -161,8 +164,8 @@ class AutopilotWatchdog(unittest.TestCase):
     def test_runs_as_an_executable(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
-        p = subprocess.run([TOOL, self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
+        p = subprocess.run(script_launcher() + [TOOL, self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         self.assertEqual((p.returncode, p.stderr), (0, ""))
         self.assertTrue(re.match(r"^PROGRESS commit=[0-9a-f]+ age=\d+ plan_age=\d+ status_age=-1 stalls=0\n$", p.stdout))

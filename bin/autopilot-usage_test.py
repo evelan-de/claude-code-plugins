@@ -12,7 +12,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "autopilot-usage")
+
 loader = importlib.machinery.SourceFileLoader("autopilot_usage", TOOL)
 spec = importlib.util.spec_from_loader("autopilot_usage", loader)
 usage = importlib.util.module_from_spec(spec)
@@ -196,9 +199,9 @@ class AutopilotUsage(unittest.TestCase):
     def test_runs_as_an_executable(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
         self.session()
-        p = subprocess.run([TOOL, self.main], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        p = subprocess.run(script_launcher() + [TOOL, self.main], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual((p.returncode, p.stdout, p.stderr), (0, TABLE, ""))
         p = subprocess.run([sys.executable, TOOL], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)

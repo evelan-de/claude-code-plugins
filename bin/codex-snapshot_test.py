@@ -14,7 +14,10 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "codex-snapshot")
+
 USAGE = "usage: codex-snapshot save\n       codex-snapshot diff <id>\n       codex-snapshot patch <id>\n"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}  # the user's git config stays out
 
@@ -174,8 +177,8 @@ class CodexSnapshot(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(self.git("rev-parse", "HEAD").strip() + ":", out)
         self.assertEqual(self.leftovers(snapdir), [])
-        if os.geteuid() == 0:
-            self.skipTest("root reads a file without read permission, so git add cannot be made to fail")
+        if os.name == "nt" or os.geteuid() == 0:
+            self.skipTest("a file without read permission (chmod 0) does not stop git add here")
         write(f"{self.repo}/unreadable.txt", "secret\n")
         os.chmod(f"{self.repo}/unreadable.txt", 0)
         try:
@@ -206,6 +209,7 @@ class CodexSnapshot(unittest.TestCase):
         self.assertEqual(self.run_tool("diff", f"deadbeef:{tree}"),
                          (0, f"commits since snapshot: HEAD moved from deadbeef to {head}\n", ""))
 
+    @unittest.skipIf(os.name == "nt", "a signal handler never runs on Windows; a signal ends the process at once")
     def test_signal_ends_with_exit_1_and_removes_the_temp_directory(self):
         # A git that hangs in `add`, so the signal arrives while the temporary index exists.
         fakebin, snapdir, marker = (os.path.join(self.t, name) for name in ("fakebin", "snaptmp", "git-add-started"))
@@ -237,8 +241,8 @@ class CodexSnapshot(unittest.TestCase):
     def test_runs_by_its_shebang(self):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL) as f:
-            self.assertEqual(f.readline(), "#!/usr/bin/env python3\n")
-        p = subprocess.run([TOOL, "save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
+            self.assertEqual(f.readline(), "#!/bin/sh\n")
+        p = subprocess.run(script_launcher() + [TOOL, "save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=60)
         self.assertEqual(p.returncode, 0)
         self.assertRegex(p.stdout, r"\A[0-9a-f]{40}:[0-9a-f]{40}\n\Z")

@@ -104,7 +104,7 @@ class JiraCli(unittest.TestCase):
         rc, out, err = self.run_cli("view", "WEB-1")
         self.assertEqual(rc, 1)
         self.assertIn("JIRA_SITE, JIRA_EMAIL and JIRA_TOKEN into", err)
-        self.assertIn("nohome/env", err)
+        self.assertIn(os.path.join("nohome", "env"), err)
 
     def test_env_var_overrides_file(self):
         os.environ["JIRA_TOKEN"] = "OTHER"
@@ -129,6 +129,7 @@ class JiraCli(unittest.TestCase):
         self.assertIn("ok   - login: Andreas Straub (acc-1)", out)
         self.assertNotIn("SECRET-TOKEN-XYZ", out)
 
+    @unittest.skipIf(os.name == "nt", "file modes do not apply on Windows")
     def test_doctor_mode(self):
         os.chmod(os.path.join(self.home, "env"), 0o644)
         rc, out, _ = self.run_cli("doctor")
@@ -140,7 +141,7 @@ class JiraCli(unittest.TestCase):
         rc, out, _ = self.run_cli("doctor")
         self.assertEqual(rc, 1)
         self.assertIn("FAIL - ", out)
-        self.assertIn("nohome/env missing", out)
+        self.assertIn(os.path.join("nohome", "env") + " missing", out)
 
     # ---- view
     def test_view(self):
@@ -290,6 +291,7 @@ class JiraCli(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("needs a terminal", err)
 
+    @unittest.skipIf(os.name == "nt", "file modes do not apply on Windows")
     def test_setup_writes_env_file_mode_600(self):
         os.environ["JIRA_HOME"] = os.path.join(self.tmp.name, "fresh")
         answers = iter(["https://jira.test/", "a@b.c"])

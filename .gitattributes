@@ -1,0 +1,7 @@
+# Scripts and text files keep LF on every machine; a CRLF checkout breaks the hooks
+# ("\r: command not found") and the launcher lines of the helpers under Git Bash on Windows.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary

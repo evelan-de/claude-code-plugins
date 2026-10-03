@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""mission-control - run prepared autopilot sessions one after another, unattended.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """mission-control - run prepared autopilot sessions one after another, unattended.
 
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
        mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
@@ -23,7 +26,8 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
               outside an item
   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
               the project on the item's next attempt
-  run.lock/   pid of the active run and current (the item it is on), removed after the run
+  run.lock/   pid and start time (started) of the active run and current (the item it is on),
+              removed after the run
   paused      "until-resume", or one date (YYYY-MM-DD, local): the schedule is paused until
               resume, or through that day; the LaunchAgent's "run --scheduled" skips while it
               is valid, a manual run ignores it
@@ -46,6 +50,10 @@ run's branch to origin (no PR, never a base branch, never forced, without the pr
 hooks), so a blocked run is visible on GitHub and its commits never exist on one Mac only.
 A detached run with commits of its own gets the branch autopilot/<item> first.
 
+Every git call ends after 10 minutes and every gh call after 2 (MISSION_CONTROL_GIT_TIMEOUT_MIN,
+MISSION_CONTROL_GH_TIMEOUT_MIN, fractions allowed, 0 switches the limit off); a call that
+reaches its limit is killed, counts as failed (exit 124) and is logged with its command.
+
 Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
 wins over the env file. A sonnet run below xhigh runs at xhigh. Budget per attempt: 200 USD
@@ -57,7 +65,7 @@ Killing a run (timeout, stall, INT/TERM) targets the claude pid: SIGTERM, then S
 INT and TERM (stop) end the run within a second while it waits for claude; a git or gh
 command that is running finishes first.
 
-Dependencies: git, gh, curl (Slack), osascript (macOS notification).
+Dependencies: git, gh, osascript (macOS notification). Slack is reached over HTTPS from here.
 Test hooks: CLAUDE_BIN, GH_BIN, JIRA_BIN, JIRA_HOME, DOCKER_BIN, NVM_DIR,
 MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
 Python 3 standard library only. Never prints a secret: the Slack webhook URL is only ever
@@ -66,6 +74,7 @@ held in a variable.
 import datetime
 import filecmp
 import glob
+import http.client
 import json
 import os
 import platform
@@ -79,11 +88,15 @@ import sys
 import tempfile
 import time
 import traceback
+import typing
+import urllib.error
+import urllib.request
 
 USAGE = __doc__.split("\n\n")[1]
 SESSIONS = "docs/autopilot/sessions"
 LABEL_READY = "autopilot-ready"
 LABEL_DONE = "autopilot-done"
+LABELS_FAILED, JIRA_FAILED, PUSH_FAILED = "labels-failed", "jira-failed", "push-failed"   # done.txt notes
 LABEL_BLOCKED = "autopilot-blocked"
 LABELS = (
     (LABEL_READY, "0E8A16", "Plan ready, the autopilot queue picks this PR up"),
@@ -99,7 +112,8 @@ HOOK_FILES = (
 CONFIG_VARS = (
     "SLACK_WEBHOOK_URL", "MISSION_CONTROL_MODEL", "MISSION_CONTROL_EFFORT", "MISSION_CONTROL_ADVISOR",
     "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
-    "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN",
+    "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN", "MISSION_CONTROL_GIT_TIMEOUT_MIN",
+    "MISSION_CONTROL_GH_TIMEOUT_MIN",
 )
 # what the env file may hold besides the launch settings, and what is read before it
 ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
@@ -176,6 +190,8 @@ class Config:
     max_restarts = 5
     timeout_min = "480"
     timeout_s = watch_s = 0
+    git_timeout_min = "10"   # per git call; 0 switches the limit off
+    gh_timeout_min = "2"     # per gh call; 0 switches the limit off
 
 
 class Stopped(BaseException):
@@ -267,19 +283,51 @@ def check_stop():
         raise Stopped()
 
 
+def command_timeout(cmd):
+    """The time limit in seconds for a git or gh call (the setting, else the default), None
+    for anything else and for a limit of 0."""
+    name = os.path.basename(cmd[0]) if cmd else ""
+    if name == "git":
+        return to_seconds(setting("MISSION_CONTROL_GIT_TIMEOUT_MIN", Config.git_timeout_min)) or None
+    if cmd and cmd[0] == GH_BIN:
+        return to_seconds(setting("MISSION_CONTROL_GH_TIMEOUT_MIN", Config.gh_timeout_min)) or None
+    return None
+
+
 def execute(cmd, **how):
     """subprocess.run between two stop checks: a stop request never ends a command half way
-    (a git call finishes what it began), and no command starts after one."""
+    (a git call finishes what it began), and no command starts after one. A git or gh call
+    that reaches its time limit is killed (a child of its own, such as ssh, may survive),
+    logged and reported as exit 124 with empty output."""
     check_stop()
+    how.setdefault("timeout", command_timeout(cmd))
     try:
         return subprocess.run(cmd, **how)
+    except subprocess.TimeoutExpired as e:
+        shown = " ".join([os.path.basename(cmd[0])] + list(cmd[1:]))
+        log(f"timed out after {int(e.timeout)} s: {shown[:160]}")
+        return subprocess.CompletedProcess(cmd, 124, e.stdout or b"", e.stderr or b"")
     finally:
         check_stop()
 
 
+class Captured(typing.NamedTuple):
+    """What a command left behind: its exit code and its output without trailing newlines
+    (`rc, out = capture(...)` still works)."""
+    rc: int
+    out: str
+
+
+class CapturedBoth(typing.NamedTuple):
+    """As Captured, with stderr of its own."""
+    rc: int
+    out: str
+    err: str
+
+
 def capture(cmd, cwd=None, err="drop", stdin_text=None):
-    """(exit code, stdout without trailing newlines). err: drop, log (item log) or merge
-    (into stdout). 127 when the command cannot be started."""
+    """The exit code and stdout of the command. err: drop, log (item log) or merge (into
+    stdout). 127 when the command cannot be started."""
     errfile = None
     try:
         if err == "merge":
@@ -292,22 +340,22 @@ def capture(cmd, cwd=None, err="drop", stdin_text=None):
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=stderr,
             input=None if stdin_text is None else stdin_text.encode("utf-8"),
             stdin=subprocess.DEVNULL if stdin_text is None else None)
-        return exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n")
+        return Captured(exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"))
     except OSError as e:
-        return 127, (str(e) if err == "merge" else "")
+        return Captured(127, str(e) if err == "merge" else "")
     finally:
         if errfile:
             errfile.close()
 
 
 def capture_both(cmd, cwd=None):
-    """(exit code, stdout, stderr), both without trailing newlines."""
+    """The exit code, stdout and stderr of the command, both without trailing newlines."""
     try:
         done = execute(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
     except OSError as e:
-        return 127, "", str(e)
-    return (exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
-            done.stderr.decode("utf-8", "replace").rstrip("\n"))
+        return CapturedBoth(127, "", str(e))
+    return CapturedBoth(exit_code(done.returncode), done.stdout.decode("utf-8", "replace").rstrip("\n"),
+                        done.stderr.decode("utf-8", "replace").rstrip("\n"))
 
 
 def to_log(cmd, cwd=None):
@@ -323,7 +371,7 @@ def to_log(cmd, cwd=None):
 
 def quiet(cmd, cwd=None):
     """Runs the command without any output; its exit code."""
-    return capture(cmd, cwd=cwd)[0]
+    return capture(cmd, cwd=cwd).rc
 
 
 def git(tree, *args, err="drop"):
@@ -331,7 +379,7 @@ def git(tree, *args, err="drop"):
 
 
 def git_ok(tree, *args):
-    return git(tree, *args)[0] == 0
+    return git(tree, *args).rc == 0
 
 
 def git_log(tree, *args):
@@ -450,15 +498,26 @@ def pid_alive(pid):
         return False
 
 
+def proc_start(pid):
+    """When the process started, as ps prints it with blanks normalised; nothing when ps
+    cannot tell."""
+    rc, text = capture(["ps", "-p", str(pid), "-o", "lstart="])
+    return " ".join(text.split()) if rc == 0 else ""
+
+
 def lock_pid():
-    """The pid recorded in the lock when that process is alive and is a mission-control run,
-    else nothing. A pid that went to another program (a number reused after a reboot) makes
-    the lock stale."""
+    """The pid recorded in the lock when that process is alive, is a mission-control run and
+    started when the lock says, else nothing. A pid that went to another program or to another
+    mission-control process (a number reused after a reboot) makes the lock stale. A lock
+    without a start time (an older runner) counts by pid and command alone."""
     pid = first_line(LOCK + "/pid").strip()
     if not pid or not pid_alive(pid):
         return ""
     rc, command = capture(["ps", "-p", pid, "-o", "command="])
     if rc == 0 and "mission-control" not in command:
+        return ""
+    started = " ".join(first_line(LOCK + "/started").split())
+    if started and proc_start(pid) not in ("", started):
         return ""
     return pid
 
@@ -488,8 +547,8 @@ def current_package(wt, item):
 
 def acquire_lock():
     """Takes the lock, or ends the command when a live run holds it. The lock directory is
-    prepared with the pid inside and then renamed into place, so nobody ever sees a lock
-    without a pid; a stale lock is replaced."""
+    prepared with the pid and the process start time inside and then renamed into place, so
+    nobody ever sees a lock without a pid; a stale lock is replaced."""
     os.makedirs(QHOME, exist_ok=True)
     mine = f"{LOCK}.{os.getpid()}"
     shutil.rmtree(mine, ignore_errors=True)
@@ -497,6 +556,8 @@ def acquire_lock():
         os.mkdir(mine)
         with open(mine + "/pid", "w") as f:
             f.write(f"{os.getpid()}\n")
+        with open(mine + "/started", "w") as f:
+            f.write(f"{proc_start(os.getpid())}\n")
     except OSError:
         die(f"cannot take the lock {LOCK}")
     for attempt in (1, 2):
@@ -676,6 +737,14 @@ def remove_queue_line(line):
         die(f"could not remove the processed line from {QUEUE}, stopping")
 
 
+def resolved_repos(repos):
+    """(repo as configured, its path) per entry; the path is empty for an entry that is no
+    git repository, so every command reports that case in its own words."""
+    for repo in repos:
+        repo = expand_tilde(repo)
+        yield repo, resolve_repo(repo)
+
+
 def resolve_repo(path):
     """The absolute path of a git checkout, or nothing. A bare name (no "/") means
     $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>."""
@@ -716,7 +785,7 @@ def ticket_from(text):
 
 
 def current_branch(tree):
-    return git(tree, "symbolic-ref", "--short", "-q", "HEAD")[1]
+    return git(tree, "symbolic-ref", "--short", "-q", "HEAD").out
 
 
 def wt_path(repo, item):
@@ -804,7 +873,7 @@ def base_sha(tree, target=""):
         rc, sha = git(tree, "merge-base", ref, "HEAD")
         if rc == 0:
             return sha
-    return git(tree, "rev-parse", "HEAD")[1]
+    return git(tree, "rev-parse", "HEAD").out
 
 
 # ---------- plan header ----------
@@ -859,8 +928,8 @@ def plan_ticket(plan):
 
 def changed_session_dirs(tree, base):
     """Session directories (relative) with tracked changes since the base or untracked files."""
-    names = git(tree, "diff", "--name-only", base, "--", SESSIONS)[1].splitlines()
-    names += git(tree, "ls-files", "--others", "--exclude-standard", "--", SESSIONS)[1].splitlines()
+    names = git(tree, "diff", "--name-only", base, "--", SESSIONS).out.splitlines()
+    names += git(tree, "ls-files", "--others", "--exclude-standard", "--", SESSIONS).out.splitlines()
     dirs = set()
     for name in names:
         parts = name.split("/")
@@ -978,7 +1047,7 @@ def jira_start(it, key):
         log(f"jira: {text}")
         return
     say(f"{it.who}: jira start {key} failed: {last_line(text)}")
-    it.jira_failed = "jira-failed"
+    it.jira_failed = True
 
 
 def jira_comment(it, report):
@@ -1001,7 +1070,7 @@ def jira_comment(it, report):
         log(f"jira: {text}")
     else:
         say(f"{it.who}: jira comment {it.ticket} failed: {last_line(text)}")
-        it.jira_failed = "jira-failed"
+        it.jira_failed = True
 
 
 # ---------- gh ----------
@@ -1026,8 +1095,8 @@ def review_bot_comments(it):
     rc, repo = gh_in(it.gh_dir, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
     if rc != 0 or not repo:
         return None
-    author = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "author", "--jq", ".author.login")[1]
-    me = gh_in(it.gh_dir, "api", "user", "--jq", ".login")[1]
+    author = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "author", "--jq", ".author.login").out
+    me = gh_in(it.gh_dir, "api", "user", "--jq", ".login").out
     us = {author, me or author}
 
     def login(comment):
@@ -1055,7 +1124,7 @@ def branch_of_dir(repo, directory):
     if current and os.path.isdir(f"{repo}/{directory}"):
         return current
     quiet(["git", "-C", repo, "fetch", "-q", "origin"])
-    for name in git(repo, "log", "--all", "--format=%D", "-1", "--", directory)[1].split(","):
+    for name in git(repo, "log", "--all", "--format=%D", "-1", "--", directory).out.split(","):
         name = name.lstrip(" ")
         if name.startswith("HEAD -> "):
             name = name[8:]
@@ -1126,12 +1195,12 @@ def ensure_labels(repo):
     """Creates the three queue labels when missing; prints one line per label; False when one
     is missing and could not be created."""
     base = os.path.basename(repo)
-    have = gh_in(repo, "label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name")[1].splitlines()
+    have = gh_in(repo, "label", "list", "--limit", "200", "--json", "name", "--jq", ".[].name").out.splitlines()
     ok = True
     for name, color, description in LABELS:
         if name in have:
             out(f"ok   - label {name} exists in {base}")
-        elif gh_in(repo, "label", "create", name, "--color", color, "--description", description)[0] == 0:
+        elif gh_in(repo, "label", "create", name, "--color", color, "--description", description).rc == 0:
             out(f"ok   - label {name} created in {base}")
         else:
             out(f"FAIL - label {name} missing in {base} and gh label create failed")
@@ -1156,7 +1225,7 @@ def item_title(it):
     PLAN.md ("# PLAN - <topic> - <date>"), else the item itself."""
     title = ""
     if it.pr_number and it.gh_dir:
-        title = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "title", "--jq", ".title")[1]
+        title = gh_in(it.gh_dir, "pr", "view", it.pr_number, "--json", "title", "--jq", ".title").out
     plan = f"{it.wt}/{it.sd0}/PLAN.md"
     if not title and it.sd0 and os.path.isfile(plan):
         title = re.sub(r"^#\s*", "", first_line(plan))
@@ -1278,13 +1347,29 @@ def notify(text, sound="", slack=""):
             log("notification: osascript failed")
     url = Config.values.get("SLACK_WEBHOOK_URL")
     if url:
-        # the output is dropped on purpose: curl error messages can quote the URL
-        rc = quiet(["curl", "-sS", "--fail", "--max-time", "20", "-X", "POST", "-H", "Content-type: application/json",
-                    "--data", slack_json(slack or text), url])
-        if rc == 0:
-            log("notification: Slack message sent")
+        failure = post_json(url, slack_json(slack or text))
+        if failure:
+            log(f"notification: Slack webhook failed ({failure})")
         else:
-            log(f"notification: Slack webhook failed (curl exit {rc})")
+            log("notification: Slack message sent")
+
+
+def post_json(url, body):
+    """POSTs the JSON text to the URL (20 s limit) and returns nothing on a 2xx answer, else
+    the failure as "HTTP <status>" or the error's class name. The URL stays out of the
+    process list and out of the return value: error messages may quote it."""
+    try:
+        request = urllib.request.Request(url, data=body.encode("utf-8"), method="POST",
+                                         headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=20) as answer:
+            answer.read()
+        return ""
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return type(e.reason).__name__ if isinstance(e.reason, BaseException) else "URLError"
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        return type(e).__name__
 
 
 # ---------- run ----------
@@ -1302,7 +1387,8 @@ class Item:
         self.pr_url = "-"
         self.status = self.reason = self.shown = ""
         self.restarts = 0
-        self.gh_failed = self.jira_failed = self.pushed = self.push_failed = ""
+        self.pushed = ""   # the branch name once the push succeeded
+        self.gh_failed = self.jira_failed = self.push_failed = False
         self.model = self.effort = self.fallback = self.budget = ""
         self.result = ""   # of the last attempt: exited, stalled or timeout
         self.exit = 0      # the claude exit code of the last attempt
@@ -1311,6 +1397,11 @@ class Item:
     @property
     def who(self):
         return f"{self.rb} {self.item}"
+
+    def failure_notes(self):
+        """The done.txt words for what failed around the run, in their order."""
+        return [word for word, failed in ((LABELS_FAILED, self.gh_failed), (JIRA_FAILED, self.jira_failed),
+                                          (PUSH_FAILED, self.push_failed)) if failed]
 
     def block(self, reason, status="blocked"):
         self.status, self.reason = status, reason
@@ -1378,7 +1469,7 @@ def prepare_worktree(repo, wt, branch=""):
 def worktree_of_branch(repo, branch):
     """The worktree that has the branch checked out, or nothing."""
     worktree = ""
-    for line in git(repo, "worktree", "list", "--porcelain")[1].splitlines():
+    for line in git(repo, "worktree", "list", "--porcelain").out.splitlines():
         if line.startswith("worktree "):
             worktree = line.split()[1]
         elif line == f"branch refs/heads/{branch}":
@@ -1471,7 +1562,7 @@ def stop_compose(it):
     if not shutil.which(DOCKER_BIN):
         return
     listing = capture([DOCKER_BIN, "ps", "-a", "--format",
-                       '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}'])[1]
+                       '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}']).out
     projects = set()
     for line in listing.splitlines():
         fields = line.split("|")
@@ -1532,7 +1623,7 @@ def run_attempt(it, state_file):
             break
         if Config.watch_s > 0 and now - tick >= Config.watch_s:
             tick = now
-            verdict = capture([WATCHDOG, it.wt, current_branch(it.wt) or "HEAD", state_file], err="merge")[1]
+            verdict = capture([WATCHDOG, it.wt, current_branch(it.wt) or "HEAD", state_file], err="merge").out
             log(f"watchdog: {verdict}")
             stalls = verdict.rsplit("stalls=", 1)[-1]
             if verdict.startswith("STALL") and stalls.isdigit() and int(stalls) >= 4:
@@ -1625,7 +1716,7 @@ def prepare_and_run(it):
 
     if not it.status and kind == "pr":
         view = gh_in(it.repo, "pr", "view", ref, "--json", "number,headRefName,baseRefName,url", "--jq",
-                     r'"\(.number) \(.headRefName) \(.baseRefName) \(.url)"', err="log")[1].split(" ", 3)
+                     r'"\(.number) \(.headRefName) \(.baseRefName) \(.url)"', err="log").out.split(" ", 3)
         if len(view) < 4:
             it.block(f"gh pr view {ref} failed")
         else:
@@ -1746,7 +1837,7 @@ def gh_step(it, what, *args):
         log(f"{what} on PR #{it.pr_number}: ok")
     else:
         say(f"{it.who}: {what} failed (see {State.item_log})")
-        it.gh_failed = "labels-failed"
+        it.gh_failed = True
 
 
 def swap_label(directory, number, status):
@@ -1815,27 +1906,27 @@ def push_branch(it):
     branch = current_branch(wt)
     if not branch:
         # detached: only commits of its own need a branch
-        if not git(wt, "rev-list", "--max-count=1", "HEAD", "--not", "--remotes")[1]:
+        if not git(wt, "rev-list", "--max-count=1", "HEAD", "--not", "--remotes").out:
             return
         branch = f"autopilot/{safe_name(it.item)}"
         if git_log(wt, "checkout", "-q", "-b", branch) != 0:
             say(f"{it.who}: could not create the branch {branch} for the run's commits (see {State.item_log}); "
                 f"they stay in {wt}")
-            it.push_failed = "push-failed"
+            it.push_failed = True
             return
         it.branch = branch
     if is_base_branch(wt, branch):
         say(f"{it.who}: the run ended on the base branch {branch}; not pushed, its commits stay in {wt}")
-        it.push_failed = "push-failed"
+        it.push_failed = True
         return
     pushed = git_log(wt, "push", "-q", "--no-verify", "-u", "origin", f"HEAD:refs/heads/{branch}") == 0
-    on_origin = git(wt, "ls-remote", "origin", f"refs/heads/{branch}")[1].split("\t")[0]
-    if pushed and on_origin == git(wt, "rev-parse", "HEAD")[1]:
+    on_origin = git(wt, "ls-remote", "origin", f"refs/heads/{branch}").out.split("\t")[0]
+    if pushed and on_origin == git(wt, "rev-parse", "HEAD").out:
         it.pushed = branch
         say(f"{it.who}: branch {branch} pushed to origin")
     else:
         say(f"{it.who}: pushing {branch} to origin failed (see {State.item_log}); its commits are only in {wt}")
-        it.push_failed = "push-failed"
+        it.push_failed = True
 
 
 def pr_comment(it):
@@ -1858,7 +1949,7 @@ def finish_item(it):
     gh_usable = bool(it.gh_dir) and os.path.isdir(it.gh_dir)
     if it.branch and gh_usable:
         found = gh_in(it.gh_dir, "pr", "list", "--head", it.branch, "--state", "open", "--json", "url,number,isDraft",
-                      "--jq", r'.[0] // empty | "\(.number) \(.isDraft) \(.url)"', err="log")[1].split(" ", 2)
+                      "--jq", r'.[0] // empty | "\(.number) \(.isDraft) \(.url)"', err="log").out.split(" ", 2)
         if len(found) == 3:
             it.pr_number, it.draft, it.pr_url = found
 
@@ -1870,7 +1961,7 @@ def finish_item(it):
         else:
             # the PR keeps autopilot-ready: held, so that the next check does not run it again
             say(f"{it.who}: gh pr edit (labels) failed (see {State.item_log})")
-            it.gh_failed = "labels-failed"
+            it.gh_failed = True
             hold_pr(it.repo, it.pr_number, it.status)
         handle, body_file = tempfile.mkstemp(prefix="mission-control.")
         with os.fdopen(handle, "w", encoding="utf-8") as f:
@@ -1894,7 +1985,7 @@ def finish_item(it):
                     "(fixed or not changed), check them")
 
     notes = [f"restarts={it.restarts}"] if it.restarts > 0 else []
-    notes += [note for note in (it.noplan, it.gh_failed, it.jira_failed, it.push_failed, review) if note]
+    notes += [note for note in [it.noplan, *it.failure_notes(), review] if note]
     extra = "".join(" " + note for note in notes)
     with open(DONE, "a", encoding="utf-8") as f:
         f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} {it.status} {it.pr_url}{extra}\n")
@@ -1902,7 +1993,7 @@ def finish_item(it):
     if it.line:
         remove_queue_line(it.line)
 
-    it.shown = it.status + (f" {it.gh_failed}" if it.gh_failed else "")
+    it.shown = " ".join([it.status] + [note for note in it.failure_notes() if note == LABELS_FAILED])
     if it.status == "done":
         say(f"{it.who}: {it.shown} (PR {it.pr_url}{',' + extra if extra else ''})")
     else:
@@ -1998,9 +2089,7 @@ def cmd_run(args):
                 process_item(parsed[0], "text", parsed[1], line, parsed[2])
         repos = live_lines(REPOS)
         if not stopped_by_pause and repos_pollable(repos, in_run=True):
-            for repo in repos:
-                repo = expand_tilde(repo)
-                path = resolve_repo(repo)
+            for repo, path in resolved_repos(repos):
                 if not path:
                     say(f"{repo}: not a git repository, skipped")
                     continue
@@ -2052,9 +2141,7 @@ def cmd_list(args):
     os.makedirs(LOGDIR, exist_ok=True)
     repos = live_lines(REPOS)
     if repos_pollable(repos):
-        for repo in repos:
-            repo = expand_tilde(repo)
-            path = resolve_repo(repo)
+        for repo, path in resolved_repos(repos):
             if not path:
                 out(f"pr     {repo}  (not a git repository)")
                 continue
@@ -2109,12 +2196,12 @@ def cmd_doctor(args):
         failed = True
 
     if shutil.which("git"):
-        ok("git " + (capture(["git", "--version"])[1].split(" ") + ["", "", ""])[2])
+        ok("git " + (capture(["git", "--version"]).out.split(" ") + ["", "", ""])[2])
     else:
         bad("git not found")
 
     answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", "0.05"],
-                     err="merge")[1]
+                     err="merge").out
     if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
         ok("claude -p answers (logged in)")
     else:
@@ -2140,9 +2227,7 @@ def cmd_doctor(args):
     os.makedirs(LOGDIR, exist_ok=True)
     repos = {parsed[0] for parsed in map(parse_line, read_lines(QUEUE)) if parsed} | set(live_lines(REPOS))
     out(f"repos in the queue: {len(repos)}")
-    for repo in sorted(repos):
-        repo = expand_tilde(repo)
-        path = resolve_repo(repo)
+    for repo, path in resolved_repos(sorted(repos)):
         if not path:
             bad(f"{repo} is not a git repository")
             continue
@@ -2214,7 +2299,7 @@ def cmd_status(args):
             status_file = wt + "/.claude/.autopilot-status"
             out(f"  run: {last_line(read_text(status_file))}" if os.path.isfile(status_file) else "  run: no status line yet")
             base = base or base_sha(wt)
-            diff = git(wt, "diff", "--shortstat", base or "HEAD")[1].lstrip(" ")
+            diff = git(wt, "diff", "--shortstat", base or "HEAD").out.lstrip(" ")
             out(f"  diff since base: {diff or 'none'}")
     elif pid:
         out(f"running: pid {pid}, no item yet")
@@ -2230,9 +2315,7 @@ def cmd_status(args):
     repos = live_lines(REPOS)
     if repos_pollable(repos):
         total, per_repo = 0, []
-        for repo in repos:
-            repo = expand_tilde(repo)
-            path = resolve_repo(repo)
+        for repo, path in resolved_repos(repos):
             if not path:
                 out(f"FAIL - {repo}: not a git repository")
                 continue
@@ -2542,6 +2625,8 @@ COMMANDS = {
 def main(argv):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    if platform.system() != "Darwin":
+        die("mission-control runs on macOS only (the queue machine is the office Mini; reach it over SSH)")
     command, args = (argv[0] if argv else ""), argv[1:]
     if command in ("", "-h", "--help", "help"):
         out(USAGE)

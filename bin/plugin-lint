@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""plugin-lint - static consistency checks for this plugin repository.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """plugin-lint - static consistency checks for this plugin repository.
 
 usage: plugin-lint [<plugin root>]   (default: git top level of the cwd)
 
@@ -15,6 +18,8 @@ Checks:
   5. no em dash (U+2014) in shipped text files
   6. every skill folder name appears in README.md
   7. no mention of removed concepts in shipped files
+  8. every helper in bin/ (a file without extension) starts with the four launcher lines
+     and compiles
 
 Files are read as bytes and compared in byte order, whatever the locale. A file with a NUL
 byte is binary and is left out of checks 3, 5 and 7. Python 3 standard library only; git is
@@ -52,11 +57,11 @@ def read_text(path):
 
 
 def lines_of(text):
-    """The lines of a text without their newline."""
+    """The lines of a text without their line end (LF or CRLF)."""
     lines = text.split("\n")
     if lines[-1] == "":
         lines.pop()
-    return lines
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
 def is_binary(path):
@@ -64,7 +69,8 @@ def is_binary(path):
 
 
 def files_below(top):
-    """Regular files below a directory, depth first in directory order; symlinks are not followed."""
+    """Regular files below a directory, depth first in directory order, with forward slashes
+    on every platform; symlinks are not followed."""
     try:
         entries = list(os.scandir(top))
     except OSError:
@@ -73,7 +79,7 @@ def files_below(top):
         if entry.is_dir(follow_symlinks=False):
             yield from files_below(entry.path)
         elif entry.is_file(follow_symlinks=False):
-            yield entry.path
+            yield entry.path.replace(os.sep, "/")
 
 
 def visible_names(folder):
@@ -268,6 +274,35 @@ def check_readme(skills):
     return [f"README.md: does not mention skill '{skill_folder(s)}'" for s in skills if skill_folder(s) not in text]
 
 
+LAUNCHER = (
+    "#!/bin/sh",
+    "''''test \"$(uname -s)\" = Darwin && exec python3 \"$0\" \"$@\" # '''",
+    "''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 \"$0\" \"$@\" # '''",
+    "''''exec python \"$0\" \"$@\" # '''",
+)
+
+
+def helper_files():
+    """The helpers in bin/: files without an extension."""
+    if not os.path.isdir("bin"):
+        return []
+    return sorted(p for p in files_below("bin") if "." not in os.path.basename(p))
+
+
+def check_helpers():
+    """Every helper starts with the four launcher lines and is valid Python."""
+    out = []
+    for path in helper_files():
+        text = read_text(path)
+        if tuple(lines_of(text)[:4]) != LAUNCHER:
+            out.append(f"{path}: does not start with the four launcher lines (see any other helper in bin/)")
+        try:
+            compile(text, path, "exec")
+        except (SyntaxError, ValueError) as e:
+            out.append(f"{path}: does not compile: {e}")
+    return out
+
+
 def check_removed_concepts():
     """7. no mention of removed concepts in shipped files."""
     manifest = list(files_below(".claude-plugin")) if os.path.isdir(".claude-plugin") else []
@@ -297,7 +332,7 @@ def main(argv):
         return 2
     skills = skill_files()
     problems = (check_frontmatter(skills) + check_references(skills) + check_evelan_refs() + check_agents_list()
-                + check_em_dash() + check_readme(skills) + check_removed_concepts())
+                + check_em_dash() + check_readme(skills) + check_removed_concepts() + check_helpers())
     for line in problems:
         print(line)
     if problems:

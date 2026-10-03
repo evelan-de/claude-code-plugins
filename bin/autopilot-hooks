@@ -1,5 +1,8 @@
-#!/usr/bin/env python3
-"""autopilot-hooks - check or install the four autopilot hooks in a project.
+#!/bin/sh
+''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
+''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
+''''exec python "$0" "$@" # '''
+__doc__ = """autopilot-hooks - check or install the four autopilot hooks in a project.
 
 usage: autopilot-hooks check <project dir>     # exit 0 when current, 1 when something is missing or old
        autopilot-hooks install <project dir>   # copy, register, gitignore; prints what changed
@@ -141,6 +144,15 @@ def install(project):
     return changed
 
 
+def jq_note():
+    """One line on stderr when jq is not on the PATH (the filter and the budget hook do
+    nothing without it). Not a finding: the result and the exit code stay what the hook files
+    say."""
+    if not shutil.which("jq"):
+        print("note: jq is not installed, so the gate filter and the context-budget hook are no-ops "
+              "(macOS: brew install jq, Windows: winget install jqlang.jq)", file=sys.stderr)
+
+
 def main(argv):
     if len(argv) != 2 or argv[0] not in ("check", "install"):
         print(__doc__.split("\n\n")[1], file=sys.stderr)
@@ -153,9 +165,11 @@ def main(argv):
         if argv[0] == "check":
             found = problems(project)
             print("current" if not found else "; ".join(found))
+            jq_note()
             return 0 if not found else 1
         changed = install(project)
         print("; ".join(changed) if changed else "nothing to do")
+        jq_note()
         return 0
     except (OSError, ValueError) as e:
         print(f"autopilot-hooks: {e}", file=sys.stderr)
