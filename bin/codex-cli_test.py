@@ -176,7 +176,8 @@ class CodexCli(unittest.TestCase):
             self.assertEqual(f.readline(), "#!/bin/sh\n")
         os.makedirs(self.path("pybin"))
         write_script(self.path("pybin/python3"), f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
-        rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pybin", "pathbin"), command=[WRAPPER])
+        launch = [WRAPPER] if os.name != "nt" else ["bash", WRAPPER]   # Windows starts scripts through Git Bash
+        rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pybin", "pathbin"), command=launch)
         self.assertEqual((rc, out, err), (0, "FROM_PATH\narg:exec\narg:hello\n", ""))
 
 

@@ -284,7 +284,8 @@ class PluginLint(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        self.assertEqual(self.run_tool(self.p, tool=[TOOL]), (0, OK, ""))
+        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
+        self.assertEqual(self.run_tool(self.p, tool=launch), (0, OK, ""))
 
     def test_helpers_carry_the_launcher_header_and_compile(self):
         with open(TOOL, encoding="utf-8") as f:

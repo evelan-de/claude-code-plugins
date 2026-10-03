@@ -162,7 +162,8 @@ class AutopilotWatchdog(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        p = subprocess.run([TOOL, self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
+        p = subprocess.run(launch + [self.repo, "feat/x", self.state], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         self.assertEqual((p.returncode, p.stderr), (0, ""))
         self.assertTrue(re.match(r"^PROGRESS commit=[0-9a-f]+ age=\d+ plan_age=\d+ status_age=-1 stalls=0\n$", p.stdout))

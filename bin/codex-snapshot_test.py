@@ -238,7 +238,8 @@ class CodexSnapshot(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL) as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        p = subprocess.run([TOOL, "save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
+        launch = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
+        p = subprocess.run(launch + ["save"], cwd=self.repo, env=self.env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=60)
         self.assertEqual(p.returncode, 0)
         self.assertRegex(p.stdout, r"\A[0-9a-f]{40}:[0-9a-f]{40}\n\Z")

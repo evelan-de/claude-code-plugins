@@ -562,12 +562,13 @@ def start_run(output):
     return runner
 
 
-def wait_for(path):
-    """Waits up to 10 s for the file."""
-    for _ in range(100):
+def wait_for(path, seconds=10):
+    """Waits up to the given seconds for the file; True when it appeared."""
+    for _ in range(int(seconds * 10)):
         if os.path.isfile(path):
-            break
+            return True
         time.sleep(0.1)
+    return False
 
 
 def pid_in(path):
@@ -2736,8 +2737,10 @@ class MissionControl(unittest.TestCase):
         ENV["PATH"] = f"{slow}:{path}"
         runner = start_run(f"{rec}/out")
         ENV["PATH"] = path
-        wait_for(f"{rec}/git.started")
-        os.kill(runner.pid, signal.SIGTERM)
+        started = wait_for(f"{rec}/git.started", seconds=60)
+        check("(z4) the slow git command started while the runner was alive", started and runner.poll() is None)
+        if runner.poll() is None:
+            os.kill(runner.pid, signal.SIGTERM)
         got = shell_status(runner.wait())
         wt = f"{S.proj}/.claude/worktrees/autopilot-PAUL-304"
         check("(z4) run exited on TERM with 130", got == 130)

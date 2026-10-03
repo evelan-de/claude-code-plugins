@@ -13,6 +13,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "autopilot-usage")
+LAUNCH = [TOOL] if os.name != "nt" else ["bash", TOOL]   # Windows starts scripts through Git Bash
 loader = importlib.machinery.SourceFileLoader("autopilot_usage", TOOL)
 spec = importlib.util.spec_from_loader("autopilot_usage", loader)
 usage = importlib.util.module_from_spec(spec)
@@ -198,7 +199,7 @@ class AutopilotUsage(unittest.TestCase):
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
         self.session()
-        p = subprocess.run([TOOL, self.main], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        p = subprocess.run(LAUNCH + [self.main], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual((p.returncode, p.stdout, p.stderr), (0, TABLE, ""))
         p = subprocess.run([sys.executable, TOOL], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
