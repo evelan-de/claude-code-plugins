@@ -221,8 +221,11 @@ class PluginLint(unittest.TestCase):
 
     def test_symlinks_are_not_followed(self):
         self.write("outside/notes.md", f"evelan:nothing wayfinder {EM_DASH}\n")
-        os.symlink(self.path("outside/notes.md"), self.path("skills/alpha/link.md"))
-        os.symlink(self.path("outside"), self.path("skills/alpha/linkdir"))
+        try:
+            os.symlink(self.path("outside/notes.md"), self.path("skills/alpha/link.md"))
+            os.symlink(self.path("outside"), self.path("skills/alpha/linkdir"))
+        except OSError as e:   # Windows without developer mode
+            self.skipTest(f"cannot create symlinks here: {e}")
         self.assertEqual(self.lint(), (0, OK, ""))
 
     def test_unquoted_description_with_colon_space(self):
