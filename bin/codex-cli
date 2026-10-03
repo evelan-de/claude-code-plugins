@@ -111,13 +111,45 @@ def main(argv):
     restore_signals()
     try:
         if os.name == "nt":
-            # Windows has no exec that replaces the process: run the binary as a child with
-            # the same stdin/stdout/stderr and end with its exit code.
-            return subprocess.call([binary] + argv)
+            return run_on_windows(binary, argv)
         os.execv(binary, [binary] + argv)
     except OSError as e:
         print(f"codex-cli: cannot run {binary}: {e.strerror}", file=sys.stderr)
         return 126
+
+
+GIT_BASH_DEFAULT = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def git_bash():
+    """Git for Windows' bash.exe: CLAUDE_CODE_GIT_BASH_PATH, else found upwards from git (the
+    bash.exe in System32 is WSL's), else the default install path; None when there is none."""
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
+    if os.path.isfile(bash):
+        return bash
+    here = os.path.dirname(shutil.which("git") or "")
+    while here and os.path.dirname(here) != here:
+        for parts in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            candidate = os.path.join(here, *parts)
+            if os.path.isfile(candidate):
+                return candidate
+        here = os.path.dirname(here)
+    return GIT_BASH_DEFAULT if os.path.isfile(GIT_BASH_DEFAULT) else None
+
+
+def run_on_windows(binary, argv):
+    """Runs the binary as a child (Windows has no exec that replaces the process) and returns
+    its exit code. A `.cmd` started directly goes through cmd.exe, which reads `&`, `|` and
+    `%NAME%` inside the arguments as its own syntax; the npm install puts a shell shim without
+    extension next to the .cmd, and that one runs under Git Bash with the arguments intact."""
+    if binary.lower().endswith(".cmd"):
+        shim, bash = binary[:-4], git_bash()
+        if bash and os.path.isfile(shim):
+            return subprocess.call([bash, shim] + argv)
+        print(f"codex-cli: {binary} would re-read the arguments; the shell shim next to it and "
+              "Git for Windows are needed to run Codex with them intact", file=sys.stderr)
+        return 126
+    return subprocess.call([binary] + argv)
 
 
 if __name__ == "__main__":

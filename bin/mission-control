@@ -51,8 +51,8 @@ hooks), so a blocked run is visible on GitHub and its commits never exist on one
 A detached run with commits of its own gets the branch autopilot/<item> first.
 
 Every git call ends after 10 minutes and every gh call after 2 (MISSION_CONTROL_GIT_TIMEOUT_MIN,
-MISSION_CONTROL_GH_TIMEOUT_MIN); a call that reaches its limit is killed, counts as failed
-(exit 124) and is logged with its command.
+MISSION_CONTROL_GH_TIMEOUT_MIN, fractions allowed, 0 switches the limit off); a call that
+reaches its limit is killed, counts as failed (exit 124) and is logged with its command.
 
 Launch settings per item: model and effort from the plan header ("Model: sonnet | opus",
 "Effort:"); MISSION_CONTROL_MODEL / _EFFORT in the environment win over the plan, the plan
@@ -96,6 +96,7 @@ USAGE = __doc__.split("\n\n")[1]
 SESSIONS = "docs/autopilot/sessions"
 LABEL_READY = "autopilot-ready"
 LABEL_DONE = "autopilot-done"
+LABELS_FAILED, JIRA_FAILED, PUSH_FAILED = "labels-failed", "jira-failed", "push-failed"   # done.txt notes
 LABEL_BLOCKED = "autopilot-blocked"
 LABELS = (
     (LABEL_READY, "0E8A16", "Plan ready, the autopilot queue picks this PR up"),
@@ -189,6 +190,8 @@ class Config:
     max_restarts = 5
     timeout_min = "480"
     timeout_s = watch_s = 0
+    git_timeout_min = "10"   # per git call; 0 switches the limit off
+    gh_timeout_min = "2"     # per gh call; 0 switches the limit off
 
 
 class Stopped(BaseException):
@@ -281,12 +284,13 @@ def check_stop():
 
 
 def command_timeout(cmd):
-    """The time limit in seconds for a git or gh call, None for anything else."""
+    """The time limit in seconds for a git or gh call (the setting, else the default), None
+    for anything else and for a limit of 0."""
     name = os.path.basename(cmd[0]) if cmd else ""
     if name == "git":
-        return getattr(Config, "git_timeout_s", 600)
+        return to_seconds(setting("MISSION_CONTROL_GIT_TIMEOUT_MIN", Config.git_timeout_min)) or None
     if cmd and cmd[0] == GH_BIN:
-        return getattr(Config, "gh_timeout_s", 120)
+        return to_seconds(setting("MISSION_CONTROL_GH_TIMEOUT_MIN", Config.gh_timeout_min)) or None
     return None
 
 
@@ -300,7 +304,8 @@ def execute(cmd, **how):
     try:
         return subprocess.run(cmd, **how)
     except subprocess.TimeoutExpired as e:
-        log(f"timed out after {int(e.timeout)} s: {' '.join([os.path.basename(cmd[0])] + list(cmd[1:5]))}")
+        shown = " ".join([os.path.basename(cmd[0])] + list(cmd[1:]))
+        log(f"timed out after {int(e.timeout)} s: {shown[:160]}")
         return subprocess.CompletedProcess(cmd, 124, e.stdout or b"", e.stderr or b"")
     finally:
         check_stop()
@@ -655,8 +660,6 @@ def load_env():
     Config.timeout_min = setting("MISSION_CONTROL_TIMEOUT_MIN", "480")
     Config.timeout_s = to_seconds(Config.timeout_min)
     Config.watch_s = to_seconds(setting("MISSION_CONTROL_WATCH_MIN", "20"))
-    Config.git_timeout_s = to_seconds(setting("MISSION_CONTROL_GIT_TIMEOUT_MIN", "10")) or None
-    Config.gh_timeout_s = to_seconds(setting("MISSION_CONTROL_GH_TIMEOUT_MIN", "2")) or None
 
 
 def setting(name, default=""):
@@ -1395,6 +1398,11 @@ class Item:
     def who(self):
         return f"{self.rb} {self.item}"
 
+    def failure_notes(self):
+        """The done.txt words for what failed around the run, in their order."""
+        return [word for word, failed in ((LABELS_FAILED, self.gh_failed), (JIRA_FAILED, self.jira_failed),
+                                          (PUSH_FAILED, self.push_failed)) if failed]
+
     def block(self, reason, status="blocked"):
         self.status, self.reason = status, reason
 
@@ -1977,8 +1985,7 @@ def finish_item(it):
                     "(fixed or not changed), check them")
 
     notes = [f"restarts={it.restarts}"] if it.restarts > 0 else []
-    notes += [note for note in (it.noplan, "labels-failed" if it.gh_failed else "", "jira-failed" if it.jira_failed else "",
-                                "push-failed" if it.push_failed else "", review) if note]
+    notes += [note for note in [it.noplan, *it.failure_notes(), review] if note]
     extra = "".join(" " + note for note in notes)
     with open(DONE, "a", encoding="utf-8") as f:
         f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} {it.status} {it.pr_url}{extra}\n")
@@ -1986,7 +1993,7 @@ def finish_item(it):
     if it.line:
         remove_queue_line(it.line)
 
-    it.shown = it.status + (" labels-failed" if it.gh_failed else "")
+    it.shown = " ".join([it.status] + [note for note in it.failure_notes() if note == LABELS_FAILED])
     if it.status == "done":
         say(f"{it.who}: {it.shown} (PR {it.pr_url}{',' + extra if extra else ''})")
     else:
@@ -2618,7 +2625,7 @@ COMMANDS = {
 def main(argv):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    if os.name == "nt":
+    if not DARWIN:
         die("mission-control runs on macOS only (the queue machine is the office Mini; reach it over SSH)")
     command, args = (argv[0] if argv else ""), argv[1:]
     if command in ("", "-h", "--help", "help"):

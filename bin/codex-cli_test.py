@@ -10,7 +10,6 @@ import importlib.machinery
 import importlib.util
 import io
 import os
-import shutil
 import shlex
 import subprocess
 import sys
@@ -19,25 +18,10 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 WRAPPER = os.path.join(HERE, "codex-cli")
 
-
-def script_launcher():
-    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
-    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
-    if os.name != "nt":
-        return []
-    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
-    if os.path.isfile(bash):
-        return [bash]
-    here = os.path.dirname(shutil.which("git") or "")
-    while here and os.path.dirname(here) != here:
-        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
-            candidate = os.path.join(here, *rel)
-            if os.path.isfile(candidate):
-                return [candidate]
-        here = os.path.dirname(here)
-    return [r"C:\Program Files\Git\bin\bash.exe"]
 loader = importlib.machinery.SourceFileLoader("codex_cli", WRAPPER)
 spec = importlib.util.spec_from_loader("codex_cli", loader)
 codex_cli = importlib.util.module_from_spec(spec)
@@ -127,12 +111,19 @@ class CodexCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, "FROM_PATH\narg:review\narg:--base\narg:main\narg:two words\narg:\narg:-x\narg:*\n")
 
-    @unittest.skipIf(os.name != "nt", "Windows only: the npm install is codex.cmd")
-    def test_windows_runs_codex_cmd_from_path_and_returns_its_exit_code(self):
+    @unittest.skipIf(os.name != "nt", "Windows only: the npm install is codex.cmd plus a shell shim")
+    def test_windows_runs_the_shell_shim_next_to_codex_cmd_with_the_arguments_intact(self):
+        write_script(self.path("pathbin/codex"), '#!/bin/sh\necho "FROM_SHIM"\nfor a in "$@"; do echo "arg:$a"; done\nexit 7\n')
+        rc, out, _ = self.run_wrapper("review", "a&b %PATH% | c", path_dirs=("pathbin",), home="emptyhome")
+        self.assertEqual((rc, out.replace("\r", "")), (7, "FROM_SHIM\narg:review\narg:a&b %PATH% | c\n"))
+
+    @unittest.skipIf(os.name != "nt", "Windows only")
+    def test_windows_refuses_a_codex_cmd_without_its_shell_shim(self):
         with open(self.path("pathbin/codex.cmd"), "w", newline="\r\n") as f:
-            f.write("@echo off\necho FROM_CMD %1\nexit /b 7\n")
-        rc, out, _ = self.run_wrapper("review", path_dirs=("pathbin",), home="emptyhome")
-        self.assertEqual((rc, out.strip()), (7, "FROM_CMD review"))
+            f.write("@echo off\necho FROM_CMD\n")
+        rc, out, err = self.run_wrapper("review", path_dirs=("pathbin",), home="emptyhome")
+        self.assertEqual((rc, out), (126, ""))
+        self.assertIn("would re-read the arguments", err)
 
     def test_not_found_exits_127_with_a_clear_message(self):
         rc, out, err = self.run_wrapper("--version", home="emptyhome", app_bin=self.path("nonexistent"))

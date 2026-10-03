@@ -669,6 +669,9 @@ def write_plist(home, hour, minute, legacy=False):
           + f"<integer>{hour}</integer><key>Minute</key><integer>{minute}</integer></dict></dict>\n")
 
 
+SLACK_POST = r"^POST \S+ (\{.*\})$"   # one line of the webhook record: method, path, JSON body
+
+
 def slack_message(path, needle):
     """(text, exit code): the text of the first Slack message in the webhook record whose line
     contains the needle. Exit code 1 when there is none, or the record is not UTF-8, or the
@@ -683,8 +686,6 @@ def slack_message(path, needle):
         pass
     return "", 1
 
-
-SLACK_POST = r"^POST \S+ (\{.*\})$"   # one line of the webhook record: method, path, JSON body
 
 
 def slack_log():

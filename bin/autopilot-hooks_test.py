@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,23 @@ class AutopilotHooks(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = hooks.main(list(argv))
         return rc, out.getvalue(), err.getvalue()
+
+    def test_missing_jq_is_a_note_on_stderr_not_a_finding(self):
+        self.run_cli("install", str(self.p))
+        path = os.environ["PATH"]
+        os.environ["PATH"] = str(self.p)   # nothing on it, so no jq
+        try:
+            rc, out, err = self.run_cli("check", str(self.p))
+            self.assertEqual((rc, out), (0, "current\n"))
+            self.assertIn("jq is not installed", err)
+            self.assertIn("winget install jqlang.jq", err)
+            rc, out, err = self.run_cli("install", str(self.p))
+            self.assertEqual((rc, out), (0, "nothing to do\n"))
+            self.assertIn("jq is not installed", err)
+        finally:
+            os.environ["PATH"] = path
+        rc, _, err = self.run_cli("check", str(self.p))
+        self.assertEqual((rc, "jq is not installed" in err), (0, shutil.which("jq") is None))
 
     def test_empty_project_is_not_current(self):
         rc, out, _ = self.run_cli("check", str(self.p))

@@ -20,7 +20,8 @@ claude-code-plugins/
 ├── bin/                      # Helper executables on PATH for skills
 │   ├── <tool>                # Python 3 stdlib, no file extension
 │   ├── <tool>_test.py        # unittest suite
-│   └── <tool>.test.sh        # wrapper, run: bash bin/<tool>.test.sh
+│   ├── <tool>.test.sh        # wrapper, run: bash bin/<tool>.test.sh
+│   └── testlib.py            # shared by the test suites (loading a helper, starting one on Windows)
 ├── docs/                     # Documentation and diagrams
 └── README.md
 ```

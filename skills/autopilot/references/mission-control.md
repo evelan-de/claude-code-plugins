@@ -245,8 +245,8 @@ A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a
 process, or by a pid that now belongs to another process (a number reused after a reboot),
 is taken over. Every `git` call ends after 10 minutes and every `gh` call after 2
 (`MISSION_CONTROL_GIT_TIMEOUT_MIN`, `MISSION_CONTROL_GH_TIMEOUT_MIN` in the env file or the
-environment, fractions allowed): the call is killed, counts as failed and is logged as
-`timed out after <n> s: <command>`. Before polling the repos, `run`, `list` and `status` check once
+environment, fractions allowed, `0` switches the limit off): the call is killed, counts as
+failed and is logged as `timed out after <n> s: <command>`. Before polling the repos, `run`, `list` and `status` check once
 whether `gh` can read its token (`gh auth status`). When it cannot, they print one notice
 instead of one line per repo and skip the polling: over SSH (`SSH_CONNECTION` or `SSH_TTY`
 set) `gh: token not readable in this SSH session (macOS Keychain); labelled PRs unknown

@@ -7,6 +7,8 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "git-default-branch")
 
 
@@ -75,7 +77,7 @@ class GitDefaultBranch(unittest.TestCase):
         self.assertTrue(os.access(TOOL, os.X_OK))
         with open(TOOL, encoding="utf-8") as f:
             self.assertEqual(f.readline(), "#!/bin/sh\n")
-        self.assertEqual(self.run_tool(self.new_repo("direct", "main"), [TOOL]), (0, "main\n", ""))
+        self.assertEqual(self.run_tool(self.new_repo("direct", "main"), script_launcher() + [TOOL]), (0, "main\n", ""))
 
 
 if __name__ == "__main__":

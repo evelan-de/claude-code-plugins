@@ -6,32 +6,16 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from testlib import script_launcher  # noqa: E402
 TOOL = os.path.join(HERE, "autopilot-usage")
 
-
-def script_launcher():
-    """How a test starts a helper by its launcher lines: directly on POSIX; on Windows through
-    Git Bash, found next to git (System32 holds WSL's bash.exe, which is not it)."""
-    if os.name != "nt":
-        return []
-    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "")
-    if os.path.isfile(bash):
-        return [bash]
-    here = os.path.dirname(shutil.which("git") or "")
-    while here and os.path.dirname(here) != here:
-        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
-            candidate = os.path.join(here, *rel)
-            if os.path.isfile(candidate):
-                return [candidate]
-        here = os.path.dirname(here)
-    return [r"C:\Program Files\Git\bin\bash.exe"]
 loader = importlib.machinery.SourceFileLoader("autopilot_usage", TOOL)
 spec = importlib.util.spec_from_loader("autopilot_usage", loader)
 usage = importlib.util.module_from_spec(spec)

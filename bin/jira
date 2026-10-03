@@ -221,11 +221,11 @@ def cmd_doctor(_args, transport):
         fails.append(msg)
 
     path = env_file()
-    if os.path.isfile(path) and os.name == "nt":
-        ok(f"{path} (file modes do not apply on Windows)")
-    elif os.path.isfile(path):
+    if os.path.isfile(path):
         mode = stat.S_IMODE(os.stat(path).st_mode)
-        if mode == 0o600:
+        if os.name == "nt":
+            ok(f"{path} (file modes do not apply on Windows)")
+        elif mode == 0o600:
             ok(f"{path} (mode 600)")
         else:
             bad(f"{path} has mode {mode:o}, expected 600 (chmod 600 {path})")
