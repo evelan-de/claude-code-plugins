@@ -82,9 +82,10 @@ def find_codex():
     if found:
         return found, []
     probed = ["codex on PATH"]
-    if os.name == "nt":
-        return None, probed   # the desktop-app bundles and ~/.local/bin are macOS and Linux places
-    for candidate in app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]:
+    candidates = app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]
+    if os.name == "nt":   # the desktop-app bundles and ~/.local/bin are macOS and Linux places
+        candidates = app_candidates() if os.environ.get("CODEX_CLI_APP_BIN") else []
+    for candidate in candidates:
         if runnable(candidate):
             return candidate, probed
         probed.append(candidate)
@@ -139,17 +140,21 @@ def git_bash():
 
 def run_on_windows(binary, argv):
     """Runs the binary as a child (Windows has no exec that replaces the process) and returns
-    its exit code. A `.cmd` started directly goes through cmd.exe, which reads `&`, `|` and
-    `%NAME%` inside the arguments as its own syntax; the npm install puts a shell shim without
-    extension next to the .cmd, and that one runs under Git Bash with the arguments intact."""
-    if binary.lower().endswith(".cmd"):
-        shim, bash = binary[:-4], git_bash()
-        if bash and os.path.isfile(shim):
-            return subprocess.call([bash, shim] + argv)
-        print(f"codex-cli: {binary} would re-read the arguments; the shell shim next to it and "
-              "Git for Windows are needed to run Codex with them intact", file=sys.stderr)
-        return 126
-    return subprocess.call([binary] + argv)
+    its exit code. An .exe runs as it is. A `.cmd` started directly goes through cmd.exe,
+    which reads `&`, `|` and `%NAME%` inside the arguments as its own syntax; the npm install
+    puts a shell shim without extension next to the .cmd, and that one runs under Git Bash
+    with the arguments intact. A file without extension is such a shell script and runs under
+    Git Bash too."""
+    name = binary.lower()
+    if name.endswith(".exe"):
+        return subprocess.call([binary] + argv)
+    script = binary[:-4] if name.endswith(".cmd") else binary
+    bash = git_bash()
+    if bash and os.path.isfile(script):
+        return subprocess.call([bash, script] + argv)
+    print(f"codex-cli: {binary} would re-read the arguments; the shell shim next to it and "
+          "Git for Windows are needed to run Codex with them intact", file=sys.stderr)
+    return 126
 
 
 if __name__ == "__main__":

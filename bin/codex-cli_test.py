@@ -86,12 +86,10 @@ class CodexCli(unittest.TestCase):
         rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pathbin",), app_bin=self.path("appbin/codex"))
         self.assertEqual((rc, out, err), (0, "FROM_PATH\narg:exec\narg:hello\n", ""))
 
-    @POSIX_ONLY
     def test_app_bin_is_second(self):
         rc, out, err = self.run_wrapper("exec", "hello", app_bin=self.path("appbin/codex"))
         self.assertEqual((rc, out, err), (0, "FROM_APP\narg:exec\narg:hello\n", ""))
 
-    @POSIX_ONLY
     def test_app_bin_path_with_spaces_resolves(self):
         rc, out, _ = self.run_wrapper("exec", "hello", app_bin=self.path("app dir with spaces/codex"))
         self.assertEqual(rc, 0)
@@ -103,7 +101,6 @@ class CodexCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("FROM_HOME", out)
 
-    @POSIX_ONLY
     def test_args_forwarded_verbatim(self):
         rc, out, _ = self.run_wrapper("review", "--base", "main", "two words", "", "-x", "*", path_dirs=("pathbin",),
                                       home="emptyhome", app_bin=self.path("nonexistent"))
@@ -165,7 +162,6 @@ class CodexCli(unittest.TestCase):
                                          "  /Applications/Codex.app/Contents/Resources/codex\n"
                                          f"  {self.path('emptyhome/.local/bin/codex')}\n" + INSTALL_HINT)
 
-    @POSIX_ONLY
     def test_app_bin_override_takes_one_path_per_line(self):
         rc, out, _ = self.run_wrapper("x", home="emptyhome", app_bin=self.path("nope") + "\n" + self.path("appbin/codex"))
         self.assertEqual((rc, out), (0, "FROM_APP\narg:x\n"))
