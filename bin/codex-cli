@@ -82,6 +82,8 @@ def find_codex():
     if found:
         return found, []
     probed = ["codex on PATH"]
+    if os.name == "nt":
+        return None, probed   # the desktop-app bundles and ~/.local/bin are macOS and Linux places
     for candidate in app_candidates() + [os.environ.get("HOME", "") + "/.local/bin/codex"]:
         if runnable(candidate):
             return candidate, probed

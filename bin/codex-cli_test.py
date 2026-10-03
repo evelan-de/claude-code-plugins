@@ -54,8 +54,16 @@ def write_script(path, body):
     os.chmod(path, 0o755)
 
 
+POSIX_ONLY = unittest.skipIf(os.name == "nt", "a POSIX shell fake; the app bundles and ~/.local/bin are not Windows places")
+
+
 def fake(path, marker):
-    """A codex that prints its marker and then every argument on its own line."""
+    """A codex that prints its marker and then every argument on its own line: a shell script,
+    on Windows a batch file (`codex.cmd`, as npm installs it there)."""
+    if os.name == "nt":
+        with open(path + ".cmd", "w", newline="\r\n") as f:
+            f.write(f"@echo off\necho {marker}\n:loop\nif \"%~1\"==\"\" goto end\necho arg:%~1\nshift\ngoto loop\n:end\n")
+        return
     write_script(path, f'#!/bin/sh\necho "{marker}"\nfor a in "$@"; do echo "arg:$a"; done\n')
 
 
@@ -95,25 +103,36 @@ class CodexCli(unittest.TestCase):
         rc, out, err = self.run_wrapper("exec", "hello", path_dirs=("pathbin",), app_bin=self.path("appbin/codex"))
         self.assertEqual((rc, out, err), (0, "FROM_PATH\narg:exec\narg:hello\n", ""))
 
+    @POSIX_ONLY
     def test_app_bin_is_second(self):
         rc, out, err = self.run_wrapper("exec", "hello", app_bin=self.path("appbin/codex"))
         self.assertEqual((rc, out, err), (0, "FROM_APP\narg:exec\narg:hello\n", ""))
 
+    @POSIX_ONLY
     def test_app_bin_path_with_spaces_resolves(self):
         rc, out, _ = self.run_wrapper("exec", "hello", app_bin=self.path("app dir with spaces/codex"))
         self.assertEqual(rc, 0)
         self.assertIn("FROM_SPACED_APP", out)
 
+    @POSIX_ONLY
     def test_home_local_bin_is_third(self):
         rc, out, _ = self.run_wrapper("exec", "hello", app_bin=self.path("nonexistent"))
         self.assertEqual(rc, 0)
         self.assertIn("FROM_HOME", out)
 
+    @POSIX_ONLY
     def test_args_forwarded_verbatim(self):
         rc, out, _ = self.run_wrapper("review", "--base", "main", "two words", "", "-x", "*", path_dirs=("pathbin",),
                                       home="emptyhome", app_bin=self.path("nonexistent"))
         self.assertEqual(rc, 0)
         self.assertEqual(out, "FROM_PATH\narg:review\narg:--base\narg:main\narg:two words\narg:\narg:-x\narg:*\n")
+
+    @unittest.skipIf(os.name != "nt", "Windows only: the npm install is codex.cmd")
+    def test_windows_runs_codex_cmd_from_path_and_returns_its_exit_code(self):
+        with open(self.path("pathbin/codex.cmd"), "w", newline="\r\n") as f:
+            f.write("@echo off\necho FROM_CMD %1\nexit /b 7\n")
+        rc, out, _ = self.run_wrapper("review", path_dirs=("pathbin",), home="emptyhome")
+        self.assertEqual((rc, out.strip()), (7, "FROM_CMD review"))
 
     def test_not_found_exits_127_with_a_clear_message(self):
         rc, out, err = self.run_wrapper("--version", home="emptyhome", app_bin=self.path("nonexistent"))
@@ -121,6 +140,7 @@ class CodexCli(unittest.TestCase):
         self.assertIn("Codex CLI not found", err)
         self.assertEqual(out, "")
 
+    @POSIX_ONLY
     def test_not_found_names_every_probed_location_and_an_install_hint(self):
         rc, _, err = self.run_wrapper("--version", home="emptyhome", app_bin=self.path("nonexistent"))
         self.assertEqual(rc, 127)
@@ -133,6 +153,7 @@ class CodexCli(unittest.TestCase):
                               f"  {self.path('nonexistent')}\n"
                               f"  {self.path('emptyhome/.local/bin/codex')}\n" + INSTALL_HINT)
 
+    @POSIX_ONLY
     def test_default_probes_both_app_bundles(self):
         installed = [p for p in codex_cli.APP_BINS if os.access(p, os.X_OK)]
         if installed:
@@ -142,6 +163,7 @@ class CodexCli(unittest.TestCase):
         self.assertIn("/Applications/ChatGPT.app/Contents/Resources/codex", err)
         self.assertIn("/Applications/Codex.app/Contents/Resources/codex", err)
 
+    @POSIX_ONLY
     def test_default_probes_both_app_bundles_when_neither_is_runnable(self):
         err = io.StringIO()
         with mock.patch.dict(os.environ, self.env((), "emptyhome", None), clear=True), \
@@ -154,6 +176,7 @@ class CodexCli(unittest.TestCase):
                                          "  /Applications/Codex.app/Contents/Resources/codex\n"
                                          f"  {self.path('emptyhome/.local/bin/codex')}\n" + INSTALL_HINT)
 
+    @POSIX_ONLY
     def test_app_bin_override_takes_one_path_per_line(self):
         rc, out, _ = self.run_wrapper("x", home="emptyhome", app_bin=self.path("nope") + "\n" + self.path("appbin/codex"))
         self.assertEqual((rc, out), (0, "FROM_APP\narg:x\n"))
@@ -161,11 +184,13 @@ class CodexCli(unittest.TestCase):
         self.assertEqual(rc, 127)
         self.assertIn(f"  {self.path('no one')}\n  {self.path('no two')}\n", err)
 
+    @POSIX_ONLY
     def test_exit_code_stdin_stdout_and_stderr_are_the_binarys_own(self):
         write_script(self.path("appbin/codex"), "#!/bin/sh\necho out\necho err >&2\ncat\nexit 7\n")
         rc, out, err = self.run_wrapper("x", home="emptyhome", app_bin=self.path("appbin/codex"), stdin="from stdin\n")
         self.assertEqual((rc, out, err), (7, "out\nfrom stdin\n", "err\n"))
 
+    @POSIX_ONLY
     def test_binary_gets_the_default_sigpipe_handling(self):
         # With SIGPIPE ignored, `yes` reports a write error; with the default it ends silently.
         write_script(self.path("appbin/codex"), '#!/bin/sh\nyes 2>"$0.err" | head -n 1\n')
@@ -174,6 +199,7 @@ class CodexCli(unittest.TestCase):
         with open(self.path("appbin/codex.err")) as f:
             self.assertEqual(f.read(), "")
 
+    @POSIX_ONLY
     def test_wrapper_never_resolves_to_itself(self):
         os.makedirs(self.path("selfbin"))
         os.symlink(WRAPPER, self.path("selfbin/codex"))
@@ -185,6 +211,7 @@ class CodexCli(unittest.TestCase):
         self.assertEqual(rc, 127)
         self.assertIn(f"  codex on PATH\n  {self.path('selfbin/codex')}\n", err)
 
+    @POSIX_ONLY
     def test_binary_that_cannot_be_started_exits_126(self):
         rc, out, err = self.run_wrapper("x", home="emptyhome", app_bin=self.path("appbin"))
         self.assertEqual((rc, out), (126, ""))
