@@ -719,6 +719,14 @@ def remove_queue_line(line):
         die(f"could not remove the processed line from {QUEUE}, stopping")
 
 
+def resolved_repos(repos):
+    """(repo as configured, its path) per entry; the path is empty for an entry that is no
+    git repository, so every command reports that case in its own words."""
+    for repo in repos:
+        repo = expand_tilde(repo)
+        yield repo, resolve_repo(repo)
+
+
 def resolve_repo(path):
     """The absolute path of a git checkout, or nothing. A bare name (no "/") means
     $MISSION_CONTROL_PROJECTS/<name>, default ~/dev/projects/<name>."""
@@ -2057,9 +2065,7 @@ def cmd_run(args):
                 process_item(parsed[0], "text", parsed[1], line, parsed[2])
         repos = live_lines(REPOS)
         if not stopped_by_pause and repos_pollable(repos, in_run=True):
-            for repo in repos:
-                repo = expand_tilde(repo)
-                path = resolve_repo(repo)
+            for repo, path in resolved_repos(repos):
                 if not path:
                     say(f"{repo}: not a git repository, skipped")
                     continue
@@ -2111,9 +2117,7 @@ def cmd_list(args):
     os.makedirs(LOGDIR, exist_ok=True)
     repos = live_lines(REPOS)
     if repos_pollable(repos):
-        for repo in repos:
-            repo = expand_tilde(repo)
-            path = resolve_repo(repo)
+        for repo, path in resolved_repos(repos):
             if not path:
                 out(f"pr     {repo}  (not a git repository)")
                 continue
@@ -2199,9 +2203,7 @@ def cmd_doctor(args):
     os.makedirs(LOGDIR, exist_ok=True)
     repos = {parsed[0] for parsed in map(parse_line, read_lines(QUEUE)) if parsed} | set(live_lines(REPOS))
     out(f"repos in the queue: {len(repos)}")
-    for repo in sorted(repos):
-        repo = expand_tilde(repo)
-        path = resolve_repo(repo)
+    for repo, path in resolved_repos(sorted(repos)):
         if not path:
             bad(f"{repo} is not a git repository")
             continue
@@ -2289,9 +2291,7 @@ def cmd_status(args):
     repos = live_lines(REPOS)
     if repos_pollable(repos):
         total, per_repo = 0, []
-        for repo in repos:
-            repo = expand_tilde(repo)
-            path = resolve_repo(repo)
+        for repo, path in resolved_repos(repos):
             if not path:
                 out(f"FAIL - {repo}: not a git repository")
                 continue
