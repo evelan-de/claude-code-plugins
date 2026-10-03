@@ -43,12 +43,11 @@ POSIX_ONLY = unittest.skipIf(os.name == "nt", "a POSIX shell fake; the app bundl
 
 def fake(path, marker):
     """A codex that prints its marker and then every argument on its own line: a shell script,
-    on Windows a batch file (`codex.cmd`, as npm installs it there)."""
-    if os.name == "nt":
-        with open(path + ".cmd", "w", newline="\r\n") as f:
-            f.write(f"@echo off\necho {marker}\n:loop\nif \"%~1\"==\"\" goto end\necho arg:%~1\nshift\ngoto loop\n:end\n")
-        return
+    on Windows plus the batch file npm installs next to it."""
     write_script(path, f'#!/bin/sh\necho "{marker}"\nfor a in "$@"; do echo "arg:$a"; done\n')
+    if os.name == "nt":   # npm puts codex.cmd next to the shell shim; the wrapper finds the .cmd and runs the shim
+        with open(path + ".cmd", "w", newline="\r\n") as f:
+            f.write(f"@echo off\necho {marker} from cmd\n")
 
 
 class CodexCli(unittest.TestCase):
@@ -119,8 +118,7 @@ class CodexCli(unittest.TestCase):
 
     @unittest.skipIf(os.name != "nt", "Windows only")
     def test_windows_refuses_a_codex_cmd_without_its_shell_shim(self):
-        with open(self.path("pathbin/codex.cmd"), "w", newline="\r\n") as f:
-            f.write("@echo off\necho FROM_CMD\n")
+        os.remove(self.path("pathbin/codex"))
         rc, out, err = self.run_wrapper("review", path_dirs=("pathbin",), home="emptyhome")
         self.assertEqual((rc, out), (126, ""))
         self.assertIn("would re-read the arguments", err)
