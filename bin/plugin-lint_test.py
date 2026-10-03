@@ -82,7 +82,7 @@ class PluginLint(unittest.TestCase):
 
     def write(self, rel, text, mode="w"):
         os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
-        with open(self.path(rel), mode) as f:
+        with open(self.path(rel), mode, encoding="utf-8") as f:   # UTF-8 on every platform, as the repo's files are
             f.write(text)
 
     def append(self, rel, text):
@@ -90,7 +90,7 @@ class PluginLint(unittest.TestCase):
 
     def sub(self, rel, pattern, replacement):
         """Replace a pattern (matched per line) in a file of the root."""
-        with open(self.path(rel)) as f:
+        with open(self.path(rel), encoding="utf-8") as f:
             text = f.read()
         changed = re.sub(pattern, lambda m: replacement, text, flags=re.M)
         self.assertNotEqual(changed, text)
