@@ -11,9 +11,14 @@ Not installed → `/autopilot init` says so; in a run it is a blocker to report
 ## One session per run
 
 ```
-agent-browser --session autopilot open http://localhost:3000/route
+agent-browser --session autopilot open http://localhost:${PORT:-3000}/route
 agent-browser --session autopilot close          # at the end, always
 ```
+
+The port is the one the dev server prints when it starts. A run started by the queue has
+`PORT` set (3000 for slot 1, 3001 for slot 2, ...), because two runs of one project may be
+active at the same time; start the dev server with that port and open that port, never a
+hardcoded 3000.
 
 Pass `--session autopilot` on every command (one command per Bash call, no environment
 carries over); global flags (`--session`, `--state`, `--headed`) go before the subcommand.
@@ -21,7 +26,7 @@ Login projects: `.claude/autopilot.json` has `browserState` (a path outside the 
 start with `~`); replace a leading `~` with `$HOME` and pass it on the first `open`:
 
 ```
-agent-browser --session autopilot --state "$HOME/.claude/autopilot/<repo>/state.json" open http://localhost:3000/dashboard
+agent-browser --session autopilot --state "$HOME/.claude/autopilot/<repo>/state.json" open http://localhost:${PORT:-3000}/dashboard
 ```
 
 Without a state file, a check that needs a login is a manual step in `MANUAL_TESTING.md`,

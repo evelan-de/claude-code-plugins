@@ -114,6 +114,8 @@ def contains(path, text):
 
 
 record("claude.args")
+write(REC + "/claude.env", "PORT=%s AUTOPILOT_SLOT=%s\n" % (os.environ.get("PORT", ""), os.environ.get("AUTOPILOT_SLOT", "")),
+      mode="ab")
 scenario = os.environ.get("FAKE_SCENARIO", "")
 if scenario == "ok":
     say("OK")
@@ -564,11 +566,26 @@ def start_run(output):
 
 def wait_for(path, seconds=10):
     """Waits up to the given seconds for the file; True when it appeared."""
+    return wait_until(lambda: os.path.isfile(path), seconds)
+
+
+def wait_until(condition, seconds=10):
+    """Waits up to the given seconds for the condition; True when it held."""
     for _ in range(int(seconds * 10)):
-        if os.path.isfile(path):
+        if condition():
             return True
         time.sleep(0.1)
     return False
+
+
+def running_items(qh):
+    """{item: slot} of the current-<slot> files a run's workers wrote."""
+    found = {}
+    for path in ls(f"{qh}/run.lock/current-*"):
+        lines = read(path).split("\n")
+        if len(lines) > 1:
+            found[lines[1]] = int(path.rsplit("-", 1)[-1])
+    return found
 
 
 def pid_in(path):
@@ -839,6 +856,8 @@ def setUpModule():
     ENV.update(JIRA_BIN=S.fakes + "/jira", JIRA_HOME=S.tmp + "/nojira")
     ENV.update(DOCKER_BIN=S.fakes + "/docker", NVM_DIR=S.tmp + "/nvm")
     ENV.update(MISSION_CONTROL_WATCH_MIN="0", MISSION_CONTROL_NO_NOTIFY="1", MISSION_CONTROL_TIMEOUT_MIN="5")
+    # one item at a time, so the sections' assertions on order hold; the slots section sets more
+    ENV.update(MISSION_CONTROL_SLOTS="1")
     for name in ("FAKE_GH_PRS", "FAKE_GH_NO_PR", "FAKE_GH_FAIL", "FAKE_GH_LABELS", "FAKE_GH_AUTH_FAIL",
                  "MISSION_CONTROL_EFFORT", "MISSION_CONTROL_MODEL"):
         ENV.pop(name, None)
@@ -1824,12 +1843,16 @@ class MissionControl(unittest.TestCase):
         write(f"{qwt}/{session}/PLAN.md",
               "# PLAN\n### P1 [x] done thing\n### P2 [~] the current package\n### P3 [ ] later\n")
         write(f"{qwt}/new-file.txt", "new\n")
-        write(f"{qh}/run.lock/current", f"proj\n{session}\n1\n{int(time.time())}\n{qh}/logs/x.log\n{qwt}\n")
+        wpid = read(f"{qh}/run.lock/current-1").split("\n")[7]   # the file's last line is the worker pid
+        check("(q) the worker's current file names a live worker pid", not gone(int(wpid)))
+        write(f"{qh}/run.lock/current-1",
+              f"proj\n{session}\n1\n{int(time.time())}\n{qh}/logs/x.log\n{qwt}\n\n{wpid}\n")
         out, got = mc("status", env=home)
         check("(q) status: current package from PLAN.md", has("  package: P2 [~] the current package", out))
         check("(q) status: run line from the hook's status file",
               has("  run: 2026-09-20T22:00:00Z ctx=123456 tool=Edit", out))
-        write(f"{qh}/run.lock/current", f"proj\nPAUL-50\n1\n{int(time.time())}\n{qh}/logs/x.log\n{qwt}\n")
+        check("(q) status counts the busy slots", has("slots: 1 of 1 busy", out))
+        write(f"{qh}/run.lock/current-1", f"proj\nPAUL-50\n1\n{int(time.time())}\n{qh}/logs/x.log\n{qwt}\n\n{wpid}\n")
         check("(q) status counts the queue", has("queue: 4 items", out))
         check("(q) status lists the next three lines only", len(grep(f"^  {proj} PAUL-5", out)) == 3)
         check("(q) status counts the labelled PRs per repo", has("labelled PRs: 1 (proj 1)", out))
@@ -1850,6 +1873,7 @@ class MissionControl(unittest.TestCase):
         kill9(cpid)
         out, got = mc("status", env=home)
         check("(q) status after stop: running none", has("running: none", out))
+        check("(q) status after stop: no slot busy", has("slots: 0 of 1 busy", out))
         check("(q) status after stop: lock free", has("lock: free", out))
         check("(q) the stopped item is still first in queue.txt",
               len(grep("PAUL-50", first_line(mc("list", stderr=False)[0]))) == 1)
@@ -1875,6 +1899,120 @@ class MissionControl(unittest.TestCase):
         ENV.pop("FAKE_GH_FAIL", None)
         ENV.pop("FAKE_GH_PRS", None)
 
+    def test_352_q3_two_slots(self):
+        """(q3) two slots: two items run at once, a third waits; stop <item> ends one item and
+        the free slot takes the next; stop ends the run and keeps every item queued"""
+        qh, rec = fresh_home("q3")
+        proj = S.proj
+        ENV["FAKE_SCENARIO"] = "sleep"
+        ENV["MISSION_CONTROL_SLOTS"] = "2"
+        fakehome = f"{S.tmp}/fakehome-q3"
+        os.makedirs(fakehome, exist_ok=True)
+        home = {"HOME": fakehome}
+        queue("PAUL-60", "PAUL-61", "PAUL-62")
+        runner = start_run(f"{rec}/out")
+        check("(q3) two workers start at once", wait_until(lambda: len(running_items(qh)) == 2))
+        time.sleep(0.5)
+        running = running_items(qh)
+        check("(q3) the first two items run, in slots 1 and 2", running == {"PAUL-60": 1, "PAUL-61": 2})
+        out, got = mc("status", env=home)
+        check("(q3) status exits 0", got == 0)
+        check("(q3) status shows both running items with their slot",
+              has("running: proj PAUL-60 (attempt 1, since ", out) and has(", slot 1, phase: ", out)
+              and has("running: proj PAUL-61 (attempt 1, since ", out) and has(", slot 2, phase: ", out))
+        check("(q3) status does not show the waiting item as running", lacks("running: proj PAUL-62", out))
+        check("(q3) status counts the busy slots", has("slots: 2 of 2 busy", out))
+        check("(q3) status names one lock holder", has(f"lock: held by pid {runner.pid}", out))
+        check("(q3) two claude processes started", wait_until(lambda: count_lines(f"{rec}/claude.args") == 2))
+        ports = read(f"{rec}/claude.env")
+        check("(q3) each run gets the port of its slot",
+              has("PORT=3000 AUTOPILOT_SLOT=1", ports) and has("PORT=3001 AUTOPILOT_SLOT=2", ports))
+        check("(q3) the run logged the slot per item",
+              grep_q("proj PAUL-60: started in slot 1 (worker pid ", f"{qh}/logs/queue.log", fixed=True)
+              and grep_q("proj PAUL-61: started in slot 2 (worker pid ", f"{qh}/logs/queue.log", fixed=True))
+        out, got = mc("stop", "PAUL-61")
+        check("(q3) stop <item> exits 0", got == 0)
+        check("(q3) stop <item> reports that item", out == "stopped proj PAUL-61")
+        check("(q3) the run goes on after stop <item>", not gone(runner.pid))
+        check("(q3) the free slot takes the waiting item",
+              wait_until(lambda: running_items(qh).get("PAUL-62") == 2))
+        check("(q3) the stopped item is not started again", wait_until(lambda: count_lines(f"{rec}/claude.args") == 3)
+              and count_lines(f"{rec}/claude.args") == 3 and "PAUL-61" not in running_items(qh))
+        check("(q3) the run logged the stopped item",
+              grep_q("proj PAUL-61: worker stopped, the item stays for the next run", f"{qh}/logs/queue.log",
+                     fixed=True))
+        out, got = mc("stop", "PAUL-99")
+        check("(q3) stop with an unknown item exits 1 and names what runs",
+              got == 1 and has("no running item matches 'PAUL-99' (running: PAUL-60, PAUL-62)", out))
+        out, got = mc("stop")
+        runner.wait()
+        check("(q3) stop exits 0", got == 0)
+        check("(q3) stop reports every running item",
+              has("stopped proj PAUL-60", out) and has("stopped proj PAUL-62", out))
+        check("(q3) lock released after stop", not exists(f"{qh}/run.lock"))
+        check("(q3) every item is still queued", live_lines(f"{qh}/queue.txt") == 3)
+        check("(q3) the run ended with 130", shell_status(runner.returncode) == 130)
+        kill9(pid_in(f"{rec}/claude.pid"))
+        ENV["MISSION_CONTROL_SLOTS"] = "1"
+
+    def test_353_q4_slots_per_repo(self):
+        """(q4) a limit per repository holds the second item of the same project back"""
+        qh, rec = fresh_home("q4")
+        ENV["FAKE_SCENARIO"] = "sleep"
+        ENV.update(MISSION_CONTROL_SLOTS="2", MISSION_CONTROL_SLOTS_PER_REPO="1")
+        fakehome = f"{S.tmp}/fakehome-q4"
+        os.makedirs(fakehome, exist_ok=True)
+        queue("PAUL-65", "PAUL-66")
+        runner = start_run(f"{rec}/out")
+        check("(q4) the first item starts", wait_until(lambda: "PAUL-65" in running_items(qh)))
+        time.sleep(1.5)
+        check("(q4) the second item of the same project waits", running_items(qh) == {"PAUL-65": 1})
+        out, got = mc("status", env={"HOME": fakehome})
+        check("(q4) status: one of two slots busy", has("slots: 1 of 2 busy", out))
+        mc("stop")
+        runner.wait()
+        check("(q4) both items still queued", live_lines(f"{qh}/queue.txt") == 2)
+        kill9(pid_in(f"{rec}/claude.pid"))
+        ENV.pop("MISSION_CONTROL_SLOTS_PER_REPO", None)
+        ENV["MISSION_CONTROL_SLOTS"] = "1"
+
+    def test_354_q5_new_work_during_a_run(self):
+        """(q5) an item added while items run starts at the next check, within CHECK_MIN"""
+        qh, rec = fresh_home("q5")
+        ENV["FAKE_SCENARIO"] = "sleep"
+        ENV.update(MISSION_CONTROL_SLOTS="2", MISSION_CONTROL_CHECK_MIN="0.02")
+        queue("PAUL-70")
+        runner = start_run(f"{rec}/out")
+        check("(q5) the queued item starts", wait_until(lambda: "PAUL-70" in running_items(qh)))
+        time.sleep(0.5)
+        out, got = mc("add", S.proj, "PAUL-71")
+        check("(q5) add works while a run is active", got == 0)
+        check("(q5) the added item starts in the free slot without a new run",
+              wait_until(lambda: running_items(qh).get("PAUL-71") == 2) and not gone(runner.pid))
+        mc("stop")
+        runner.wait()
+        check("(q5) both items still queued after stop", live_lines(f"{qh}/queue.txt") == 2)
+        kill9(pid_in(f"{rec}/claude.pid"))
+        ENV.pop("MISSION_CONTROL_CHECK_MIN", None)
+        ENV["MISSION_CONTROL_SLOTS"] = "1"
+
+    def test_356_q6_two_slots_finish(self):
+        """(q6) two items of one project run and finish at once: both done, both lines removed"""
+        qh, rec = fresh_home("q6")
+        ENV["FAKE_SCENARIO"] = "report"
+        ENV["MISSION_CONTROL_SLOTS"] = "2"
+        queue("PAUL-75", "PAUL-76")
+        out, got = mc("run")
+        check("(q6) run exits 0", got == 0)
+        check("(q6) both items done", grep_q(" PAUL-75 done ", f"{qh}/done.txt") and grep_q(" PAUL-76 done ", f"{qh}/done.txt"))
+        check("(q6) queue empty afterwards", live_lines(f"{qh}/queue.txt") == 0)
+        check("(q6) both ran in slots of their own",
+              grep_q("PAUL-75: started in slot 1", f"{qh}/logs/queue.log") and grep_q("PAUL-76: started in slot 2", f"{qh}/logs/queue.log"))
+        check("(q6) both worktrees removed",
+              not exists(f"{S.proj}/.claude/worktrees/autopilot-PAUL-75") and not exists(f"{S.proj}/.claude/worktrees/autopilot-PAUL-76"))
+        check("(q6) lock released", not exists(f"{qh}/run.lock"))
+        ENV["MISSION_CONTROL_SLOTS"] = "1"
+
     def test_360_q2_stop_returns_within_seconds(self):
         """(q2) stop returns within seconds although the run loop sleeps 30 s"""
         qh, rec = fresh_home("q2")
@@ -1887,9 +2025,11 @@ class MissionControl(unittest.TestCase):
             fakehome = f"{S.tmp}/fakehome-q2"
             os.makedirs(fakehome, exist_ok=True)
             out, got = mc("kickstart", env={"HOME": fakehome})
-            check("(q2) kickstart refuses while a run is active", got == 1)
-            check("(q2) kickstart names the run",
-                  has(f"a run is active (pid {runner.pid}, PAUL-54), stop it first", out))
+            check("(q2) kickstart starts nothing while a run is active, exit 0", got == 0)
+            check("(q2) kickstart names the run and says it takes new work itself",
+                  has(f"a run is active (pid {runner.pid}, PAUL-54): nothing to start, it takes new work itself "
+                      "at its next check (every 15 min) or when a slot frees", out))
+            check("(q2) kickstart wrote no force-once while a run is active", not exists(f"{qh}/force-once"))
         t0 = int(time.time())
         out, got = mc("stop")
         t1 = int(time.time())
@@ -2225,11 +2365,15 @@ class MissionControl(unittest.TestCase):
               bool(grep('schedule: on demand only ("mission-control start")', out, fixed=True, whole=True)))
         remove(f"{qh}/force-once")
         hold_lock(qh)
+        launchctl_calls = count_lines(f"{rec}/launchctl.args")
         out, got = mc("start", env=mac)
-        check("(t2) start during a run exits 1", got == 1)
-        check("(t2) refused start (active run) wrote no force-once", not exists(f"{qh}/force-once"))
+        check("(t2) start during a run exits 0 and starts nothing",
+              got == 0 and has("a run is active (pid ", out) and has("nothing to start, it takes new work itself", out))
+        check("(t2) start during a run wrote no force-once", not exists(f"{qh}/force-once"))
+        check("(t2) start during a run called no launchctl", count_lines(f"{rec}/launchctl.args") == launchctl_calls)
         out, got = mc("kickstart", env=mac)
-        check("(t2) kickstart is an alias of start (refused the same way)", got == 1)
+        check("(t2) kickstart is an alias of start (the same answer during a run)",
+              got == 0 and has("nothing to start", out))
         shutil.rmtree(f"{qh}/run.lock")
 
     def test_410_t3_legacy_plist(self):
