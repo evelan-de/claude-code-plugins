@@ -21,9 +21,9 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
               "retry" releases it
   env         optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
               a line starting with "export" also reaches the run's environment
-  logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
-              renamed once the session dir or ticket key is known), queue.log for lines
-              outside an item
+  logs/       <timestamp>-s<slot>-<item>.log per item (PR items: <timestamp>-s<slot>-_<n>-<resolved
+              item>.log, renamed once the session dir or ticket key is known), queue.log for
+              lines outside an item
   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
               the project on the item's next attempt
   run.lock/   pid and start time (started) of the active run and current-<slot> per item that
@@ -1748,8 +1748,8 @@ def report_status(it, report):
 
 
 def rename_item_log(name):
-    """The item log carries the resolved item in its name. PR items start as <ts>-_<n>.log and
-    become <ts>-_<n>-<resolved item>.log."""
+    """The item log carries the resolved item in its name. PR items start as
+    <ts>-s<slot>-_<n>.log and become <ts>-s<slot>-_<n>-<resolved item>.log."""
     new = f"{State.item_log[:-len('.log')]}-{safe_name(name)}.log"
     try:
         os.replace(State.item_log, new)
@@ -1771,7 +1771,8 @@ def process_item(repo_in, kind, ref, line="", branch=""):
     it = Item(repo_in, kind, ref, line, branch)
     try:
         os.makedirs(LOGDIR, exist_ok=True)
-        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-{safe_name(it.item)}.log"
+        # the slot keeps the names of two workers started in the same second apart
+        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-s{State.slot or 1}-{safe_name(it.item)}.log"
         open(State.item_log, "w").close()
         note_current(it, 1)
         say(f"{it.who}: resolving")
@@ -2211,6 +2212,13 @@ class Worker(typing.NamedTuple):
     key: tuple
     repo: str
     who: str
+    line: str
+
+    @property
+    def done_key(self):
+        """What keeps the item out of this run once its worker ended: the PR, or this very
+        queue line (another line for the same item may still run after it)."""
+        return self.key if self.key[0] == "pr" else (self.key, self.line)
 
 
 class Scheduler:
@@ -2226,10 +2234,12 @@ class Scheduler:
     def __init__(self, scheduled, forced):
         self.scheduled, self.forced = scheduled, forced
         self.workers = []        # the live Worker records
-        self.finished = set()    # keys of items this run does not start again
+        self.finished = set()    # items this run does not start again: PR keys, or (key, line) of a queue line
         self.said = set()        # repos already named as not a git repository
         self.paused = False      # a pause arrived while this scheduled run was under way
-        self.prs_ok = None       # whether gh can read its token (asked once)
+        self.gh_ok = False       # gh could read its token on some check of this run
+        self.gh_said = False     # the gh notice was said
+        self.prs_polled = False  # the labelled PRs were listed at least once in this run
         self.checked = 0.0       # when the sources were last checked
         self.freed = False       # a worker ended since the last dispatch
 
@@ -2258,8 +2268,7 @@ class Scheduler:
 
     def dispatch(self):
         """Starts a worker for every item that waits and fits into a free slot. A held PR gets
-        its label swap tried again on the first check of the run only."""
-        first = not self.checked
+        its label swap tried again on the first listing of the PRs in this run only."""
         self.checked, self.freed = time.time(), False
         if self.paused:
             return
@@ -2271,9 +2280,11 @@ class Scheduler:
                 say(f"removed unparsable line from queue.txt: {line}")
                 remove_queue_line(line)
                 continue
-            key = ("text", line)
             repo = resolve_repo(parsed[0]) or parsed[0]
-            if key in self.active_keys() or key in self.finished or not self.room_in(repo):
+            # the key is the resolved repo and the item, so two spellings of one line (quotes,
+            # a bare project name) never run side by side in the same worktree
+            key = ("text", repo, parsed[1])
+            if key in self.active_keys() or (key, line) in self.finished or not self.room_in(repo):
                 continue
             if self.vetoed():
                 return
@@ -2281,10 +2292,10 @@ class Scheduler:
         repos = live_lines(REPOS)
         if not repos or not self.free_slots():
             return
-        if self.prs_ok is None:
-            self.prs_ok = repos_pollable(repos, in_run=True)
-        if not self.prs_ok:
+        if not self.gh_usable(repos):
             return
+        first = not self.prs_polled
+        self.prs_polled = True
         for repo, path in resolved_repos(repos):
             if not path:
                 if repo not in self.said:
@@ -2306,6 +2317,22 @@ class Scheduler:
                     return
                 self.start(key, path, "pr", path, number, "", "")
 
+    def gh_usable(self, repos):
+        """gh can read its token, asked again on every check until it can (a failed answer is
+        not kept for the whole run); the notice is said once."""
+        if self.gh_ok:
+            return True
+        State.gh_auth = None
+        if gh_auth_ok():
+            self.gh_ok = True
+            return True
+        if not self.gh_said:
+            self.gh_said = True
+            say(gh_auth_notice())
+            if not in_ssh():
+                State.source_failed = True
+        return False
+
     def start(self, key, repo, kind, repo_in, ref, line, branch):
         """The worker process for one item, in the lowest free slot; its output goes where this
         process's output goes."""
@@ -2316,11 +2343,11 @@ class Scheduler:
             proc = subprocess.Popen([os.path.abspath(__file__), "run-one", spec], stdin=subprocess.DEVNULL)
         except OSError as e:
             State.item_failed = True
-            self.finished.add(key)
+            self.finished.add(key if kind == "pr" else (key, line))
             say(f"FAIL - {who}: worker could not be started: {e}")
             return
         log(f"{who}: started in slot {slot} (worker pid {proc.pid})")
-        self.workers.append(Worker(slot, proc, key, repo, who))
+        self.workers.append(Worker(slot, proc, key, repo, who, line))
 
     def reap(self):
         """Forgets the workers that ended and keeps their items out of this run (exit 130: the
@@ -2334,7 +2361,7 @@ class Scheduler:
             remove_file(current_file(worker.slot))
             rc = exit_code(rc)
             if rc != 0 or worker.key[0] == "pr":
-                self.finished.add(worker.key)
+                self.finished.add(worker.done_key)
             if rc == 0:
                 continue
             if rc == 130:
@@ -2617,12 +2644,17 @@ def cmd_status(args):
 
 
 def item_matches(key, lines):
-    """The running item (its current-<slot> lines) is the one the argument names: the item
-    itself, or the log's item part contains it after safe_name ("#12" -> "_12", a session dir
-    its basename), the rule log uses."""
+    """The running item (its current-<slot> lines) is exactly the one the argument names: the
+    item itself, the same after safe_name (a session dir by its basename), or the PR number
+    the item started as ("#12" or "12", kept in the log's name as "_12-")."""
     item, logfile = lines[1], lines[4]
-    wanted = safe_name(key)
-    return key == item or wanted in safe_name(item) or wanted in log_item_part(logfile)
+    if key == item or safe_name(key) == safe_name(item):
+        return True
+    number = key[1:] if key.startswith("#") else key
+    if not number.isdigit():
+        return False
+    part = log_item_part(logfile)
+    return item == f"#{number}" or part == f"_{number}" or part.startswith(f"_{number}-")
 
 
 def cmd_stop(args):
@@ -2640,6 +2672,9 @@ def cmd_stop(args):
         if not hits:
             die(f"no running item matches '{args[0]}' (running: "
                 f"{', '.join(lines[1] for _, lines in items) or 'no item yet'})")
+        if len(hits) > 1:
+            die(f"'{args[0]}' matches more than one running item ({', '.join(lines[1] for _, lines in hits)}); "
+                "name the session directory")
         target, shown = hits[0][1][7], [hits[0][1]]
     else:
         target, shown = pid, [lines for _, lines in items]
@@ -2693,12 +2728,12 @@ def cmd_retry(args):
 
 
 def log_item_part(path):
-    """The file name without directory, ".log" and the leading <timestamp>- (YYYYMMDD-HHMMSS-),
-    so a number never matches the timestamp."""
+    """The file name without directory, ".log", the leading <timestamp>- (YYYYMMDD-HHMMSS-) and
+    the slot part (s<n>-), so a number never matches the timestamp or the slot."""
     name = os.path.basename(path)
     if name.endswith(".log"):
         name = name[:-4]
-    return re.sub(r"^[0-9]{8}-[0-9]{6}-", "", name)
+    return re.sub(r"^[0-9]{8}-[0-9]{6}-(s[0-9]+-)?", "", name)
 
 
 def cmd_log(args):

@@ -20,8 +20,13 @@
 - `MISSION_CONTROL_SLOTS_PER_REPO` (default no limit) keeps the items of one project one
   after another where the gate or the dev stack needs a fixed resource.
 - Each worker gets `PORT=<3000 + slot - 1>` and `AUTOPILOT_SLOT`; the autopilot skill and the
-  browser reference open the dev server on `$PORT`, so two runs of one project do not verify
-  each other's app.
+  browser reference open the dev server on `$PORT` and use the browser session
+  `autopilot-<slot>`, so two runs of one project neither verify each other's app nor close
+  each other's browser.
+- Two queue lines that spell the same item differently (quotes, a bare project name) run
+  one after the other, never side by side in one worktree. Item logs carry the slot in their
+  name (`<timestamp>-s<slot>-<item>.log`), so two workers started in the same second never
+  share a log. `stop <item>` matches exactly and refuses an ambiguous name.
 - The git steps that touch a repository's shared `.git` (worktree add, fetch, push, worktree
   remove) take a per-repository lock (`locks/`). Edits of `queue.txt` and `held.txt` take
   `edit.lock`. Both exist so two workers never lose each other's change.

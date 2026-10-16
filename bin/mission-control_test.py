@@ -1930,6 +1930,13 @@ class MissionControl(unittest.TestCase):
         check("(q3) the run logged the slot per item",
               grep_q("proj PAUL-60: started in slot 1 (worker pid ", f"{qh}/logs/queue.log", fixed=True)
               and grep_q("proj PAUL-61: started in slot 2 (worker pid ", f"{qh}/logs/queue.log", fixed=True))
+        check("(q3) item logs carry the slot, so two started in one second never share a name",
+              bool(ls(f"{qh}/logs/*-s1-PAUL-60.log")) and bool(ls(f"{qh}/logs/*-s2-PAUL-61.log")))
+        out, got = mc("log", "PAUL-61")
+        check("(q3) log finds the item behind the slot part", got == 0 and has("-s2-PAUL-61.log", out))
+        out, got = mc("stop", "PAUL-6")
+        check("(q3) stop <item> matches exactly: PAUL-6 ends neither PAUL-60 nor PAUL-61",
+              got == 1 and has("no running item matches 'PAUL-6'", out) and len(running_items(qh)) == 2)
         out, got = mc("stop", "PAUL-61")
         check("(q3) stop <item> exits 0", got == 0)
         check("(q3) stop <item> reports that item", out == "stopped proj PAUL-61")
@@ -1994,6 +2001,23 @@ class MissionControl(unittest.TestCase):
         check("(q5) both items still queued after stop", live_lines(f"{qh}/queue.txt") == 2)
         kill9(pid_in(f"{rec}/claude.pid"))
         ENV.pop("MISSION_CONTROL_CHECK_MIN", None)
+        ENV["MISSION_CONTROL_SLOTS"] = "1"
+
+    def test_355_q7_same_item_spelled_twice(self):
+        """(q7) two queue lines for the same item (quoted, bare project name) never run side by
+        side: the second waits for the first"""
+        qh, rec = fresh_home("q7")
+        ENV["FAKE_SCENARIO"] = "sleep"
+        ENV["MISSION_CONTROL_SLOTS"] = "2"
+        write(f"{qh}/queue.txt", f'{S.proj} PAUL-80\n{S.proj}/ "PAUL-80"\n')
+        runner = start_run(f"{rec}/out")
+        check("(q7) the first line starts", wait_until(lambda: "PAUL-80" in running_items(qh)))
+        time.sleep(1.5)
+        check("(q7) the second spelling of the same item waits", running_items(qh) == {"PAUL-80": 1})
+        mc("stop")
+        runner.wait()
+        check("(q7) both lines still queued", live_lines(f"{qh}/queue.txt") == 2)
+        kill9(pid_in(f"{rec}/claude.pid"))
         ENV["MISSION_CONTROL_SLOTS"] = "1"
 
     def test_356_q6_two_slots_finish(self):
