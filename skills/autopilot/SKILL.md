@@ -179,7 +179,8 @@ skip with the reason in `REPORT.md`; do not run the skill's Claude fallback.
 
 ### 4. Goal artifact
 Exercise the goal artifact in the real thing: start the dev server (`.claude/launch.json` or
-the project's script, in the background, output to a file), drive the acceptance criteria
+the project's script, in the background, output to a file, on the port in `$PORT` when it is
+set: another run of this project may hold 3000), drive the acceptance criteria
 with `agent-browser` per `references/browser.md` (routes, expected text, invalid input, error
 states, `console`, `errors`, `network requests`, phone viewport, one screenshot per screen
 into the session folder), or open the generated report or document. Fix test-first,

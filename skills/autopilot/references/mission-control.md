@@ -1,4 +1,4 @@
-# `mission-control` - run prepared sessions one after another
+# `mission-control` - run prepared sessions unattended, several at a time
 
 A Python script in the plugin's `bin/` (on PATH once the plugin is installed); the
 `/mission-control` skill is its control surface from a Claude session. It starts
@@ -6,8 +6,10 @@ A Python script in the plugin's `bin/` (on PATH once the plugin is installed); t
 restarts it when it handed off, reads the outcome from `REPORT.md`, pushes the run's branch,
 labels the PR and notifies you. The run itself pushes, opens or updates the PR and works the
 review bot; the queue never opens PRs, but after every item - done or not - it pushes the
-branch, so the work is on GitHub whatever the outcome. One machine-wide queue, one run at a
-time.
+branch, so the work is on GitHub whatever the outcome. One machine-wide queue, one `run`
+process at a time; that process runs up to `MISSION_CONTROL_SLOTS` items at once (default
+2), each in a worker process of its own, and checks for new work every
+`MISSION_CONTROL_CHECK_MIN` minutes (15) while items run.
 
 ## Files - all under `~/.claude/mission-control` (`MISSION_CONTROL_HOME`)
 
@@ -18,9 +20,11 @@ time.
 | `done.txt` | Appended per item: `<ISO time> <repo> <item> <status> <pr url or ->`, then `restarts=N` when the run handed off or ended early, `no-plan` when no `PLAN.md` existed, `labels-failed` when a `gh` call after the run failed, `jira-failed` when the ticket update failed, `push-failed` when the branch could not be pushed (step 6), `runner-error` when the runner itself failed while it finished the item (traceback in `logs/queue.log`), `review-comments=N` (done items in a repo with the Claude review workflow: comments on the PR by anyone but the PR author and the gh account of the queue machine; `0` is said on stdout) and `unanswered-review-comments=N` (inline bot threads without a reply from the PR author or the queue machine's account; said on stdout, every bot comment must be answered "Fixed in <sha>" or "Not changed: <reason>"). Status: `done`, `blocked`, `handoff-limit`, `timeout`. |
 | `held.txt` | `<repo> <pr number> <status>` per PR whose run ended while its `autopilot-ready` label could not be changed (`labels-failed`). A held PR is not run again: every check tries the label swap once more (creating the three labels where missing), releases the PR when that works and says so when it does not. `retry <repo> <#pr>` releases it too. |
 | `env` | Optional, mode 600. `KEY=VALUE` lines (read, never executed), see below. A line starting with `export` also reaches the run's environment (a token, a `PATH`); any other name the runner does not use is named in a warning. `run` and `list` warn when the mode is not 600 and continue; `doctor` fails on it. |
-| `logs/` | `<timestamp>-<item>.log` per item (queue lines plus the full claude output). A PR item starts as `<timestamp>-_<n>.log` and is renamed to `<timestamp>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
+| `logs/` | `<timestamp>-s<slot>-<item>.log` per item (queue lines plus the full claude output; the slot keeps two workers started in the same second apart). A PR item starts as `<timestamp>-s<slot>-_<n>.log` and is renamed to `<timestamp>-s<slot>-_<n>-<resolved item>.log` once the session directory or ticket key is known, so `log #12`, `log PAUL-2801` and `log <session dir>` all find it. `queue.log` for lines outside an item (source failures, warnings), `launchd.log` for the schedule. |
 | `worktrees/` | Only from runners before plugin 3.3.0 (`<repo basename>-<item>/`). A worktree still there moves into the project on the item's next attempt. |
-| `run.lock/` | Exists while a run is active: `pid` of the run, `started` (that process's start time as `ps` prints it) and `current` (the item it is on, read by `status`). Removed when the run ends. |
+| `run.lock/` | Exists while a run is active: `pid` of the run, `started` (that process's start time as `ps` prints it) and one `current-<slot>` per item that is running (repo, item, attempt, start, log, worktree, base commit and the worker's pid; read by `status` and `stop <item>`). Removed when the run ends. |
+| `edit.lock` | Taken for the moment a line is added to or removed from `queue.txt` or `held.txt`, so two workers that finish at once never lose each other's change. |
+| `locks/` | One lock file per repository. The git steps that touch a repository's shared `.git` (worktree add, fetch, push, worktree remove) run one at a time per repository; two items of one project wait for each other there and nowhere else. |
 | `paused` | `until-resume`, or one date `YYYY-MM-DD` (local time): the schedule is paused until `resume`, or through that day. Written by `pause`, removed by `resume` or, for a date, by the first scheduled run after it. See "Pause the schedule". |
 | `force-once` | Written by `start`; the scheduled run it starts consumes it and goes ahead although a pause is set. Counts for five minutes; removed by `pause`. |
 | `host` | Not read by the script. Holds the SSH alias of the office Mini (`office-mini`) on a machine that wants to reach its queue; the `/mission-control` skill then runs commands over SSH (status: both, local and remote). A machine with a `host` file may run its own local queue as well; keep its `repos.txt` empty so labelled PRs are processed by the Mini only. |
@@ -32,7 +36,10 @@ environment wins over the plan; a sonnet run below xhigh runs at xhigh),
 `MISSION_CONTROL_ADVISOR` (fable), `MISSION_CONTROL_FALLBACK_MODEL` (opus; left out for a run
 on the same model family), `MISSION_CONTROL_BUDGET_USD` (200 per attempt for sonnet, 400 for opus),
 `MISSION_CONTROL_MAX_RESTARTS` (5), `MISSION_CONTROL_TIMEOUT_MIN` (480 per attempt, a
-restart gets a fresh 480), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval).
+restart gets a fresh 480), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval),
+`MISSION_CONTROL_SLOTS` (2, items that run at once), `MISSION_CONTROL_SLOTS_PER_REPO` (0 =
+no limit; 1 keeps the items of one project one after another), `MISSION_CONTROL_CHECK_MIN`
+(15, how often a run with busy slots looks for new work).
 Budget and wall clock are per attempt, never per task: a run nearing either hands off and the
 runner starts the next attempt (Andreas, 2026-09-28: Sonnet 200 USD, Opus 400 USD, 480 minutes).
 
@@ -55,25 +62,25 @@ mission-control labels [<repo>]           # create autopilot-ready/-done/-blocke
 mission-control add <repo> <item> [<branch>]   # append a line; a topic with spaces is quoted
 mission-control list                      # what run would process, no side effects
 mission-control run [--scheduled]         # process queue.txt, then the labelled PRs of repos.txt; --scheduled honours a pause
-mission-control status                    # one screen: running item, queue, labelled PRs, last done, schedule, lock
-mission-control stop                      # TERM the active run (it kills claude), wait up to 45 s
+mission-control status                    # one screen: running items, slots, queue, labelled PRs, last done, schedule, lock
+mission-control stop [<item>]             # TERM the run (every item ends) or one item's worker; each kills its claude; waits up to 45 s
 mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autopilot-ready; item: add it again
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
 mission-control pause [until <YYYY-MM-DD> | <N>d]   # no scheduled run until resume / through that day / for N days
 mission-control resume                    # lift the pause
-mission-control start                     # run now, inside the GUI session; installs the LaunchAgent on demand; refuses while a run is active
-mission-control install-schedule [30m | 22:00]  # LaunchAgent (macOS): a check every N minutes, or daily at that time, or on demand only without an argument; runs "run --scheduled"; refuses while a run is active
+mission-control start                     # run now, inside the GUI session; installs the LaunchAgent on demand; while a run is active it says that run takes new work itself
+mission-control install-schedule [15m | 22:00]  # LaunchAgent (macOS): a check every N minutes, or daily at that time, or on demand only without an argument; runs "run --scheduled"; refuses while a run is active
 mission-control uninstall-schedule
 ```
 
-`status` exits 0 and prints, in this order: `running: <repo basename> <item> (attempt N,
-since HH:MM, <elapsed> min, phase: <last progress line of the item log>)` or `running: none`,
-and for a running item three indented lines: `package: <the [~] line of the item's PLAN.md>`
-(or `none marked [~]`), `run: <ISO time> ctx=<tokens> tool=<name>` (the line the run's
-context-budget hook rewrites after every tool call, `.claude/.autopilot-status` in the
-worktree; `no status line yet` before the first) and `diff since base: <git diff --shortstat
-against the merge-base>`;
-`queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
+`status` exits 0 and prints, in this order: one `running: <repo basename> <item> (attempt N,
+since HH:MM, <elapsed> min, slot <n>, phase: <last progress line of the item log>)` per item
+that is running, or `running: none`, and under each running item three indented lines:
+`package: <the [~] line of the item's PLAN.md>` (or `none marked [~]`), `run: <ISO time>
+ctx=<tokens> tool=<name>` (the line the run's context-budget hook rewrites after every tool
+call, `.claude/.autopilot-status` in the worktree; `no status line yet` before the first) and
+`diff since base: <git diff --shortstat against the merge-base>`; `slots: <busy> of <N>
+busy`; `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
 (a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
 token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
 session)` replace the counts, see "Over SSH"); `last done:` with the
@@ -86,14 +93,18 @@ schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `loc
 pid N`, `free`, or `stale` when the recorded pid is gone or belongs to another program. No secrets: the env file is never
 printed.
 
-`stop` sends TERM to the run's pid when the lock holds a live one; the run kills the
-claude process (SIGTERM, SIGKILL after 10 s) and releases the lock. While it waits for
-claude the run sees the stop within a second; a git or gh command that is running finishes
-first, and no further command starts.
-Prints `stopped <repo> <item>`, or `still running (pid N)` with exit 1 after 45 s, or
-`nothing running`. The stopped item stays in `queue.txt` (a list item) or keeps its label
-(a PR item), so the next run takes it again; `log <item>` still finds the log of the
-stopped run.
+`stop` sends TERM to the run's pid when the lock holds a live one; the run ends every
+worker, each kills its claude process (SIGTERM, SIGKILL after 10 s), and releases the lock.
+While it waits for claude a worker sees the stop within a second; a git or gh command that
+is running finishes first, and no further command starts. Prints one `stopped <repo> <item>`
+per item that was running, or `still running (pid N)` with exit 1 after 45 s, or `nothing
+running`. `stop <item>` (`#12`, a ticket key or a session dir, an exact match: `PAUL-6`
+never ends `PAUL-60`, and a name that fits more than one running item is refused) sends TERM
+to that item's worker only: the run goes on with the other slots, fills the freed slot with
+the next waiting item and does not start the stopped item again; an item that is not
+running is refused with exit 1 and the running items named. A stopped item stays in
+`queue.txt` (a list item) or keeps its label (a PR item), so the next run takes it again;
+`log <item>` still finds the log of the stopped run.
 
 `retry <repo> <#pr>` (`#N` or an all-digit argument) swaps `autopilot-blocked` for
 `autopilot-ready` on that PR and says so; when `gh pr edit` fails, the message carries the
@@ -112,8 +123,10 @@ directly.
 starts a `run` now, inside the GUI session, so the Keychain login is readable even when the
 command arrives over SSH. No LaunchAgent installed → it installs one without a schedule
 first (`install-schedule` with no argument: the plist has neither `StartInterval` nor
-`StartCalendarInterval`, so it only runs on `start`). It refuses with exit 1 while a run is
-active (`a run is active (pid N, <item>), stop it first`). Output goes to `logs/launchd.log`;
+`StartCalendarInterval`, so it only runs on `start`). While a run is active it starts
+nothing and exits 0 (`a run is active (pid N, <items>): nothing to start, it takes new work
+itself at its next check (every 15 min) or when a slot frees`): what was just added starts
+within that time. Output goes to `logs/launchd.log`;
 follow it with `log` once an item log exists. It works during a pause: it writes `force-once`
 before the `launchctl kickstart`, so that one scheduled run goes ahead and the pause stays for
 the checks after it. A refused start writes nothing. `kickstart` is the old name and does the
@@ -155,7 +168,34 @@ column and runs from the default branch.
    names in the reason. Without a plan it uses the ticket key from the branch name (else the
    branch name) and marks `no-plan`.
 
-## What `run` does per item
+## What `run` does
+
+`run` takes the lock and starts a worker process (`run-one`, internal) per item: the lines of
+`queue.txt` first, top to bottom, then the labelled PRs of `repos.txt`, up to
+`MISSION_CONTROL_SLOTS` items at once (default 2) and, when `MISSION_CONTROL_SLOTS_PER_REPO`
+is set, at most that many items of one repository; an item that does not fit waits and the
+next one that fits is started. A slot that becomes free is filled at once with the next
+waiting item. While items run, `queue.txt` and the labelled PRs are checked again every
+`MISSION_CONTROL_CHECK_MIN` minutes (15), so an item added or a PR labelled during a run
+starts within that time. The run ends when no item runs and none waits. An item whose
+worker ended without exit 0 (stopped with `stop <item>`, or a runner error) is not started
+again by this run and stays for the next one; a PR whose worker ended is not started again
+by this run either, since GitHub may list it with its old label for a moment. A held PR gets
+its label swap tried again on the first check of a run only. The worker's output goes where
+the run's output goes (the
+terminal, or `logs/launchd.log` under the schedule), each line prefixed with its repo and
+item. Each worker runs with `AUTOPILOT_SLOT=<n>` and `PORT=<3000 + n - 1>` (a `PORT` set in
+the environment or the env file is the base instead of 3000), so two runs of one project do
+not share a dev server port.
+
+Two items of one project run in two worktrees of the same repository. The git steps that
+touch the shared `.git` (worktree add, fetch, push, worktree remove) take the repository's
+lock in `locks/`, so they run one at a time; the runs themselves do not wait for each other.
+A project whose gate or dev stack needs a fixed resource (a Docker Compose file with host
+ports, one database) can keep its items one after another with
+`MISSION_CONTROL_SLOTS_PER_REPO=1`.
+
+## What a worker does per item
 
 1. Resolves the repo and, for a PR, its branch and target branch (`gh pr view`).
 2. Creates the item's worktree inside the project, `<repo>/.claude/worktrees/autopilot-<item>`
@@ -241,9 +281,12 @@ column and runs from the default branch.
    else; Slack when `SLACK_WEBHOOK_URL` is set), stops the Docker Compose projects whose working directory lies in the worktree (containers and networks; volumes stay), removes the worktree after `done` (not after `push-failed`: then it holds the only copy of the commits).
 
 Progress on stdout, one line per step: `[mission-control] <repo> <item>: <phase>`.
-A lock (`run.lock`) refuses a second `run` while one is active; a lock left by a dead
-process, or by a pid that now belongs to another process (a number reused after a reboot),
-is taken over. Every `git` call ends after 10 minutes and every `gh` call after 2
+A lock (`run.lock`) refuses a second `run` while one is active (the active run fills its
+free slots itself); a lock left by a dead process, or by a pid that now belongs to another
+process (a number reused after a reboot), is taken over. A run that was killed outright
+(`kill -9`, not `stop`) leaves its workers running on their own; their `current-<slot>`
+files stay readable by `status` while they live, but the next run does not know them and
+may start their items again, so end them with `stop <item>` before a new run. Every `git` call ends after 10 minutes and every `gh` call after 2
 (`MISSION_CONTROL_GIT_TIMEOUT_MIN`, `MISSION_CONTROL_GH_TIMEOUT_MIN` in the env file or the
 environment, fractions allowed, `0` switches the limit off): the call is killed, counts as
 failed and is logged as `timed out after <n> s: <command>`. Before polling the repos, `run`, `list` and `status` check once
@@ -263,18 +306,21 @@ continue with the other repos and the list, and exit 1 at the end.
 Claude Code keeps its login in the macOS Keychain. A shell over SSH, or a launchd job
 outside your GUI session, cannot read it: `claude -p` says "Not logged in" although the Mac
 is logged in. So start `run` from a Terminal in the Mac's own session, or install the
-schedule: `install-schedule 30m` (a check every 30 minutes, `StartInterval`) or
+schedule: `install-schedule 15m` (a check every 15 minutes, `StartInterval`) or
 `install-schedule HH:MM` (once a day, `StartCalendarInterval`) writes
 `~/Library/LaunchAgents/de.evelan.mission-control.plist`, loaded with
 `launchctl bootstrap gui/<uid>`, which runs inside the GUI session. The agent runs
 `mission-control run --scheduled` (the flag is what makes a pause count). A check with
 nothing queued and no labelled PR ends after it has asked `gh` once per repo of
 `repos.txt`; a check that falls into an active run writes one line to `queue.log`
-(`another run is active (pid N): scheduled check skipped`) and exits 0. A check holds the
+(`another run is active (pid N): scheduled check skipped`) and exits 0: the active run
+looks for new work itself, every `MISSION_CONTROL_CHECK_MIN` minutes and whenever one of its
+items ends, so nothing waits for the next launchd check. A check holds the
 lock for the seconds it asks `gh`. Re-running `install-schedule` replaces the plist: bootout,
-then bootstrap. `install-schedule`, `uninstall-schedule` and `start` refuse while a run or a
-check is active (`a run is active (pid N, <item or "no item yet">), stop it first`). Output
-goes to `logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
+then bootstrap. `install-schedule` and `uninstall-schedule` refuse while a run or a check is
+active (`a run is active (pid N, <items or "no item yet">), stop it first`), because the
+bootout would end it; `start` says the run takes new work itself. Output goes to
+`logs/launchd.log`. For SSH-triggered starts, export `CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token` (kept in a mode-600 file) before `run`. `doctor` checks the login and
 prints this hint when it fails.
 
@@ -332,7 +378,7 @@ schedule) while the pause counts, `..., active` otherwise.
 Legacy schedule: a LaunchAgent installed before the pause feature runs plain `run`, without
 `--scheduled`, so it never looks at the pause file. `pause`, `resume` and `status` detect
 that (the plist's `ProgramArguments` lack `--scheduled`) and print `schedule installed
-without --scheduled: run "mission-control install-schedule <30m or HH:MM>" again, otherwise
+without --scheduled: run "mission-control install-schedule <N m or HH:MM>" again, otherwise
 the scheduled job ignores the pause` with the interval or time read from the plist; `status`
 shows `schedule: <every N min or installed at HH:MM> (legacy, ignores pause)` instead of
 active or paused. The pause file is still written; reinstalling the schedule makes it count.

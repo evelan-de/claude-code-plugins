@@ -1,7 +1,7 @@
 ---
 name: mission-control
 description: "Queue: status, add, retry, stop, log, start, pause, resume, schedule. Triggers on \"/mission-control\", \"mission control\", \"was läuft gerade\", \"Warteschlange\", \"queue status\", \"nimm X dazu\", \"stopp die Warteschlange\", \"keine Sessions starten\", \"Autopilot pausieren\", \"Autopilot wieder aktivieren\"."
-argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop | log [item] | start | pause [until <date> | <N>d] | resume | doctor | schedule [<N>m | HH:MM]]"
+argument-hint: "[status | add <repo> <item> | retry <repo> <#pr|item> | stop [item] | log [item] | start | pause [until <date> | <N>d] | resume | doctor | schedule [<N>m | HH:MM]]"
 ---
 
 # Mission control
@@ -42,15 +42,16 @@ machine with a `host` file may also run its own local queue.
 | status, "was läuft gerade", "queue status", no argument | `status` |
 | "nimm X dazu", add | `add <repo> <item>` |
 | retry, "nochmal" | `retry <repo> <#pr \| item>` (a PR gets its label back; any other item is re-added as given) |
-| stop, "stopp die Warteschlange" | `stop` (the item stays in the queue or keeps its label; `log <item>` still finds its log) |
+| stop, "stopp die Warteschlange" | `stop` (every running item ends; each stays in the queue or keeps its label; `log <item>` still finds its log) |
+| "stopp X", "brich X ab", stop one item | `stop <item>` (`#12`, a ticket key or a session dir): that item alone ends, the other slots go on and the freed slot takes the next waiting item |
 | log, "zeig das Log" | `log [<item>]` (`#12`, a ticket key or a session dir) |
-| "starte jetzt", start | `start` (local or remote per step 0). It installs the LaunchAgent on demand when none exists, runs in the GUI session, refuses while a run is active (relay that message), works during a pause (that one run goes ahead, the pause stays). Then say: progress via `status`, macOS notification with sound and Slack when an item finishes |
+| "starte jetzt", start | `start` (local or remote per step 0). It installs the LaunchAgent on demand when none exists, runs in the GUI session, works during a pause (that one run goes ahead, the pause stays). While a run is active it starts nothing and says so: that run takes new work itself at its next check (every 15 min) or when a slot frees; relay that. Then say: progress via `status`, macOS notification with sound and Slack when an item finishes |
 | "keine Sessions starten", "Autopilot pausieren", "nichts automatisch starten", pause | `pause` (until `resume`: no scheduled check starts a run; the item that is running finishes, no further one starts; manual starts still work). Reply that it holds until "wieder aktivieren" |
 | "heute nicht automatisch", "keine automatische Ausführung heute" | `pause until <today's date>` (today only) |
 | "Pause bis <Datum>", "pause until <date>" | `pause until <YYYY-MM-DD>` (through that day inclusive). A weekday name ("bis Freitag") needs no tool: from today's date (known in the session) take the next occurrence of that weekday, inclusive (today is a Friday: today), pass that date and reply with it, e.g. `pausiert bis einschließlich Freitag, 2026-09-25`. A date before today is refused with exit 2 (`date is in the past`), relay that. "<N> Tage" is `pause <N>d` |
 | "wieder automatisch", "wieder aktivieren", "Pause aufheben", resume | `resume` |
 | doctor | `doctor` |
-| schedule 30m, "alle 30 Minuten prüfen" | `install-schedule 30m` (a check every 30 minutes); `install-schedule HH:MM` = once a day; `install-schedule` without an argument = on demand only. Refuses while a run is active: relay that message |
+| schedule 15m, "alle 15 Minuten prüfen" | `install-schedule 15m` (a check every 15 minutes); `install-schedule HH:MM` = once a day; `install-schedule` without an argument = on demand only. Refuses while a run is active: relay that message |
 
 `pause`, `resume` and `status` print a warning line when the installed schedule predates the
 pause feature (`schedule installed without --scheduled: run "mission-control install-schedule

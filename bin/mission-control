@@ -2,10 +2,10 @@
 ''''test "$(uname -s)" = Darwin && exec python3 "$0" "$@" # '''
 ''''command -v python3 >/dev/null 2>&1 && python3 -c pass >/dev/null 2>&1 && exec python3 "$0" "$@" # '''
 ''''exec python "$0" "$@" # '''
-__doc__ = """mission-control - run prepared autopilot sessions one after another, unattended.
+__doc__ = """mission-control - run prepared autopilot sessions unattended, several at a time.
 
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
-       mission-control status | stop | retry <repo> <#pr | item> | log [<item>]
+       mission-control status | stop [<item>] | retry <repo> <#pr | item> | log [<item>]
        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
        mission-control install-schedule [HH:MM | <N>m] | uninstall-schedule
 
@@ -21,13 +21,16 @@ One machine-wide queue under $MISSION_CONTROL_HOME (default ~/.claude/mission-co
               "retry" releases it
   env         optional, mode 600, KEY=VALUE lines: SLACK_WEBHOOK_URL and MISSION_CONTROL_* settings;
               a line starting with "export" also reaches the run's environment
-  logs/       <timestamp>-<item>.log per item (PR items: <timestamp>-_<n>-<resolved item>.log,
-              renamed once the session dir or ticket key is known), queue.log for lines
-              outside an item
+  logs/       <timestamp>-s<slot>-<item>.log per item (PR items: <timestamp>-s<slot>-_<n>-<resolved
+              item>.log, renamed once the session dir or ticket key is known), queue.log for
+              lines outside an item
   worktrees/  where runs before plugin 3.3.0 kept their worktrees; one found here moves into
               the project on the item's next attempt
-  run.lock/   pid and start time (started) of the active run and current (the item it is on),
-              removed after the run
+  run.lock/   pid and start time (started) of the active run and current-<slot> per item that
+              is running (read by status), removed after the run
+  edit.lock   taken for the moment a queue.txt or held.txt line is added or removed
+  locks/      one lock file per repository: the git steps that touch a repository's shared
+              .git (worktree add, fetch, push, worktree remove) run one at a time per repository
   paused      "until-resume", or one date (YYYY-MM-DD, local): the schedule is paused until
               resume, or through that day; the LaunchAgent's "run --scheduled" skips while it
               is valid, a manual run ignores it
@@ -43,7 +46,16 @@ for a retry.
 The run itself (claude -p "/autopilot <item>") pushes, opens or updates the PR and works
 the review bot. The queue only starts runs, watches them, restarts on HANDOFF.md, reads the
 first line of REPORT.md ("Status: done" or "Status: blocked - <reason>"), labels the PR with
-the outcome and notifies. Sequential, one run at a time (lock).
+the outcome and notifies.
+
+One "run" process per machine (lock). It starts up to MISSION_CONTROL_SLOTS items at once
+(default 2; MISSION_CONTROL_SLOTS_PER_REPO limits the items of one repository, default no
+limit), each in a worker process of its own ("run-one", internal), and fills a slot again
+the moment its item ends. While items run it checks queue.txt and the labelled PRs again
+every MISSION_CONTROL_CHECK_MIN minutes (15), so work queued during a run starts within that
+time. It ends when nothing runs and nothing waits. Each run gets PORT=<3000 + slot - 1> and
+AUTOPILOT_SLOT=<slot> in its environment, so two runs of one project do not share a dev
+server port.
 
 Whatever the outcome - done, blocked, timeout, handoff-limit - the queue then pushes the
 run's branch to origin (no PR, never a base branch, never forced, without the project's git
@@ -71,9 +83,12 @@ MISSION_CONTROL_WATCH_MIN=0 (no stall check), MISSION_CONTROL_NO_NOTIFY=1.
 Python 3 standard library only. Never prints a secret: the Slack webhook URL is only ever
 held in a variable.
 """
+import contextlib
 import datetime
+import fcntl
 import filecmp
 import glob
+import hashlib
 import http.client
 import json
 import os
@@ -113,7 +128,8 @@ CONFIG_VARS = (
     "SLACK_WEBHOOK_URL", "MISSION_CONTROL_MODEL", "MISSION_CONTROL_EFFORT", "MISSION_CONTROL_ADVISOR",
     "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
     "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN", "MISSION_CONTROL_GIT_TIMEOUT_MIN",
-    "MISSION_CONTROL_GH_TIMEOUT_MIN",
+    "MISSION_CONTROL_GH_TIMEOUT_MIN", "MISSION_CONTROL_SLOTS", "MISSION_CONTROL_SLOTS_PER_REPO",
+    "MISSION_CONTROL_CHECK_MIN",
 )
 # what the env file may hold besides the launch settings, and what is read before it
 ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
@@ -121,7 +137,9 @@ READ_AT_START = ("HOME", "MISSION_CONTROL_HOME", "CLAUDE_BIN", "GH_BIN", "DOCKER
 LAUNCHD_LABEL = "de.evelan.mission-control"
 PAUSE_UNTIL_RESUME = "until-resume"   # what the pause file holds for a pause without an end
 FORCE_ONCE_SECONDS = 300              # how long a force-once file written by start counts
-QUEUE_COMMANDS = ("run", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause", "resume")
+QUEUE_COMMANDS = ("run", "run-one", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause",
+                  "resume")
+PORT_BASE = 3000                      # slot 1 runs with PORT=3000, slot 2 with 3001, ...
 COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
                  "install-schedule | uninstall-schedule")
 SKIP_LINE = re.compile(r"^\s*(#|$)")
@@ -145,6 +163,8 @@ LOGDIR = QHOME + "/logs"
 WTDIR = QHOME + "/worktrees"
 HELD = QHOME + "/held.txt"
 LOCK = QHOME + "/run.lock"
+EDIT_LOCK = QHOME + "/edit.lock"
+REPO_LOCKS = QHOME + "/locks"
 PAUSE = QHOME + "/paused"
 FORCE = QHOME + "/force-once"
 PLIST = HOME + "/Library/LaunchAgents/" + LAUNCHD_LABEL + ".plist"
@@ -179,6 +199,7 @@ class State:
     source_failed = False  # a PR source could not be read
     item_failed = False    # the runner itself failed on an item
     gh_auth = None         # cached result of gh auth status
+    slot = 0               # the slot of this worker process (0 in the run process)
 
 
 class Config:
@@ -192,6 +213,9 @@ class Config:
     timeout_s = watch_s = 0
     git_timeout_min = "10"   # per git call; 0 switches the limit off
     gh_timeout_min = "2"     # per gh call; 0 switches the limit off
+    slots = 2                # items that run at once
+    slots_per_repo = 0       # items of one repository that run at once; 0: no limit
+    check_s = 15 * 60        # between two checks for new work while items run
 
 
 class Stopped(BaseException):
@@ -305,7 +329,8 @@ def execute(cmd, **how):
         return subprocess.run(cmd, **how)
     except subprocess.TimeoutExpired as e:
         shown = " ".join([os.path.basename(cmd[0])] + list(cmd[1:]))
-        log(f"timed out after {int(e.timeout)} s: {shown[:160]}")
+        # the limit itself: some Python versions put the time that was left into the exception
+        log(f"timed out after {int(how['timeout'] or e.timeout)} s: {shown[:160]}")
         return subprocess.CompletedProcess(cmd, 124, e.stdout or b"", e.stderr or b"")
     finally:
         check_stop()
@@ -522,19 +547,74 @@ def lock_pid():
     return pid
 
 
+def current_file(slot):
+    """Where the worker of the slot records the item it is on."""
+    return f"{LOCK}/current-{slot}"
+
+
 def note_current(it, attempt):
-    """Records what the active run is on (read by status), seven lines: repo basename, item,
-    attempt, start epoch, item log, worktree and base commit (empty until they exist). Written
-    via a temp file and a rename, so status never reads a half-written file."""
-    if not os.path.isdir(LOCK):
+    """Records what this worker is on (read by status and stop), eight lines: repo basename,
+    item, attempt, start epoch, item log, worktree, base commit (empty until they exist) and
+    the worker's pid. Written via a temp file and a rename, so status never reads a
+    half-written file."""
+    if not os.path.isdir(LOCK) or not State.slot:
         return
-    lines = (it.rb, it.item, str(attempt), str(it.began), State.item_log, it.wt, it.base)
+    lines = (it.rb, it.item, str(attempt), str(it.began), State.item_log, it.wt, it.base, str(os.getpid()))
+    path = current_file(State.slot)
     try:
-        with open(LOCK + "/current.tmp", "w", encoding="utf-8") as f:
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
             f.write("".join(line + "\n" for line in lines))
-        os.replace(LOCK + "/current.tmp", LOCK + "/current")
+        os.replace(path + ".tmp", path)
     except OSError:
         pass
+
+
+def running_items():
+    """[(slot, lines)] of the items that live workers are on, by slot: the current-<slot>
+    files of the lock whose recorded worker pid is alive and is a mission-control process. A
+    plain current file (a run started by a runner before plugin 3.6.0, which ran its one item
+    itself) counts as slot 1 under the lock's pid."""
+    found = []
+    for path in glob.glob(f"{glob.escape(LOCK)}/current-*"):
+        slot = path.rsplit("-", 1)[-1]
+        if not slot.isdigit():
+            continue
+        lines = (read_lines(path) + [""] * 8)[:8]
+        if not worker_alive(lines[7]):
+            continue
+        found.append((int(slot), lines))
+    if not found and os.path.isfile(LOCK + "/current"):
+        pid = first_line(LOCK + "/pid").strip()
+        if worker_alive(pid):
+            found.append((1, (read_lines(LOCK + "/current") + [""] * 8)[:7] + [pid]))
+    return sorted(found)
+
+
+def worker_alive(pid):
+    """The pid is alive and runs mission-control."""
+    if not pid or not pid_alive(pid):
+        return False
+    rc, command = capture(["ps", "-p", str(pid), "-o", "command="])
+    return not (rc == 0 and "mission-control" not in command)
+
+
+@contextlib.contextmanager
+def file_lock(path):
+    """Holds an exclusive lock on the file for the block; other processes wait for it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def repo_lock(repo):
+    """The lock the git steps of one repository take, so two items of the same project never
+    fetch into, add a worktree to or push from its shared .git at the same moment."""
+    digest = hashlib.sha1(repo.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    return file_lock(f"{REPO_LOCKS}/{os.path.basename(repo.rstrip('/')) or 'repo'}-{digest}.lock")
 
 
 def current_package(wt, item):
@@ -660,6 +740,18 @@ def load_env():
     Config.timeout_min = setting("MISSION_CONTROL_TIMEOUT_MIN", "480")
     Config.timeout_s = to_seconds(Config.timeout_min)
     Config.watch_s = to_seconds(setting("MISSION_CONTROL_WATCH_MIN", "20"))
+    Config.slots = positive_int(setting("MISSION_CONTROL_SLOTS", "2"), 2, least=1)
+    Config.slots_per_repo = positive_int(setting("MISSION_CONTROL_SLOTS_PER_REPO", "0"), 0, least=0)
+    Config.check_s = to_seconds(setting("MISSION_CONTROL_CHECK_MIN", "15"))
+
+
+def positive_int(text, default, least):
+    """The whole number the text holds when it is at least the minimum, else the default."""
+    try:
+        value = int(text)
+    except ValueError:
+        return default
+    return value if value >= least else default
 
 
 def setting(name, default=""):
@@ -723,17 +815,19 @@ def first_queue_line():
 def remove_queue_line(line):
     """Removes the first occurrence of the line from queue.txt. A line that cannot be removed
     ends the run: it would be processed again and again."""
-    lines = read_lines(QUEUE)
-    before = lines.count(line)
-    if before:
-        lines.remove(line)
-    try:
-        with open(QUEUE + ".tmp", "w", encoding="utf-8") as f:
-            f.write("".join(entry + "\n" for entry in lines))
-        os.replace(QUEUE + ".tmp", QUEUE)
-    except OSError:
-        pass
-    if before and read_lines(QUEUE).count(line) != before - 1:
+    with file_lock(EDIT_LOCK):
+        lines = read_lines(QUEUE)
+        before = lines.count(line)
+        if before:
+            lines.remove(line)
+        try:
+            with open(QUEUE + ".tmp", "w", encoding="utf-8") as f:
+                f.write("".join(entry + "\n" for entry in lines))
+            os.replace(QUEUE + ".tmp", QUEUE)
+        except OSError:
+            pass
+        left = read_lines(QUEUE).count(line)
+    if before and left != before - 1:
         die(f"could not remove the processed line from {QUEUE}, stopping")
 
 
@@ -1589,6 +1683,10 @@ def run_attempt(it, state_file):
     if node:
         log(f"node for the run: {node}")
         run_env["PATH"] = node + ":" + run_env.get("PATH", "")
+    # one dev server port per slot, so two runs of one project never share it
+    slot = State.slot or 1
+    run_env["AUTOPILOT_SLOT"] = str(slot)
+    run_env["PORT"] = str(positive_int(run_env.get("PORT", ""), PORT_BASE, least=1) + slot - 1)
     cmd = [CLAUDE_BIN, "-p", f"/autopilot {it.item}", "--model", it.model, "--effort", it.effort,
            "--advisor", Config.advisor]
     if it.fallback:
@@ -1650,8 +1748,8 @@ def report_status(it, report):
 
 
 def rename_item_log(name):
-    """The item log carries the resolved item in its name. PR items start as <ts>-_<n>.log and
-    become <ts>-_<n>-<resolved item>.log."""
+    """The item log carries the resolved item in its name. PR items start as
+    <ts>-s<slot>-_<n>.log and become <ts>-s<slot>-_<n>-<resolved item>.log."""
     new = f"{State.item_log[:-len('.log')]}-{safe_name(name)}.log"
     try:
         os.replace(State.item_log, new)
@@ -1673,7 +1771,8 @@ def process_item(repo_in, kind, ref, line="", branch=""):
     it = Item(repo_in, kind, ref, line, branch)
     try:
         os.makedirs(LOGDIR, exist_ok=True)
-        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-{safe_name(it.item)}.log"
+        # the slot keeps the names of two workers started in the same second apart
+        State.item_log = f"{LOGDIR}/{time.strftime('%Y%m%d-%H%M%S')}-s{State.slot or 1}-{safe_name(it.item)}.log"
         open(State.item_log, "w").close()
         note_current(it, 1)
         say(f"{it.who}: resolving")
@@ -1693,12 +1792,12 @@ def process_item(repo_in, kind, ref, line="", branch=""):
 def drop_failed_item(it, error):
     """The runner itself failed while an item was started or finished. The traceback goes to
     queue.log, the failure is said, and a queue line that is still there is removed with a
-    blocked line in done.txt, so the next run does not begin with the same failure."""
+    blocked line in done.txt, so the next run does not hit the same failure again."""
     State.item_log = ""
     State.item_failed = True
     log(traceback.format_exc().rstrip())
     say(f"FAIL - {it.who}: runner error, {type(error).__name__}: {error} (traceback in {LOGDIR}/queue.log)")
-    if it.line and first_queue_line() == it.line:
+    if it.line and it.line in read_lines(QUEUE):
         if not it.recorded:
             with open(DONE, "a", encoding="utf-8") as f:
                 f.write(f"{now_iso()} {it.repo or it.repo_in} {quote_item(it.item)} blocked {it.pr_url} runner-error\n")
@@ -1724,9 +1823,11 @@ def prepare_and_run(it):
 
     if not it.status:
         it.wt = wt_path(it.repo, it.item)
-        ensure_excluded(it.repo)
-        move_legacy_worktree(it, legacy_wt_path(it.rb, it.item), it.wt)
-        if prepare_worktree(it.repo, it.wt, it.branch):
+        with repo_lock(it.repo):
+            ensure_excluded(it.repo)
+            move_legacy_worktree(it, legacy_wt_path(it.rb, it.item), it.wt)
+            ready = prepare_worktree(it.repo, it.wt, it.branch)
+        if ready:
             it.gh_dir = it.wt
         else:
             it.block(f"worktree could not be created (see {State.item_log})")
@@ -1809,7 +1910,8 @@ def run_until_settled(it, state_file):
                 return it.block(f"HANDOFF.md still present after {limit} restarts", "handoff-limit")
             it.restarts += 1
             say(f"{it.who}: hand-off found, restart {it.restarts}/{limit}")
-            refresh_worktree(it.wt)
+            with repo_lock(it.repo):
+                refresh_worktree(it.wt)
             continue
         if os.path.isfile(report):
             return report_status(it, report)
@@ -1820,7 +1922,8 @@ def run_until_settled(it, state_file):
             if it.restarts < limit:
                 it.restarts += 1
                 say(f"{it.who}: ended without REPORT.md or HANDOFF.md, restart {it.restarts}/{limit}")
-                refresh_worktree(it.wt)
+                with repo_lock(it.repo):
+                    refresh_worktree(it.wt)
                 continue
             return it.block(f"no REPORT.md or HANDOFF.md after {limit} restarts", "handoff-limit")
         if it.result == "stalled":
@@ -1871,15 +1974,17 @@ def write_held(held):
 
 
 def hold_pr(repo, number, status):
-    held = held_prs()
-    held[(repo, number)] = status
-    write_held(held)
+    with file_lock(EDIT_LOCK):
+        held = held_prs()
+        held[(repo, number)] = status
+        write_held(held)
 
 
 def release_pr(repo, number):
-    held = held_prs()
-    if held.pop((repo, number), None) is not None:
-        write_held(held)
+    with file_lock(EDIT_LOCK):
+        held = held_prs()
+        if held.pop((repo, number), None) is not None:
+            write_held(held)
 
 
 def settle_held_pr(repo, number, status):
@@ -1945,7 +2050,8 @@ def pr_comment(it):
 
 def finish_item(it):
     """Pushes the branch, labels the PR, records the outcome, notifies."""
-    push_branch(it)
+    with repo_lock(it.repo or it.repo_in):
+        push_branch(it)
     gh_usable = bool(it.gh_dir) and os.path.isdir(it.gh_dir)
     if it.branch and gh_usable:
         found = gh_in(it.gh_dir, "pr", "list", "--head", it.branch, "--state", "open", "--json", "url,number,isDraft",
@@ -2011,10 +2117,13 @@ def finish_item(it):
     if it.status == "done" and it.wt and os.path.exists(it.wt + "/.git"):
         if it.push_failed:
             say(f"{it.who}: worktree kept at {it.wt} because its branch is not on origin")
-        elif git_log(it.repo, "worktree", "remove", "--force", it.wt) == 0:
-            say(f"{it.who}: worktree removed")
         else:
-            log(f"worktree remove failed, kept at {it.wt}")
+            with repo_lock(it.repo):
+                removed = git_log(it.repo, "worktree", "remove", "--force", it.wt) == 0
+            if removed:
+                say(f"{it.who}: worktree removed")
+            else:
+                log(f"worktree remove failed, kept at {it.wt}")
 
 
 def scheduled_gate():
@@ -2062,54 +2171,29 @@ def cmd_run(args):
             return 0
         forced = scheduled_gate()
 
-    def vetoed():
-        """A pause set while this scheduled run is under way: no further item starts."""
-        if not scheduled or forced or not (pause_until() or pause_unreadable()):
-            return False
-        say("paused: no further item starts in this run, what is queued stays queued")
-        return True
-
     acquire_lock()
+    scheduler = Scheduler(scheduled, forced)
     try:
         signal.signal(signal.SIGINT, on_signal)
         signal.signal(signal.SIGTERM, on_signal)
         os.makedirs(LOGDIR, exist_ok=True)
-        stopped_by_pause = False
-        while not stopped_by_pause:
-            line = first_queue_line()
-            if line is None:
-                break
-            parsed = parse_line(line)
-            if not parsed:
-                say(f"removed unparsable line from queue.txt: {line}")
-                remove_queue_line(line)
-                continue
-            stopped_by_pause = vetoed()
-            if not stopped_by_pause:
-                process_item(parsed[0], "text", parsed[1], line, parsed[2])
-        repos = live_lines(REPOS)
-        if not stopped_by_pause and repos_pollable(repos, in_run=True):
-            for repo, path in resolved_repos(repos):
-                if not path:
-                    say(f"{repo}: not a git repository, skipped")
-                    continue
-                for number, _, _ in list_ready_prs(path) or ():
-                    held = held_prs().get((path, number))
-                    if held:
-                        settle_held_pr(path, number, held)
-                        continue
-                    stopped_by_pause = vetoed()
-                    if stopped_by_pause:
-                        break
-                    process_item(path, "pr", number)
-                if stopped_by_pause:
-                    break
+        scheduler.dispatch()
+        # Poll step: one second, so a stop request is seen at once; 0.2 s when the stall check
+        # is off (tests).
+        step = 1 if Config.watch_s > 0 else 0.2
+        while scheduler.workers:
+            time.sleep(step)
+            scheduler.reap()
+            check_stop()
+            if scheduler.freed or time.time() - scheduler.checked >= Config.check_s:
+                scheduler.dispatch()
         if scheduled:
             remove_file(FORCE)
     except Stopped:
         return 130
     finally:
-        # whatever ends the run, no claude process outlives it
+        # whatever ends the run, no worker and no claude process outlives it
+        scheduler.end()
         kill_run()
         release_lock()
     if State.item_failed:
@@ -2120,6 +2204,212 @@ def cmd_run(args):
         return 1
     out("[mission-control] run finished")
     return 0
+
+
+class Worker(typing.NamedTuple):
+    slot: int
+    proc: subprocess.Popen
+    key: tuple
+    repo: str
+    who: str
+    line: str
+
+    @property
+    def done_key(self):
+        """What keeps the item out of this run once its worker ended: the PR, or this very
+        queue line (another line for the same item may still run after it)."""
+        return self.key if self.key[0] == "pr" else (self.key, self.line)
+
+
+class Scheduler:
+    """Starts a worker process per item, up to Config.slots at once (Config.slots_per_repo per
+    repository), from queue.txt first and then from the labelled PRs, and fills a slot again
+    the moment its item ends. dispatch() is called at the start, after every ended worker and
+    every Config.check_s seconds while items run, so work queued during a run starts within
+    that time. An item whose worker ended without exit 0 (stopped, or a runner error) is
+    not started again in this run; neither is a PR whose worker ended at all, since GitHub
+    may list it with its old label for a moment. A queue line that is there twice runs
+    twice, one after the other, as its worker removes one copy at the end."""
+
+    def __init__(self, scheduled, forced):
+        self.scheduled, self.forced = scheduled, forced
+        self.workers = []        # the live Worker records
+        self.finished = set()    # items this run does not start again: PR keys, or (key, line) of a queue line
+        self.said = set()        # repos already named as not a git repository
+        self.paused = False      # a pause arrived while this scheduled run was under way
+        self.gh_ok = False       # gh could read its token on some check of this run
+        self.gh_said = False     # the gh notice was said
+        self.prs_polled = False  # the labelled PRs were listed at least once in this run
+        self.checked = 0.0       # when the sources were last checked
+        self.freed = False       # a worker ended since the last dispatch
+
+    def active_keys(self):
+        return {w.key for w in self.workers}
+
+    def free_slots(self):
+        taken = {w.slot for w in self.workers}
+        return [slot for slot in range(1, Config.slots + 1) if slot not in taken]
+
+    def room_in(self, repo):
+        """The repository may take one more item under Config.slots_per_repo."""
+        if not Config.slots_per_repo:
+            return True
+        return sum(1 for w in self.workers if w.repo == repo) < Config.slots_per_repo
+
+    def vetoed(self):
+        """A pause set while this scheduled run is under way: no further item starts."""
+        if self.paused:
+            return True
+        if not self.scheduled or self.forced or not (pause_until() or pause_unreadable()):
+            return False
+        say("paused: no further item starts in this run, what is queued stays queued")
+        self.paused = True
+        return True
+
+    def dispatch(self):
+        """Starts a worker for every item that waits and fits into a free slot. A held PR gets
+        its label swap tried again on the first listing of the PRs in this run only."""
+        self.checked, self.freed = time.time(), False
+        if self.paused:
+            return
+        for line in live_lines(QUEUE):
+            if not self.free_slots():
+                return
+            parsed = parse_line(line)
+            if not parsed:
+                say(f"removed unparsable line from queue.txt: {line}")
+                remove_queue_line(line)
+                continue
+            repo = resolve_repo(parsed[0]) or parsed[0]
+            # the key is the resolved repo and the item, so two spellings of one line (quotes,
+            # a bare project name) never run side by side in the same worktree
+            key = ("text", repo, parsed[1])
+            if key in self.active_keys() or (key, line) in self.finished or not self.room_in(repo):
+                continue
+            if self.vetoed():
+                return
+            self.start(key, repo, "text", parsed[0], parsed[1], line, parsed[2])
+        repos = live_lines(REPOS)
+        if not repos or not self.free_slots():
+            return
+        if not self.gh_usable(repos):
+            return
+        first = not self.prs_polled
+        self.prs_polled = True
+        for repo, path in resolved_repos(repos):
+            if not path:
+                if repo not in self.said:
+                    say(f"{repo}: not a git repository, skipped")
+                    self.said.add(repo)
+                continue
+            for number, _, _ in list_ready_prs(path) or ():
+                held = held_prs().get((path, number))
+                if held:
+                    if first:
+                        settle_held_pr(path, number, held)
+                    continue
+                key = ("pr", path, number)
+                if key in self.active_keys() or key in self.finished or not self.room_in(path):
+                    continue
+                if not self.free_slots():
+                    return
+                if self.vetoed():
+                    return
+                self.start(key, path, "pr", path, number, "", "")
+
+    def gh_usable(self, repos):
+        """gh can read its token, asked again on every check until it can (a failed answer is
+        not kept for the whole run); the notice is said once."""
+        if self.gh_ok:
+            return True
+        State.gh_auth = None
+        if gh_auth_ok():
+            self.gh_ok = True
+            return True
+        if not self.gh_said:
+            self.gh_said = True
+            say(gh_auth_notice())
+            if not in_ssh():
+                State.source_failed = True
+        return False
+
+    def start(self, key, repo, kind, repo_in, ref, line, branch):
+        """The worker process for one item, in the lowest free slot; its output goes where this
+        process's output goes."""
+        slot = self.free_slots()[0]
+        spec = json.dumps({"slot": slot, "kind": kind, "repo": repo_in, "ref": ref, "line": line, "branch": branch})
+        who = f"{os.path.basename(repo.rstrip('/'))} {'#' + ref if kind == 'pr' else ref}"
+        try:
+            proc = subprocess.Popen([os.path.abspath(__file__), "run-one", spec], stdin=subprocess.DEVNULL)
+        except OSError as e:
+            State.item_failed = True
+            self.finished.add(key if kind == "pr" else (key, line))
+            say(f"FAIL - {who}: worker could not be started: {e}")
+            return
+        log(f"{who}: started in slot {slot} (worker pid {proc.pid})")
+        self.workers.append(Worker(slot, proc, key, repo, who, line))
+
+    def reap(self):
+        """Forgets the workers that ended and keeps their items out of this run (exit 130: the
+        stopped item stays queued for the next run; any other exit but 0: a runner error)."""
+        for worker in list(self.workers):
+            rc = worker.proc.poll()
+            if rc is None:
+                continue
+            self.workers.remove(worker)
+            self.freed = True
+            remove_file(current_file(worker.slot))
+            rc = exit_code(rc)
+            if rc != 0 or worker.key[0] == "pr":
+                self.finished.add(worker.done_key)
+            if rc == 0:
+                continue
+            if rc == 130:
+                log(f"{worker.who}: worker stopped, the item stays for the next run")
+            else:
+                State.item_failed = True
+                log(f"{worker.who}: worker ended with exit {rc}")
+
+    def end(self):
+        """TERM to every live worker (each kills its claude), KILL after 20 s."""
+        live = [w for w in self.workers if w.proc.poll() is None]
+        for worker in live:
+            try:
+                worker.proc.terminate()
+            except OSError:
+                pass
+        deadline = time.time() + 20
+        for worker in live:
+            try:
+                worker.proc.wait(timeout=max(0.1, deadline - time.time()))
+            except subprocess.TimeoutExpired:
+                worker.proc.kill()
+                worker.proc.wait()
+            remove_file(current_file(worker.slot))
+        self.workers = []
+
+
+def cmd_run_one(args):
+    """Internal: the worker process of one item, started by run with a JSON spec (slot, kind,
+    repo, ref, line, branch). Exit 0 after the item, 130 when stopped, 1 on a runner error."""
+    if len(args) != 1:
+        die_usage("usage: mission-control run-one <json spec> (internal, started by run)")
+    try:
+        spec = json.loads(args[0])
+        State.slot = int(spec["slot"])
+    except (ValueError, KeyError, TypeError) as e:
+        die_usage(f"run-one: bad spec ({e})")
+    load_env()
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    try:
+        process_item(spec["repo"], spec["kind"], spec["ref"], spec.get("line", ""), spec.get("branch", ""))
+    except Stopped:
+        return 130
+    finally:
+        kill_run()
+        remove_file(current_file(State.slot))
+    return 1 if State.item_failed else 0
 
 
 # ---------- list, add, labels, doctor ----------
@@ -2169,8 +2459,9 @@ def cmd_add(args):
         item = " ".join(args[1:])
     os.makedirs(QHOME, exist_ok=True)
     entry = f"{repo} {quote_item(item)}{' ' + branch if branch else ''}"
-    with open(QUEUE, "a", encoding="utf-8") as f:
-        f.write(entry + "\n")
+    with file_lock(EDIT_LOCK):
+        with open(QUEUE, "a", encoding="utf-8") as f:
+            f.write(entry + "\n")
     out(f"added: {entry}")
     return 0
 
@@ -2225,6 +2516,9 @@ def cmd_doctor(args):
             bad(f"env file mode is {mode}, want 600 (chmod 600 {ENVFILE})")
 
     os.makedirs(LOGDIR, exist_ok=True)
+    out(f"slots: {Config.slots} items at once"
+        + (f", {Config.slots_per_repo} per repository" if Config.slots_per_repo else "")
+        + f", new work checked every {max(1, int(Config.check_s // 60))} min while items run")
     repos = {parsed[0] for parsed in map(parse_line, read_lines(QUEUE)) if parsed} | set(live_lines(REPOS))
     out(f"repos in the queue: {len(repos)}")
     for repo, path in resolved_repos(sorted(repos)):
@@ -2283,15 +2577,15 @@ def schedule_line():
 def cmd_status(args):
     load_env()
     pid = lock_pid()
-    current = read_lines(LOCK + "/current") if pid and os.path.isfile(LOCK + "/current") else None
-    if current is not None:
-        repo_base, item, attempt, began, logfile, wt, base = (current + [""] * 7)[:7]
+    items = running_items() if pid else []
+    for slot, lines in items:
+        repo_base, item, attempt, began, logfile, wt, base, _ = lines
         try:
             elapsed = (int(time.time()) - int(began)) // 60
         except ValueError:
             elapsed = 0
         out(f"running: {repo_base} {item} (attempt {attempt}, since {hhmm_of_epoch(began)}, {elapsed} min, "
-            f"phase: {last_phase(logfile, repo_base, item)})")
+            f"slot {slot}, phase: {last_phase(logfile, repo_base, item)})")
         if wt and os.path.isdir(wt):
             package = current_package(wt, item) if item.startswith(SESSIONS + "/") else ""
             out(f"  package: {package or 'none marked [~]'}")
@@ -2301,10 +2595,11 @@ def cmd_status(args):
             base = base or base_sha(wt)
             diff = git(wt, "diff", "--shortstat", base or "HEAD").out.lstrip(" ")
             out(f"  diff since base: {diff or 'none'}")
-    elif pid:
+    if pid and not items:
         out(f"running: pid {pid}, no item yet")
-    else:
+    elif not pid:
         out("running: none")
+    out(f"slots: {len(items)} of {Config.slots} busy")
 
     queued = live_lines(QUEUE)
     out(f"queue: {len(queued)} items")
@@ -2348,27 +2643,57 @@ def cmd_status(args):
     return 0
 
 
+def item_matches(key, lines):
+    """The running item (its current-<slot> lines) is exactly the one the argument names: the
+    item itself, the same after safe_name (a session dir by its basename), or the PR number
+    the item started as ("#12" or "12", kept in the log's name as "_12-")."""
+    item, logfile = lines[1], lines[4]
+    if key == item or safe_name(key) == safe_name(item):
+        return True
+    number = key[1:] if key.startswith("#") else key
+    if not number.isdigit():
+        return False
+    part = log_item_part(logfile)
+    return item == f"#{number}" or part == f"_{number}" or part.startswith(f"_{number}-")
+
+
 def cmd_stop(args):
-    """TERM to the run; it kills claude (SIGTERM, SIGKILL after 10 s) and releases the lock.
-    Waits up to 45 s. The item stays in queue.txt or keeps its label."""
+    """Without an argument: TERM to the run; it ends every worker, each kills its claude
+    (SIGTERM, SIGKILL after 10 s), and releases the lock. With an item: TERM to that item's
+    worker alone; the run goes on with the other slots and does not start the item again.
+    Waits up to 45 s. A stopped item stays in queue.txt or keeps its label."""
     pid = lock_pid()
     if not pid:
         out("nothing running")
         return 0
-    current = (read_lines(LOCK + "/current") + ["", ""])[:2]
+    items = running_items()
+    if args and args[0]:
+        hits = [(slot, lines) for slot, lines in items if item_matches(args[0], lines)]
+        if not hits:
+            die(f"no running item matches '{args[0]}' (running: "
+                f"{', '.join(lines[1] for _, lines in items) or 'no item yet'})")
+        if len(hits) > 1:
+            die(f"'{args[0]}' matches more than one running item ({', '.join(lines[1] for _, lines in hits)}); "
+                "name the session directory")
+        target, shown = hits[0][1][7], [hits[0][1]]
+    else:
+        target, shown = pid, [lines for _, lines in items]
     try:
-        os.kill(int(pid), signal.SIGTERM)
+        os.kill(int(target), signal.SIGTERM)
     except OSError:
         out("nothing running")
         return 0
     for _ in range(90):
-        if not pid_alive(pid):
+        if not pid_alive(target):
             break
         time.sleep(0.5)
-    if pid_alive(pid):
-        out(f"still running (pid {pid})")
+    if pid_alive(target):
+        out(f"still running (pid {target})")
         return 1
-    out("stopped" + "".join(f" {part}" for part in current if part))
+    for lines in shown:
+        out("stopped" + "".join(f" {part}" for part in lines[:2] if part))
+    if not shown:
+        out("stopped")
     return 0
 
 
@@ -2403,12 +2728,12 @@ def cmd_retry(args):
 
 
 def log_item_part(path):
-    """The file name without directory, ".log" and the leading <timestamp>- (YYYYMMDD-HHMMSS-),
-    so a number never matches the timestamp."""
+    """The file name without directory, ".log", the leading <timestamp>- (YYYYMMDD-HHMMSS-) and
+    the slot part (s<n>-), so a number never matches the timestamp or the slot."""
     name = os.path.basename(path)
     if name.endswith(".log"):
         name = name[:-4]
-    return re.sub(r"^[0-9]{8}-[0-9]{6}-", "", name)
+    return re.sub(r"^[0-9]{8}-[0-9]{6}-(s[0-9]+-)?", "", name)
 
 
 def cmd_log(args):
@@ -2442,10 +2767,17 @@ def launchctl(*args, silent=False):
 def cmd_start(args):
     """Start a run now on this machine, inside the GUI session (the Keychain login is readable
     there). Installs the LaunchAgent without a schedule when none is installed, then kickstarts
-    it. Refuses while a run is active. "kickstart" is the old name."""
+    it. While a run is active there is nothing to start: that run takes new work itself.
+    "kickstart" is the old name."""
     if platform.system() != "Darwin":
         die("start needs macOS (launchd)")
-    refuse_while_running()
+    load_env()
+    pid = lock_pid()
+    if pid:
+        items = ", ".join(lines[1] for _, lines in running_items())
+        out(f"a run is active (pid {pid}, {items or 'no item yet'}): nothing to start, it takes new work itself "
+            f"at its next check (every {max(1, int(Config.check_s // 60))} min) or when a slot frees")
+        return 0
     if not os.path.isfile(PLIST):
         cmd_install_schedule([])
     here = SCRIPT_DIR + "/mission-control"
@@ -2471,8 +2803,8 @@ def refuse_while_running():
     """Ends the command while a run or a check is active."""
     pid = lock_pid()
     if pid:
-        item = (read_lines(LOCK + "/current") + ["", ""])[1]
-        die(f"a run is active (pid {pid}, {item or 'no item yet'}), stop it first")
+        items = ", ".join(lines[1] for _, lines in running_items())
+        die(f"a run is active (pid {pid}, {items or 'no item yet'}), stop it first")
 
 
 def cmd_install_schedule(args):
@@ -2610,12 +2942,12 @@ def not_set_up():
     print(f"mission-control is not set up on this machine ({QHOME} does not exist).", file=sys.stderr)
     print("The queue runs on the office Mini. Hand work over with /autopilot-plan (draft PR with the label "
           "autopilot-ready); results arrive on the PR and in Slack #mission-control.", file=sys.stderr)
-    print("To set this machine up: mission-control doctor, then repos.txt and install-schedule 30m.", file=sys.stderr)
+    print("To set this machine up: mission-control doctor, then repos.txt and install-schedule 15m.", file=sys.stderr)
     return 3
 
 
 COMMANDS = {
-    "run": cmd_run, "list": cmd_list, "add": cmd_add, "labels": cmd_labels, "doctor": cmd_doctor,
+    "run": cmd_run, "run-one": cmd_run_one, "list": cmd_list, "add": cmd_add, "labels": cmd_labels, "doctor": cmd_doctor,
     "status": cmd_status, "stop": cmd_stop, "retry": cmd_retry, "log": cmd_log, "start": cmd_start,
     "kickstart": cmd_start, "pause": cmd_pause, "resume": cmd_resume,
     "install-schedule": cmd_install_schedule, "uninstall-schedule": cmd_uninstall_schedule,

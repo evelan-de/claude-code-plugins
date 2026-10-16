@@ -58,8 +58,8 @@ unattended and hands you a reviewed pull request.
    model and effort. It writes `PLAN.md` on a new branch.
 3. **Hand over:** Claude pushes the branch and opens a draft PR with the label
    `autopilot-ready`.
-4. **Run:** the office Mini looks for labelled PRs every 30 minutes, picks it up at its next
-   check (after the run it is on, if one is active) and says so on the PR and in Slack
+4. **Run:** the office Mini looks for labelled PRs every 15 minutes, picks it up at its next
+   check (two runs at a time; a third waits for a free slot) and says so on the PR and in Slack
    `#mission-control` (title and what it is about). It implements the plan test-first,
    reviews the whole branch, checks the result in a browser and marks the PR ready for
    review. At the end Slack shows what shipped and what is still open; the report is also a

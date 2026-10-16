@@ -4,7 +4,7 @@ How you hand a ticket to the autopilot and get a reviewed pull request back.
 
 **In one sentence:** you write the plan together with Claude in your own session, Claude
 opens a draft PR with the label `autopilot-ready`, and the queue on the office Mini picks
-it up at its next check (every 30 minutes), implements it unattended and returns a ready PR
+it up at its next check (every 15 minutes), implements it unattended and returns a ready PR
 with a report, which you review and merge.
 
 The full instructions behind this guide:
@@ -36,7 +36,7 @@ decisions are. The **run** asks nothing, because every decision is already in th
 ```mermaid
 flowchart TB
     A["1 · Your machine, with Claude<br/>/autopilot-plan KEY writes PLAN.md"] --> B["2 · GitHub<br/>draft PR, label autopilot-ready"]
-    B --> C["3 · Office Mini, checks every 30 minutes<br/>implements test-first, reviews,<br/>checks the result in a browser"]
+    B --> C["3 · Office Mini, checks every 15 minutes<br/>implements test-first, reviews,<br/>checks the result in a browser"]
     C --> D["4 · GitHub<br/>ready PR, label autopilot-done,<br/>report as a comment"]
     D --> E["5 · You<br/>review and merge"]
     C -.-> N["Slack message<br/>Jira comment"]
@@ -86,7 +86,7 @@ sequenceDiagram
     CS->>Dev: packages, model and effort (once)
     Dev->>CS: approve
     CS->>GH: branch with PLAN.md, draft PR, label autopilot-ready
-    Note over MC: next check (every 30 minutes)
+    Note over MC: next check (every 15 minutes)
     MC->>GH: finds the labelled PR, posts "Autopilot started"
     MC->>Run: starts the run on your branch
     loop per package
@@ -224,10 +224,10 @@ change stays a draft PR without the label.
 
 ### 5.4 While it runs
 
-The queue on the office Mini looks for labelled PRs **every 30 minutes**, around the clock,
-and works one PR after another: a PR labelled while a run is active starts at the next check
-after that run. Andreas can pause the queue; then nothing starts until he resumes it. Your machine
-and session can be closed.
+The queue on the office Mini looks for labelled PRs **every 15 minutes**, around the clock,
+and works two PRs at a time: a PR labelled while both slots are busy starts as soon as one
+of them is free. Andreas can pause the queue; then nothing starts until he resumes it. Your
+machine and session can be closed.
 
 - **The start comment.** When your PR's turn comes, the runner posts "Autopilot started on
   ... (model, effort)" on the PR. From then on, do not push until the result comment
