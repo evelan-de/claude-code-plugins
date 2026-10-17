@@ -1,13 +1,22 @@
 name: gate
 
-on: [push, pull_request]
+# Lint and every test suite. Pull requests and pushes to main run on Ubuntu
+# only; the macOS and Windows runs are started by hand (Actions, "Run workflow")
+# before a release or when a change touches platform-specific behaviour. Every
+# push on every branch used to run all three, which doubled every PR and spent
+# macOS minutes (billed tenfold) on documentation commits (Andreas, 2026-10-17).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   tests:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["macos-latest", "ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
