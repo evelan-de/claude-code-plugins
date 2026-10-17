@@ -39,7 +39,9 @@ on the same model family), `MISSION_CONTROL_BUDGET_USD` (200 per attempt for son
 restart gets a fresh 480), `MISSION_CONTROL_WATCH_MIN` (20, the stall check interval),
 `MISSION_CONTROL_SLOTS` (2, items that run at once), `MISSION_CONTROL_SLOTS_PER_REPO` (0 =
 no limit; 1 keeps the items of one project one after another), `MISSION_CONTROL_CHECK_MIN`
-(15, how often a run with busy slots looks for new work).
+(15, how often a run with busy slots looks for new work), `MISSION_CONTROL_DOCTOR_PROBE_USD`
+(0.50, the budget of doctor's `claude -p` login probe; a cold prompt cache costs a few cents
+before claude answers).
 Budget and wall clock are per attempt, never per task: a run nearing either hands off and the
 runner starts the next attempt (Andreas, 2026-09-28: Sonnet 200 USD, Opus 400 USD, 480 minutes).
 
@@ -83,7 +85,9 @@ call, `.claude/.autopilot-status` in the worktree; `no status line yet` before t
 busy`; `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
 (a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
 token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
-session)` replace the counts, see "Over SSH"); `last done:` with the
+session)` replace the counts, see "Over SSH"; the `gh` calls run before anything is printed,
+so a `FAIL` line or the notice comes first, and the run and lock lines are read after them
+at one moment); `last done:` with the
 last five `done.txt` lines; `schedule: every N min, active` or `schedule: installed at HH:MM,
 active`, with `paused until resume` or `paused until <date>` in place of `active` while a
 pause counts (interval and time read from the plist, the pause from `paused`), `schedule: on
@@ -104,7 +108,8 @@ to that item's worker only: the run goes on with the other slots, fills the free
 the next waiting item and does not start the stopped item again; an item that is not
 running is refused with exit 1 and the running items named. A stopped item stays in
 `queue.txt` (a list item) or keeps its label (a PR item), so the next run takes it again;
-`log <item>` still finds the log of the stopped run.
+`log <item>` still finds the log of the stopped run, which ends with `<repo> <item>: stopped
+(stop command), the item stays for the next run`.
 
 `retry <repo> <#pr>` (`#N` or an all-digit argument) swaps `autopilot-blocked` for
 `autopilot-ready` on that PR and says so; when `gh pr edit` fails, the message carries the

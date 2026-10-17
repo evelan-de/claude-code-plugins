@@ -129,7 +129,7 @@ CONFIG_VARS = (
     "MISSION_CONTROL_FALLBACK_MODEL", "MISSION_CONTROL_BUDGET_USD", "MISSION_CONTROL_MAX_RESTARTS",
     "MISSION_CONTROL_TIMEOUT_MIN", "MISSION_CONTROL_WATCH_MIN", "MISSION_CONTROL_GIT_TIMEOUT_MIN",
     "MISSION_CONTROL_GH_TIMEOUT_MIN", "MISSION_CONTROL_SLOTS", "MISSION_CONTROL_SLOTS_PER_REPO",
-    "MISSION_CONTROL_CHECK_MIN",
+    "MISSION_CONTROL_CHECK_MIN", "MISSION_CONTROL_DOCTOR_PROBE_USD",
 )
 # what the env file may hold besides the launch settings, and what is read before it
 ENV_FILE_SETTINGS = CONFIG_VARS + ("MISSION_CONTROL_NO_NOTIFY", "MISSION_CONTROL_PROJECTS")
@@ -216,6 +216,7 @@ class Config:
     slots = 2                # items that run at once
     slots_per_repo = 0       # items of one repository that run at once; 0: no limit
     check_s = 15 * 60        # between two checks for new work while items run
+    doctor_probe_usd = "0.50"   # budget of doctor's "claude -p" login probe
 
 
 class Stopped(BaseException):
@@ -743,6 +744,7 @@ def load_env():
     Config.slots = positive_int(setting("MISSION_CONTROL_SLOTS", "2"), 2, least=1)
     Config.slots_per_repo = positive_int(setting("MISSION_CONTROL_SLOTS_PER_REPO", "0"), 0, least=0)
     Config.check_s = to_seconds(setting("MISSION_CONTROL_CHECK_MIN", "15"))
+    Config.doctor_probe_usd = setting("MISSION_CONTROL_DOCTOR_PROBE_USD", "0.50")
 
 
 def positive_int(text, default, least):
@@ -1783,6 +1785,11 @@ def process_item(repo_in, kind, ref, line="", branch=""):
             log(traceback.format_exc().rstrip())
             it.block(f"runner error, {type(e).__name__}: {e} (traceback in {State.item_log})")
         finish_item(it)
+    except Stopped:
+        # the item log says why it ends here
+        log(f"{it.who}: stopped (stop command), "
+            + ("the item was already recorded in done.txt" if it.recorded else "the item stays for the next run"))
+        raise
     except Exception as e:
         drop_failed_item(it, e)
     finally:
@@ -2491,17 +2498,26 @@ def cmd_doctor(args):
     else:
         bad("git not found")
 
-    answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", "0.05"],
+    # A claude -p session loads the global CLAUDE.md, plugins and skills; with a cold prompt
+    # cache that alone costs a few cents, so the probe gets room for it.
+    budget = Config.doctor_probe_usd
+    answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", budget],
                      err="merge").out
     if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
         ok("claude -p answers (logged in)")
     else:
         lines = answer.splitlines()
         bad("claude -p did not answer OK: " + " ".join(lines[:3]) + (" " if len(lines) > 3 else ""))
-        out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
-        out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
-        out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")
-        out("       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'.")
+        if "exceeded usd budget" in answer.lower():
+            out(f"       The probe ran out of its {budget} USD budget before it answered: the login works,")
+            out("       but the text every claude -p session loads (global CLAUDE.md, plugins, skills) costs")
+            out("       more than that on this machine. Run doctor again; if it fails again, set")
+            out(f"       MISSION_CONTROL_DOCTOR_PROBE_USD in {ENVFILE} to a higher amount.")
+        else:
+            out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
+            out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
+            out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")
+            out("       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'.")
 
     if quiet([GH_BIN, "auth", "status"]) == 0:
         ok("gh auth status")
@@ -2574,8 +2590,30 @@ def schedule_line():
     return "schedule: not installed"
 
 
+def labelled_pr_lines():
+    """The lines status prints about the labelled PRs (FAIL lines per repo, then the count).
+    Asked first, because the gh calls take a while and a run may start meanwhile: the run
+    and lock lines are read after them, at one moment."""
+    os.makedirs(LOGDIR, exist_ok=True)
+    repos = live_lines(REPOS)
+    if not repos_pollable(repos):
+        return ["labelled PRs: unknown (gh not authenticated in this session)"]
+    lines, total, per_repo = [], 0, []
+    for repo, path in resolved_repos(repos):
+        if not path:
+            lines.append(f"FAIL - {repo}: not a git repository")
+            continue
+        prs = list_ready_prs(path)
+        if prs is None:
+            continue
+        total += len(prs)
+        per_repo.append(f"{os.path.basename(path)} {len(prs)}")
+    return lines + [f"labelled PRs: {total}" + (f" ({', '.join(per_repo)})" if per_repo else "")]
+
+
 def cmd_status(args):
     load_env()
+    prs = labelled_pr_lines()
     pid = lock_pid()
     items = running_items() if pid else []
     for slot, lines in items:
@@ -2606,22 +2644,8 @@ def cmd_status(args):
     for line in queued[:3]:
         out(f"  {line}")
 
-    os.makedirs(LOGDIR, exist_ok=True)
-    repos = live_lines(REPOS)
-    if repos_pollable(repos):
-        total, per_repo = 0, []
-        for repo, path in resolved_repos(repos):
-            if not path:
-                out(f"FAIL - {repo}: not a git repository")
-                continue
-            prs = list_ready_prs(path)
-            if prs is None:
-                continue
-            total += len(prs)
-            per_repo.append(f"{os.path.basename(path)} {len(prs)}")
-        out(f"labelled PRs: {total}" + (f" ({', '.join(per_repo)})" if per_repo else ""))
-    else:
-        out("labelled PRs: unknown (gh not authenticated in this session)")
+    for line in prs:
+        out(line)
 
     out("last done:")
     if os.path.isfile(DONE):
