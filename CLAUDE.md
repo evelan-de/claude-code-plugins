@@ -34,8 +34,10 @@ Python of macOS. Each starts with the same four launcher lines (copy them from a
 Each has a `<tool>_test.py` unittest file and a `<tool>.test.sh` wrapper that runs it. No
 shell helpers, no other dependencies - they run on teammates' machines, not just yours, on
 macOS and on Windows under Git Bash. Only `mission-control` is macOS-only (it refuses to run
-elsewhere). `.github/workflows/gate.yml` runs lint and every test suite on macOS, Ubuntu and
-Windows for every push.
+elsewhere). `.github/workflows/gate.yml` runs lint and every test suite on Ubuntu for every
+pull request and every push to main; the macOS and Windows runs are started by hand
+(Actions, "Run workflow") before a release or when a change touches platform-specific
+behaviour.
 
 ## Plugin Configuration
 
@@ -75,7 +77,8 @@ See `README.md` for full installation instructions including auto-prompt setup f
 Run `bin/plugin-lint` (frontmatter, references, cross-references, agents list, em dashes,
 README coverage, removed concepts, helper launcher lines) and every `bin/*.test.sh` and
 `skills/autopilot/hooks/*.test.sh`; all must pass here and in the GitHub Actions run of the
-branch (macOS, Ubuntu, Windows). Then `claude plugin validate .` and the version bump in
+branch (Ubuntu), and before a release in a manual run of the gate on all three operating
+systems (macOS, Ubuntu, Windows). Then `claude plugin validate .` and the version bump in
 `.claude-plugin/plugin.json`.
 
 A change to a hook in `skills/autopilot/hooks/` raises the number in its

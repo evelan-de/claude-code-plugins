@@ -133,8 +133,9 @@ The scripts in `bin/` are on the PATH once the plugin is installed. They are Pyt
 (standard library only) and need Python 3.9 or newer: on macOS the system `python3`, on
 Windows (with Git for Windows installed) a Python from python.org or the Microsoft Store,
 found as `python3` or `python`. The autopilot hooks need `jq` (`brew install jq`, Windows:
-`winget install jqlang.jq`). Every push runs the test suites on macOS, Ubuntu and Windows
-(GitHub Actions, Git Bash on Windows); `mission-control` runs on macOS only.
+`winget install jqlang.jq`). Every pull request runs the test suites on Ubuntu, a release is
+preceded by a manual run on macOS, Ubuntu and Windows (GitHub Actions, Git Bash on Windows);
+`mission-control` runs on macOS only.
 
 A hook that fails on Windows with `\r: command not found` was checked out with CRLF line
 endings: update the plugin; if that does not help, delete its folder under
