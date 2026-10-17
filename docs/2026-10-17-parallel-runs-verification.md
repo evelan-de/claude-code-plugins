@@ -37,6 +37,8 @@ Three defects or oddities were seen, none in the parallel path itself (findings 
 
 ### 1. `doctor` fails on the office Mini with a cold prompt cache although the login works (defect, doctor only)
 
+Fixed in plugin 3.6.1 (PR 44): the probe budget is 0.50 USD, settable as `MISSION_CONTROL_DOCTOR_PROBE_USD`, and an exhausted budget is explained as such.
+
 `mission-control doctor` exits 1 with
 
 ```
@@ -60,6 +62,8 @@ the doctor output, including `slots: 2 items at once, new work checked every 15 
 items run`, is correct.
 
 ### 2. `status` on the office Mini says "lock: stale" for a run that started while status was running (cosmetic)
+
+Fixed in plugin 3.6.1 (PR 44): `status` asks `gh` first and reads the lock and the running items after that, at one moment.
 
 Both runs of this check were caught by a status call that was already running when the run
 started:
@@ -91,6 +95,8 @@ ahead), but a `/mission-control` status read in that half minute reports a stale
 not stale. Deciding the lock line from a fresh `lock_pid()` at print time would remove it.
 
 ### 3. A stopped item's log on the office Mini has no closing line (observation)
+
+Fixed in plugin 3.6.1 (PR 44): the item log ends with a line that says the item was stopped.
 
 After `mission-control stop docs/autopilot/sessions/2026-10-17-smoke-square` the stop is
 recorded in `queue.log` only:
@@ -296,4 +302,4 @@ logs/queue.log` prints `0`. All lines of the day:
 - PRs evelan-de/autopilot-smoke-test#5 and #6 were closed without merging after the check,
   each with a result comment, like the earlier smoke PRs; they keep `autopilot-done`.
 - The plan branches `feat/smoke-square` and `feat/smoke-is-even` are on origin.
-- No code in the plugin repo was changed; this note is the only new file.
+- During the check no code in the plugin repo was changed. The three findings were fixed afterwards in plugin 3.6.1 (PR 44), together with this note.
