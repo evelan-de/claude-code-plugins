@@ -140,6 +140,7 @@ FORCE_ONCE_SECONDS = 300              # how long a force-once file written by st
 QUEUE_COMMANDS = ("run", "run-one", "list", "add", "status", "stop", "retry", "log", "start", "kickstart", "pause",
                   "resume")
 PORT_BASE = 3000                      # slot 1 runs with PORT=3000, slot 2 with 3001, ...
+DOCTOR_PROBE_USD = "0.50"             # budget of doctor's "claude -p" login probe
 COMMANDS_HINT = ("run | list | add | labels | doctor | status | stop | retry | log | pause | resume | start | "
                  "install-schedule | uninstall-schedule")
 SKIP_LINE = re.compile(r"^\s*(#|$)")
@@ -1783,6 +1784,10 @@ def process_item(repo_in, kind, ref, line="", branch=""):
             log(traceback.format_exc().rstrip())
             it.block(f"runner error, {type(e).__name__}: {e} (traceback in {State.item_log})")
         finish_item(it)
+    except Stopped:
+        # the item log says why it ends here; the item stays queued or keeps its label
+        log(f"{it.who}: stopped (stop command), the item stays for the next run")
+        raise
     except Exception as e:
         drop_failed_item(it, e)
     finally:
@@ -2491,17 +2496,24 @@ def cmd_doctor(args):
     else:
         bad("git not found")
 
-    answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd", "0.05"],
-                     err="merge").out
+    # A claude -p session loads the global CLAUDE.md, plugins and skills; with a cold prompt
+    # cache that alone costs a few cents, so the probe gets room for it.
+    answer = capture([CLAUDE_BIN, "-p", "reply with the single word OK", "--model", "haiku", "--max-budget-usd",
+                      DOCTOR_PROBE_USD], err="merge").out
     if re.search(r"\bOK\b", answer) and "not logged in" not in answer.lower():
         ok("claude -p answers (logged in)")
     else:
         lines = answer.splitlines()
         bad("claude -p did not answer OK: " + " ".join(lines[:3]) + (" " if len(lines) > 3 else ""))
-        out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
-        out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
-        out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")
-        out("       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'.")
+        if "exceeded usd budget" in answer.lower():
+            out(f"       The probe ran out of its {DOCTOR_PROBE_USD} USD budget before it answered: the login works,")
+            out("       but the text every claude -p session loads (global CLAUDE.md, plugins, skills) costs")
+            out("       more than that on this machine. Run doctor again; if it fails again, raise the probe budget.")
+        else:
+            out("       Claude Code keeps its login in the macOS Keychain. A shell started over SSH or by launchd")
+            out("       outside the GUI session cannot read it, so claude -p reports 'Not logged in' although")
+            out("       the Mac is logged in. Run the queue from a Terminal in the Mac's own GUI session")
+            out("       (install-schedule does this), or export CLAUDE_CODE_OAUTH_TOKEN from 'claude setup-token'.")
 
     if quiet([GH_BIN, "auth", "status"]) == 0:
         ok("gh auth status")
@@ -2634,6 +2646,8 @@ def cmd_status(args):
     if plist_legacy():
         warn_legacy_plist()
 
+    # asked again: a run may have taken the lock during the gh calls above
+    pid = lock_pid()
     if pid:
         out(f"lock: held by pid {pid}")
     elif os.path.isdir(LOCK):

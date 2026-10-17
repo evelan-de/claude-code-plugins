@@ -104,7 +104,8 @@ to that item's worker only: the run goes on with the other slots, fills the free
 the next waiting item and does not start the stopped item again; an item that is not
 running is refused with exit 1 and the running items named. A stopped item stays in
 `queue.txt` (a list item) or keeps its label (a PR item), so the next run takes it again;
-`log <item>` still finds the log of the stopped run.
+`log <item>` still finds the log of the stopped run, which ends with `<repo> <item>: stopped
+(stop command), the item stays for the next run`.
 
 `retry <repo> <#pr>` (`#N` or an all-digit argument) swaps `autopilot-blocked` for
 `autopilot-ready` on that PR and says so; when `gh pr edit` fails, the message carries the

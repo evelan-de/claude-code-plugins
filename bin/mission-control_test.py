@@ -123,6 +123,9 @@ if scenario == "ok":
 if scenario == "notloggedin":
     say("Not logged in")
     sys.exit(1)
+if scenario == "overbudget":
+    say("Error: Exceeded USD budget (" + (arg_after("--max-budget-usd") or "?") + ")")
+    sys.exit(1)
 if scenario == "noop":
     say('{"type":"result"}')
     sys.exit(0)
@@ -1257,6 +1260,14 @@ class MissionControl(unittest.TestCase):
         out, got = mc("doctor")
         check("(g) doctor exits 1 when claude is not logged in", got == 1)
         check("(g) doctor explains the Keychain-over-SSH caveat", has("Keychain", out))
+        check("(g) the login probe has room for a cold prompt cache",
+              has("-p reply with the single word OK --model haiku --max-budget-usd 0.50", cat(f"{rec}/claude.args")))
+        ENV["FAKE_SCENARIO"] = "overbudget"
+        out, got = mc("doctor")
+        check("(g) doctor exits 1 when the probe runs out of budget", got == 1)
+        check("(g) an exhausted probe budget is explained as such, not as a login problem",
+              has("The probe ran out of its 0.50 USD budget before it answered: the login works", out)
+              and lacks("Keychain", out))
         ENV["FAKE_SCENARIO"] = "ok"
         write(f"{qh}/env", "SLACK_WEBHOOK_URL=x\n")
         os.chmod(f"{qh}/env", 0o644)
@@ -1868,6 +1879,9 @@ class MissionControl(unittest.TestCase):
         runner.wait()
         check("(q) stop exits 0", got == 0)
         check("(q) stop reports stopped with repo and item", has("stopped proj PAUL-50", out))
+        check("(q) the stopped item's log says so",
+              grep_q("proj PAUL-50: stopped (stop command), the item stays for the next run",
+                     *ls(f"{qh}/logs/*-PAUL-50.log"), fixed=True))
         check("(q) stop killed the fake claude", gone(cpid))
         check("(q) lock released after stop", not exists(f"{qh}/run.lock"))
         kill9(cpid)
@@ -1940,6 +1954,9 @@ class MissionControl(unittest.TestCase):
         out, got = mc("stop", "PAUL-61")
         check("(q3) stop <item> exits 0", got == 0)
         check("(q3) stop <item> reports that item", out == "stopped proj PAUL-61")
+        check("(q3) the stopped item's log ends with the stop",
+              wait_until(lambda: grep_q("proj PAUL-61: stopped (stop command), the item stays for the next run",
+                                        *ls(f"{qh}/logs/*-s2-PAUL-61.log"), fixed=True)))
         check("(q3) the run goes on after stop <item>", not gone(runner.pid))
         check("(q3) the free slot takes the waiting item",
               wait_until(lambda: running_items(qh).get("PAUL-62") == 2))

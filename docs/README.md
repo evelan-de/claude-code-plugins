@@ -16,6 +16,7 @@ The skills and helper scripts are listed in the [README](../README.md#all-skills
 
 Dated notes on what changed and why, newest first:
 
+- [2026-10-17 Parallel runs verified on the office Mini](2026-10-17-parallel-runs-verification.md)
 - [2026-10-16 Mission control: several runs at once, a check every 15 minutes](2026-10-16-mission-control-parallel-runs.md)
 - [2026-09-26 Autopilot runs review](2026-09-26-autopilot-runs-review.md)
 - [2026-09-26 Autopilot 3.x compared with 1.x](2026-09-26-autopilot-compared-with-1x.md)
