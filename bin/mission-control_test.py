@@ -1877,6 +1877,28 @@ class MissionControl(unittest.TestCase):
         write_plist(fakehome, 22, 5)
         out, got = mc("status", env=home)
         check("(q) status reads the schedule time from the plist", has("schedule: installed at 22:05, active", out))
+        out, got = mc("status", "--json", env=home, stderr=False)
+        check("(q) status --json exits 0", got == 0)
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {}
+        check("(q) status --json is one JSON object with schema 1", data.get("schema") == 1)
+        first = (data.get("running") or [{}])[0]
+        check("(q) status --json: the running item with its slot, attempt and package",
+              len(data.get("running") or []) == 1 and first.get("item") == "PAUL-50" and first.get("slot") == 1
+              and first.get("attempt") == "1" and first.get("package") is None and data.get("slots") == 1)
+        check("(q) status --json: the whole queue, not only three lines",
+              [row["item"] for row in data.get("queue", [])] == ["PAUL-50", "PAUL-51", "PAUL-52", "PAUL-53"])
+        check("(q) status --json: labelled PRs per repo", (data.get("labelled_prs") or {}).get("per_repo") == {"proj": 1})
+        check("(q) status --json: the done row with its PR",
+              data.get("last_done") == [{"time": "2026-09-19T20:00:00Z", "repo": proj, "item": "PAUL-40",
+                                         "status": "done", "pr": "https://github.com/e/r/pull/40", "notes": []}])
+        check("(q) status --json: schedule and lock", data.get("schedule") == {"state": "active", "when": "installed at 22:05", "paused_until": None}
+              and data.get("lock") == {"state": "held", "pid": str(runner.pid)})
+        check("(q) status --json never prints the webhook variable", lacks("SLACK_WEBHOOK_URL", out))
+        out, got = mc("status", "--verbose", env=home)
+        check("(q) status refuses an unknown argument with usage", got == 2 and has("usage: mission-control status [--json]", out))
         out, got = mc("stop")
         cpid = pid_in(f"{rec}/claude.pid")
         runner.wait()

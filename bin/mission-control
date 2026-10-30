@@ -5,7 +5,7 @@
 __doc__ = """mission-control - run prepared autopilot sessions unattended, several at a time.
 
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
-       mission-control status | stop [<item>] | retry <repo> <#pr | item> | log [<item>]
+       mission-control status [--json] | stop [<item>] | retry <repo> <#pr | item> | log [<item>]
        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
        mission-control install-schedule [HH:MM | <N>m] | uninstall-schedule
 
@@ -2611,7 +2611,102 @@ def labelled_pr_lines():
     return lines + [f"labelled PRs: {total}" + (f" ({', '.join(per_repo)})" if per_repo else "")]
 
 
+def parse_done_line(line):
+    """The fields of a done.txt line: time, repo, item (a quoted topic unquoted), status, the PR
+    url or "", and the notes after it. None for a line with fewer than four words."""
+    hit = re.match(r'(\S+) (\S+) ("[^"]*"|\S+) (\S+)(?: (\S+))?(?: (.*))?$', line.strip())
+    if not hit:
+        return None
+    time_, repo, item, status, pr, notes = hit.groups()
+    return {
+        "time": time_, "repo": repo, "item": item.strip('"'), "status": status,
+        "pr": "" if pr in (None, "-") else pr, "notes": (notes or "").split(),
+    }
+
+
+def labelled_prs_json():
+    """The labelled PRs as data: total and count per repo, the repos gh could not answer for
+    under "failed"; None while gh cannot be asked at all (no Keychain over SSH)."""
+    repos = live_lines(REPOS)
+    if not repos_pollable(repos):
+        return None
+    found = {"total": 0, "per_repo": {}, "failed": []}
+    for repo, path in resolved_repos(repos):
+        if not path:
+            found["failed"].append(repo)
+            continue
+        prs = list_ready_prs(path)
+        if prs is None:
+            found["failed"].append(os.path.basename(path))
+            continue
+        found["total"] += len(prs)
+        found["per_repo"][os.path.basename(path)] = len(prs)
+    return found
+
+
+def status_json():
+    """The status as one JSON object for programs (the Cockpit panel): the same facts as the text
+    status, no settings and no environment values."""
+    load_env()
+    os.makedirs(LOGDIR, exist_ok=True)
+    labelled = labelled_prs_json()
+    pid = lock_pid()
+    running = []
+    for slot, lines in (running_items() if pid else []):
+        repo_base, item, attempt, began, logfile, wt, base, _ = lines
+        try:
+            since = int(began)
+        except ValueError:
+            since = 0
+        row = {"slot": slot, "repo": repo_base, "item": item, "attempt": attempt, "since": since,
+               "phase": last_phase(logfile, repo_base, item), "package": None, "run_line": None, "diff": None}
+        if wt and os.path.isdir(wt):
+            row["package"] = (current_package(wt, item) if item.startswith(SESSIONS + "/") else "") or None
+            status_file = wt + "/.claude/.autopilot-status"
+            row["run_line"] = last_line(read_text(status_file)) if os.path.isfile(status_file) else None
+            base = base or base_sha(wt)
+            row["diff"] = git(wt, "diff", "--shortstat", base or "HEAD").out.lstrip(" ") or None
+        running.append(row)
+
+    queue = []
+    for line in live_lines(QUEUE):
+        parsed = parse_line(line)
+        if parsed:
+            queue.append({"repo": parsed[0], "item": parsed[1], "branch": parsed[2]})
+
+    last_done = [row for row in (parse_done_line(line) for line in read_lines(DONE)[-10:]) if row]
+
+    if plist_legacy():
+        schedule = {"state": "legacy", "when": plist_when(), "paused_until": None}
+    elif plist_on_demand():
+        schedule = {"state": "on_demand", "when": None, "paused_until": None}
+    elif os.path.isfile(PLIST):
+        until = pause_until()
+        if pause_unreadable():
+            schedule = {"state": "paused", "when": plist_when(), "paused_until": "unreadable"}
+        else:
+            schedule = {"state": "paused" if until else "active", "when": plist_when(), "paused_until": until or None}
+    else:
+        schedule = {"state": "not_installed", "when": None, "paused_until": None}
+
+    if pid:
+        lock = {"state": "held", "pid": pid}
+    elif os.path.isdir(LOCK):
+        lock = {"state": "stale", "pid": first_line(LOCK + "/pid").strip() or None}
+    else:
+        lock = {"state": "free", "pid": None}
+
+    return {"schema": 1, "host": host(), "time": int(time.time()), "running": running,
+            "slots": Config.slots, "lock_pid_without_item": bool(pid and not running),
+            "queue": queue, "labelled_prs": labelled, "last_done": last_done, "schedule": schedule, "lock": lock}
+
+
 def cmd_status(args):
+    if args == ["--json"]:
+        out(json.dumps(status_json(), ensure_ascii=False))
+        return 0
+    if args:
+        die_usage(f"usage: mission-control status [--json] (unknown argument: {' '.join(args)})")
     load_env()
     prs = labelled_pr_lines()
     pid = lock_pid()
