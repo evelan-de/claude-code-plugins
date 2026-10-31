@@ -1877,6 +1877,29 @@ class MissionControl(unittest.TestCase):
         write_plist(fakehome, 22, 5)
         out, got = mc("status", env=home)
         check("(q) status reads the schedule time from the plist", has("schedule: installed at 22:05, active", out))
+        out, got = mc("status", "--json", env=home, stderr=False)
+        check("(q) status --json exits 0", got == 0)
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {}
+        check("(q) status --json is one JSON object with schema 1", data.get("schema") == 1)
+        first = (data.get("running") or [{}])[0]
+        check("(q) status --json: the running item with its slot, attempt and package",
+              len(data.get("running") or []) == 1 and first.get("item") == "PAUL-50" and first.get("slot") == 1
+              and first.get("attempt") == 1 and first.get("package") is None and data.get("slots") == 1
+              and data.get("starting_without_item") is False)
+        check("(q) status --json: the whole queue, not only three lines",
+              [row["item"] for row in data.get("queue", [])] == ["PAUL-50", "PAUL-51", "PAUL-52", "PAUL-53"])
+        check("(q) status --json: labelled PRs per repo", (data.get("labelled_prs") or {}).get("per_repo") == {"proj": 1})
+        check("(q) status --json: the done row with its PR",
+              data.get("last_done") == [{"time": "2026-09-19T20:00:00Z", "repo": proj, "item": "PAUL-40",
+                                         "status": "done", "pr": "https://github.com/e/r/pull/40", "notes": []}])
+        check("(q) status --json: schedule and lock", data.get("schedule") == {"state": "active", "when": "installed at 22:05", "paused_until": None}
+              and data.get("lock") == {"state": "held", "pid": runner.pid})
+        check("(q) status --json never prints the webhook variable", lacks("SLACK_WEBHOOK_URL", out))
+        out, got = mc("status", "--verbose", env=home)
+        check("(q) status refuses an unknown argument with usage", got == 2 and has("usage: mission-control status [--json]", out))
         out, got = mc("stop")
         cpid = pid_in(f"{rec}/claude.pid")
         runner.wait()
@@ -1900,6 +1923,9 @@ class MissionControl(unittest.TestCase):
         check("(q) status with a stale lock exits 0", got == 0)
         check("(q) status with a stale lock: running none", has("running: none", out))
         check("(q) status names the stale lock", has("lock: stale (pid 999999 is no queue run", out))
+        out, got = mc("status", "--json", env=home, stderr=False)
+        check("(q) status --json with a stale lock: no run, lock stale with its pid",
+              json.loads(out).get("running") == [] and json.loads(out).get("lock") == {"state": "stale", "pid": 999999})
         hold_lock(qh, started="Mon Jan  1 00:00:00 2001")
         out, got = mc("status", env=home)
         check("(q) status with a lock of a reused pid: running none, lock stale",
@@ -1913,7 +1939,36 @@ class MissionControl(unittest.TestCase):
         check("(q) status tolerates a gh failure with a FAIL line",
               has(f"FAIL - {proj}: gh pr list --label autopilot-ready failed", out))
         check("(q) status still exits 0 on a gh failure", got == 0)
+        # the JSON keeps stdout to the object: the FAIL line goes to stderr, the repo under "failed"
+        out, got = mc("status", "--json", env=home, stderr=False)
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {}
+        check("(q) status --json on a gh failure: stdout is the object alone, the repo under failed",
+              got == 0 and (data.get("labelled_prs") or {}).get("failed") == [proj])
         ENV.pop("FAKE_GH_FAIL", None)
+        # gh cannot read its token over SSH: labelled PRs unknown (null), the notice on stderr
+        ENV["FAKE_GH_AUTH_FAIL"] = "1"
+        out, got = mc("status", "--json", env=dict(home, SSH_CONNECTION="10.0.0.2 51234 10.0.0.1 22"), stderr=False)
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = {"labelled_prs": "not parsed"}
+        check("(q) status --json over SSH without gh token: stdout is the object alone, labelled PRs null",
+              got == 0 and data.get("labelled_prs") is None)
+        ENV.pop("FAKE_GH_AUTH_FAIL", None)
+        # every done.txt shape: a quoted topic, "-" for no PR, notes, the double space of an empty PR column
+        write(f"{qh}/done.txt",
+              f'2026-09-19T20:00:00Z {proj} "fix the login page" blocked - restarts=2 no-plan\n'
+              f"2026-09-19T21:00:00Z {proj} PAUL-41 blocked  runner-error\n")
+        out, got = mc("status", "--json", env=home, stderr=False)
+        check("(q) status --json parses every done.txt shape",
+              json.loads(out).get("last_done") == [
+                  {"time": "2026-09-19T20:00:00Z", "repo": proj, "item": "fix the login page", "status": "blocked",
+                   "pr": "", "notes": ["restarts=2", "no-plan"]},
+                  {"time": "2026-09-19T21:00:00Z", "repo": proj, "item": "PAUL-41", "status": "blocked",
+                   "pr": "", "notes": ["runner-error"]}])
         ENV.pop("FAKE_GH_PRS", None)
 
     def test_352_q3_two_slots(self):

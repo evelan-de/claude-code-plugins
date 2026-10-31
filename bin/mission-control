@@ -5,7 +5,7 @@
 __doc__ = """mission-control - run prepared autopilot sessions unattended, several at a time.
 
 usage: mission-control run [--scheduled] | list | add <repo> <item> [<branch>] | labels [<repo>] | doctor
-       mission-control status | stop [<item>] | retry <repo> <#pr | item> | log [<item>]
+       mission-control status [--json] | stop [<item>] | retry <repo> <#pr | item> | log [<item>]
        mission-control start | pause [until <YYYY-MM-DD> | <N>d] | resume
        mission-control install-schedule [HH:MM | <N>m] | uninstall-schedule
 
@@ -2575,81 +2575,196 @@ def last_phase(logfile, repo_base, item):
     return (line[len(prefix):] if line.startswith(prefix) else line) or "starting"
 
 
+# ---------- status: the facts once, rendered as text or as JSON ----------
+
+def schedule_state():
+    """The installed schedule as data: state (not_installed, on_demand, legacy, active, paused),
+    when (plist_when's words, None without a time) and paused_until (a date, "resume", or
+    "unreadable" for a damaged pause file, which counts as a pause)."""
+    if plist_legacy():
+        return {"state": "legacy", "when": plist_when(), "paused_until": None}
+    if plist_on_demand():
+        return {"state": "on_demand", "when": None, "paused_until": None}
+    if os.path.isfile(PLIST):
+        if pause_unreadable():
+            return {"state": "paused", "when": plist_when(), "paused_until": "unreadable"}
+        until = pause_until()
+        return {"state": "paused" if until else "active", "when": plist_when(), "paused_until": until or None}
+    return {"state": "not_installed", "when": None, "paused_until": None}
+
+
 def schedule_line():
     """The schedule as status shows it: every N min or a daily time, with the pause."""
-    when = plist_when()
-    if plist_legacy():
-        return f"schedule: {when} (legacy, ignores pause)"
-    if plist_on_demand():
+    s = schedule_state()
+    if s["state"] == "legacy":
+        return f"schedule: {s['when']} (legacy, ignores pause)"
+    if s["state"] == "on_demand":
         return 'schedule: on demand only ("mission-control start")'
-    if os.path.isfile(PLIST):
-        until = pause_until()
-        if pause_unreadable():
-            return f"schedule: {when}, paused (pause file unreadable, \"mission-control resume\" lifts it)"
-        return f"schedule: {when}, " + (f"paused until {until}" if until else "active")
-    return "schedule: not installed"
+    if s["state"] == "not_installed":
+        return "schedule: not installed"
+    if s["paused_until"] == "unreadable":
+        return f"schedule: {s['when']}, paused (pause file unreadable, \"mission-control resume\" lifts it)"
+    return f"schedule: {s['when']}, " + (f"paused until {s['paused_until']}" if s["paused_until"] else "active")
 
 
-def labelled_pr_lines():
-    """The lines status prints about the labelled PRs (FAIL lines per repo, then the count).
-    Asked first, because the gh calls take a while and a run may start meanwhile: the run
-    and lock lines are read after them, at one moment."""
+def labelled_prs():
+    """The labelled PRs as data, or None while gh cannot be asked at all (no Keychain over SSH;
+    repos_pollable prints why). total and per_repo by folder name; "missing" names the
+    configured repos that are no git repository, "failed" those whose gh call failed
+    (list_ready_prs reports that line itself). Asked first in a status, because the gh calls
+    take a while and a run may start meanwhile: the run and lock facts are read after them."""
     os.makedirs(LOGDIR, exist_ok=True)
     repos = live_lines(REPOS)
     if not repos_pollable(repos):
-        return ["labelled PRs: unknown (gh not authenticated in this session)"]
-    lines, total, per_repo = [], 0, []
+        return None
+    found = {"total": 0, "per_repo": {}, "missing": [], "failed": []}
     for repo, path in resolved_repos(repos):
         if not path:
-            lines.append(f"FAIL - {repo}: not a git repository")
+            found["missing"].append(repo)
             continue
         prs = list_ready_prs(path)
         if prs is None:
+            found["failed"].append(repo)
             continue
-        total += len(prs)
-        per_repo.append(f"{os.path.basename(path)} {len(prs)}")
-    return lines + [f"labelled PRs: {total}" + (f" ({', '.join(per_repo)})" if per_repo else "")]
+        found["total"] += len(prs)
+        found["per_repo"][os.path.basename(path)] = len(prs)
+    return found
+
+
+def labelled_pr_lines(found):
+    """The lines status prints about the labelled PRs (FAIL lines per repo, then the count)."""
+    if found is None:
+        return ["labelled PRs: unknown (gh not authenticated in this session)"]
+    lines = [f"FAIL - {repo}: not a git repository" for repo in found["missing"]]
+    per_repo = [f"{name} {count}" for name, count in found["per_repo"].items()]
+    return lines + [f"labelled PRs: {found['total']}" + (f" ({', '.join(per_repo)})" if per_repo else "")]
+
+
+def running_facts(pid):
+    """One dict per item a live worker is on, by slot. package, run_line (the line the run's
+    context-budget hook rewrites after every tool call) and diff are None when the worktree is
+    gone or holds nothing of that kind."""
+    rows = []
+    for slot, lines in (running_items() if pid else []):
+        repo_base, item, attempt, began, logfile, wt, base, _ = lines
+        row = {"slot": slot, "repo": repo_base, "item": item, "attempt": attempt, "began": began,
+               "phase": last_phase(logfile, repo_base, item),
+               "has_worktree": bool(wt and os.path.isdir(wt)), "package": None, "run_line": None, "diff": None}
+        if row["has_worktree"]:
+            row["package"] = (current_package(wt, item) if item.startswith(SESSIONS + "/") else "") or None
+            status_file = wt + "/.claude/.autopilot-status"
+            row["run_line"] = last_line(read_text(status_file)) if os.path.isfile(status_file) else None
+            row["diff"] = git(wt, "diff", "--shortstat", base or base_sha(wt) or "HEAD").out.lstrip(" ") or None
+        rows.append(row)
+    return rows
+
+
+def lock_state(pid):
+    """held (a live run), stale (a lock no run holds, taken over by the next) or free."""
+    if pid:
+        return {"state": "held", "pid": pid}
+    if os.path.isdir(LOCK):
+        return {"state": "stale", "pid": first_line(LOCK + "/pid").strip()}
+    return {"state": "free", "pid": ""}
+
+
+def as_int(text):
+    """The number a lock or current file holds, None for anything that is not one."""
+    return int(text) if str(text).strip().isdigit() else None
+
+
+def parse_done_line(line):
+    """The fields of a done.txt line: time, repo, item (a quoted topic unquoted), status, the PR
+    url or "", and the notes after it. None for a line with fewer than four words. A topic
+    holding a double quote cannot be read back (quote_item does not escape it; add refuses
+    such items through the skill)."""
+    # one space between columns: an empty PR column (a runner error) shows as two spaces in a row
+    hit = re.match(r'(\S+) (\S+) ("[^"]*"|\S+) (\S+)(?: (\S+))?(?: (.*))?$', line.strip())
+    if not hit:
+        return None
+    time_, repo, item, status, pr, notes = hit.groups()
+    return {
+        "time": time_, "repo": repo, "item": item.strip('"'), "status": status,
+        "pr": "" if pr in (None, "-") else pr, "notes": (notes or "").split(),
+    }
+
+
+def status_facts():
+    """Everything status reports, read once. The text status prints a part of it (three queue
+    lines, five done lines); the JSON carries all of it."""
+    load_env()
+    found = labelled_prs()
+    pid = lock_pid()
+    running = running_facts(pid)
+    queue_lines = live_lines(QUEUE)
+    done_lines = read_lines(DONE)[-10:] if os.path.isfile(DONE) else None
+    return {"pid": pid, "running": running, "queue_lines": queue_lines, "labelled_prs": found,
+            "done_lines": done_lines, "schedule": schedule_state(), "lock": lock_state(pid)}
+
+
+def status_json():
+    """The status as one JSON object for programs (the Cockpit panel), schema 1. No settings and
+    no environment values. Everything the collection would print (the gh notice over SSH, a
+    FAIL line of a gh call) goes to stderr, so stdout holds the object and nothing else."""
+    with contextlib.redirect_stdout(sys.stderr):
+        facts = status_facts()
+    running = [
+        {"slot": row["slot"], "repo": row["repo"], "item": row["item"], "attempt": as_int(row["attempt"]),
+         "since": as_int(row["began"]) or 0, "phase": row["phase"], "package": row["package"],
+         "run_line": row["run_line"] or None, "diff": row["diff"]}
+        for row in facts["running"]
+    ]
+    queue = []
+    for line in facts["queue_lines"]:
+        parsed = parse_line(line)
+        if parsed:
+            queue.append({"repo": parsed[0], "item": parsed[1], "branch": parsed[2]})
+    return {
+        "schema": 1, "host": host(), "time": int(time.time()),
+        "running": running, "slots": Config.slots,
+        "starting_without_item": bool(facts["pid"] and not facts["running"]),
+        "queue": queue,
+        "labelled_prs": facts["labelled_prs"],
+        "last_done": [row for row in (parse_done_line(line) for line in facts["done_lines"] or []) if row],
+        "schedule": facts["schedule"],
+        "lock": {"state": facts["lock"]["state"], "pid": as_int(facts["lock"]["pid"])},
+    }
 
 
 def cmd_status(args):
-    load_env()
-    prs = labelled_pr_lines()
-    pid = lock_pid()
-    items = running_items() if pid else []
-    for slot, lines in items:
-        repo_base, item, attempt, began, logfile, wt, base, _ = lines
+    if args == ["--json"]:
+        out(json.dumps(status_json(), ensure_ascii=False))
+        return 0
+    if args:
+        die_usage(f"usage: mission-control status [--json] (unknown argument: {' '.join(args)})")
+    facts = status_facts()
+    for row in facts["running"]:
         try:
-            elapsed = (int(time.time()) - int(began)) // 60
+            elapsed = (int(time.time()) - int(row["began"])) // 60
         except ValueError:
             elapsed = 0
-        out(f"running: {repo_base} {item} (attempt {attempt}, since {hhmm_of_epoch(began)}, {elapsed} min, "
-            f"slot {slot}, phase: {last_phase(logfile, repo_base, item)})")
-        if wt and os.path.isdir(wt):
-            package = current_package(wt, item) if item.startswith(SESSIONS + "/") else ""
-            out(f"  package: {package or 'none marked [~]'}")
-            # the line the run's context-budget hook rewrites after every tool call
-            status_file = wt + "/.claude/.autopilot-status"
-            out(f"  run: {last_line(read_text(status_file))}" if os.path.isfile(status_file) else "  run: no status line yet")
-            base = base or base_sha(wt)
-            diff = git(wt, "diff", "--shortstat", base or "HEAD").out.lstrip(" ")
-            out(f"  diff since base: {diff or 'none'}")
-    if pid and not items:
-        out(f"running: pid {pid}, no item yet")
-    elif not pid:
+        out(f"running: {row['repo']} {row['item']} (attempt {row['attempt']}, since {hhmm_of_epoch(row['began'])}, "
+            f"{elapsed} min, slot {row['slot']}, phase: {row['phase']})")
+        if row["has_worktree"]:
+            out(f"  package: {row['package'] or 'none marked [~]'}")
+            out(f"  run: {row['run_line']}" if row["run_line"] is not None else "  run: no status line yet")
+            out(f"  diff since base: {row['diff'] or 'none'}")
+    if facts["pid"] and not facts["running"]:
+        out(f"running: pid {facts['pid']}, no item yet")
+    elif not facts["pid"]:
         out("running: none")
-    out(f"slots: {len(items)} of {Config.slots} busy")
+    out(f"slots: {len(facts['running'])} of {Config.slots} busy")
 
-    queued = live_lines(QUEUE)
-    out(f"queue: {len(queued)} items")
-    for line in queued[:3]:
+    out(f"queue: {len(facts['queue_lines'])} items")
+    for line in facts["queue_lines"][:3]:
         out(f"  {line}")
 
-    for line in prs:
+    for line in labelled_pr_lines(facts["labelled_prs"]):
         out(line)
 
     out("last done:")
-    if os.path.isfile(DONE):
-        for line in read_lines(DONE)[-5:]:
+    if facts["done_lines"] is not None:
+        for line in facts["done_lines"][-5:]:
             out(f"  {line}")
     else:
         out("  none")
@@ -2658,10 +2773,12 @@ def cmd_status(args):
     if plist_legacy():
         warn_legacy_plist()
 
-    if pid:
-        out(f"lock: held by pid {pid}")
-    elif os.path.isdir(LOCK):
-        out(f"lock: stale (pid {first_line(LOCK + '/pid').strip() or '?'} is no queue run, the next run takes it over)")
+    lock = facts["lock"]
+    if lock["state"] == "held":
+        out(f"lock: held by pid {lock['pid']}")
+    elif lock["state"] == "stale":
+        out(f"lock: stale (pid {lock['pid'] or '?'} is no queue run, the next run takes it over)")
+    # lock["pid"] is the raw text here; only the JSON turns it into a number
     else:
         out("lock: free")
     return 0

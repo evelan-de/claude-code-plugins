@@ -64,7 +64,7 @@ mission-control labels [<repo>]           # create autopilot-ready/-done/-blocke
 mission-control add <repo> <item> [<branch>]   # append a line; a topic with spaces is quoted
 mission-control list                      # what run would process, no side effects
 mission-control run [--scheduled]         # process queue.txt, then the labelled PRs of repos.txt; --scheduled honours a pause
-mission-control status                    # one screen: running items, slots, queue, labelled PRs, last done, schedule, lock
+mission-control status [--json]           # one screen: running items, slots, queue, labelled PRs, last done, schedule, lock; --json: the same as one JSON object for programs
 mission-control stop [<item>]             # TERM the run (every item ends) or one item's worker; each kills its claude; waits up to 45 s
 mission-control retry <repo> <#pr | item> # PR: label autopilot-blocked -> autopilot-ready; item: add it again
 mission-control log [<item>]              # last 40 lines of the newest item log (or the newest one for #pr, key or session dir)
@@ -95,7 +95,23 @@ demand only ("mission-control start")` (a LaunchAgent without an interval or a t
 `schedule: every N min (legacy, ignores pause)` plus the warning line described under "Pause the
 schedule" when the plist lacks `--scheduled`, or `schedule: not installed`; `lock: held by
 pid N`, `free`, or `stale` when the recorded pid is gone or belongs to another program. No secrets: the env file is never
-printed.
+printed. Any argument other than `--json` is refused with exit 2 and the usage line.
+
+`status --json` prints one JSON object on stdout and nothing else (the `gh` notice and any
+`FAIL` line go to stderr), exit 0, for programs such as a panel that polls the queue of
+both Macs, the remote one over SSH. The text status is a part of the same facts. Fields
+(`schema: 1`): `host`, `time` (epoch seconds), `running` (one object per running item:
+`slot`, `repo`, `item`, `attempt` and `since` as numbers, `phase`, `package`, `run_line`,
+`diff`, the last three `null` when the worktree holds nothing of that kind), `slots`,
+`starting_without_item` (a run holds the lock but no worker has an item yet), `queue` (every
+line, not three: `repo`, `item`, `branch`), `labelled_prs` (`total`, `per_repo` by folder
+name, `missing` repos that are no git repository, `failed` repos whose `gh` call failed; `null`
+while `gh` has no token, as over SSH), `last_done` (the last ten `done.txt` lines as `time`,
+`repo`, `item` with a topic unquoted, `status`, `pr` or empty, `notes`; repo and item go back
+into `retry` unchanged), `schedule` (`state`: `not_installed`, `on_demand`, `legacy`,
+`active` or `paused`; `when`; `paused_until`: a date, `resume`, or `unreadable` for a damaged
+pause file) and `lock` (`state` `held`, `stale` or `free`, `pid` as a number or `null`). A
+topic holding a double quote cannot be read back from `done.txt`.
 
 `stop` sends TERM to the run's pid when the lock holds a live one; the run ends every
 worker, each kills its claude process (SIGTERM, SIGKILL after 10 s), and releases the lock.
