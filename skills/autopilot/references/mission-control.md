@@ -83,7 +83,11 @@ ctx=<tokens> tool=<name>` (the line the run's context-budget hook rewrites after
 call, `.claude/.autopilot-status` in the worktree; `no status line yet` before the first) and
 `diff since base: <git diff --shortstat against the merge-base>`; `slots: <busy> of <N>
 busy`; `queue: N items` plus the next three queue lines; `labelled PRs: N (<repo> N, ...)` via `gh`
-(a failing repo gets a `FAIL - ...` line, the count goes on without it; when `gh` has no
+(one GitHub request counts every repo whose one GitHub remote is a plain github.com address;
+a repo with two GitHub remotes, a `gh repo set-default` to another repository, an SSH host
+alias or no GitHub remote is asked by its own `gh pr list`; a repo that could not be read gets
+`FAIL - <repo>: labelled PRs not readable: <reason>` or the `gh pr list` FAIL line that `run` and
+`list` print, the count goes on without it; when `gh` has no
 token at all, one `gh: ...` notice and `labelled PRs: unknown (gh not authenticated in this
 session)` replace the counts, see "Over SSH"; the `gh` calls run before anything is printed,
 so a `FAIL` line or the notice comes first, and the run and lock lines are read after them

@@ -294,7 +294,13 @@ if command == "api graphql":
     import re
     ready = dict(entry.split("=", 1) for entry in (env("FAKE_GH_READY") or "").split())
     data, errors = {}, []
-    for alias, owner, name in re.findall(r'(\w+): repository\(owner: "([^"]*)", name: "([^"]*)"\)', arg_after("-f")):
+    query = arg_after("-f")
+    asked = re.findall(r'(\w+): repository\(owner: "([^"]*)", name: "([^"]*)"\) '
+                       r'\{ pullRequests\(labels: \["autopilot-ready"\], states: OPEN\) \{ totalCount \} \}', query)
+    if arg_after("--hostname") != "github.com" or len(asked) != query.count("repository("):
+        sys.stderr.write("fake gh: not the request for the open labelled PRs on github.com\n")
+        sys.exit(1)
+    for alias, owner, name in asked:
         count = ready.get(owner + "/" + name, "0")
         if count == "missing":
             data[alias] = None
@@ -1987,43 +1993,55 @@ class MissionControl(unittest.TestCase):
                    "pr": "", "notes": ["restarts=2", "no-plan"]},
                   {"time": "2026-09-19T21:00:00Z", "repo": proj, "item": "PAUL-41", "status": "blocked",
                    "pr": "", "notes": ["runner-error"]}])
-        # repos on GitHub are counted in one request; a repo with another origin is asked by itself
-        hub = [f"{S.tmp}/q-hub/repo-{n}" for n in (1, 2, 3)]
+        # repos whose one remote is on github.com are counted in one request; a repo gh may
+        # resolve differently (another host, a second remote, a local origin) is asked by itself
+        hub = [f"{S.tmp}/q-hub/repo-{n}" for n in (1, 2, 3, 4, 5)]
         for path, origin in zip(hub, ("https://github.com/e/repo-1.git", "git@github.com:e/repo-2.git",
-                                      "https://github.com/e/repo-3")):
+                                      "https://github.com/e/repo-3/", "https://notgithub.com/e/repo-4",
+                                      "https://github.com/e/repo-5")):
             os.makedirs(path, exist_ok=True)
             git("-C", path, "init", "-q")
             git("-C", path, "remote", "add", "origin", origin)
+        git("-C", hub[4], "remote", "add", "upstream", "https://github.com/u/repo-5")
+        git("-C", hub[0], "config", "remote.origin.gh-resolved", "base")   # gh's own note: still the one request
+        git("-C", hub[1], "remote", "add", "bitbucket", "git@bitbucket.org:e/repo-2.git")   # no GitHub remote: same
         write(f"{qh}/repos.txt", "".join(path + "\n" for path in hub) + f"{proj}\n")
+        ready = {"FAKE_GH_READY": "e/repo-1=2 e/repo-2=3 e/repo-3=missing e/repo-4=7 e/repo-5=7"}
 
         def gh_calls(start):
             return read(f"{rec}/gh.args").split("\n")[start:-1]
+
+        def labelled(text):
+            try:
+                return json.loads(text).get("labelled_prs") or {}
+            except ValueError:
+                return {}
         before = len(gh_calls(0))
-        out, got = mc("status", "--json", env=dict(home, FAKE_GH_READY="e/repo-1=2 e/repo-3=missing"), stderr=False)
-        try:
-            found = json.loads(out).get("labelled_prs") or {}
-        except ValueError:
-            found = {}
-        check("(q) status --json counts the GitHub repos and the other one, in the configured order",
-              got == 0 and list((found.get("per_repo") or {}).items()) == [("repo-1", 2), ("repo-2", 0), ("proj", 1)]
-              and found.get("total") == 3)
+        out, got = mc("status", "--json", env=dict(home, **ready), stderr=False)
+        found = labelled(out)
+        check("(q) status --json counts the GitHub repos and the others, in the configured order",
+              got == 0 and list((found.get("per_repo") or {}).items())
+              == [("repo-1", 2), ("repo-2", 3), ("repo-4", 1), ("repo-5", 1), ("proj", 1)] and found.get("total") == 8)
         check("(q) status --json names the repo GitHub does not know under failed", found.get("failed") == [hub[2]])
         calls = gh_calls(before)
-        check("(q) status asks GitHub once for all its repos and once for the repo with another origin",
+        check("(q) status asks GitHub once for all its repos and once per repo gh may resolve differently",
               len([line for line in calls if line.startswith("api graphql")]) == 1
-              and len([line for line in calls if line.startswith("pr list --label")]) == 1)
-        out, got = mc("status", env=dict(home, FAKE_GH_READY="e/repo-1=2 e/repo-3=missing"))
+              and len([line for line in calls if line.startswith("pr list --label")]) == 3)
+        out, got = mc("status", env=dict(home, **ready))
         check("(q) status says which repo GitHub does not know",
               has(f"FAIL - {hub[2]}: labelled PRs not readable: Could not resolve to a Repository", out))
         check("(q) status counts the readable repos next to the failed one",
-              has("labelled PRs: 3 (repo-1 2, repo-2 0, proj 1)", out) and got == 0)
+              has("labelled PRs: 8 (repo-1 2, repo-2 3, repo-4 1, repo-5 1, proj 1)", out) and got == 0)
         out, got = mc("status", "--json", env=dict(home, FAKE_GH_FAIL="api graphql"), stderr=False)
-        try:
-            found = json.loads(out).get("labelled_prs") or {}
-        except ValueError:
-            found = {}
-        check("(q) status --json when the one request fails: its repos under failed, the other one counted",
-              got == 0 and found.get("failed") == hub and found.get("per_repo") == {"proj": 1})
+        found = labelled(out)
+        check("(q) status --json when the one request fails: its repos under failed, the others counted",
+              got == 0 and found.get("failed") == hub[:3]
+              and found.get("per_repo") == {"repo-4": 1, "repo-5": 1, "proj": 1})
+        out, got = mc("status", env=dict(home, FAKE_GH_FAIL="api graphql"))
+        check("(q) status when the one request fails: one FAIL line per repo of it, with gh's reason",
+              [line for line in out.splitlines() if "labelled PRs not readable" in line]
+              == [f"[mission-control] FAIL - {path}: labelled PRs not readable: fake gh: failing on purpose"
+                  for path in hub[:3]])
         write(f"{qh}/repos.txt", f"{proj}\n")
         ENV.pop("FAKE_GH_PRS", None)
 
