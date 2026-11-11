@@ -1287,6 +1287,75 @@ def list_ready_prs(repo):
     return prs
 
 
+GITHUB_REMOTE = re.compile(
+    r"remote\.[^\s]+\.url (?:https://(?:[^@/\s]+@)?github\.com/|(?:ssh://)?git@github\.com[:/])"
+    r"([^/\s]+)/([^/\s]+?)(?:\.git)?/?")
+
+
+def github_slug(repo):
+    """(owner, name) of the checkout on github.com when that is the repository gh would pick
+    there too: its one GitHub remote, a plain github.com address, not pointed elsewhere by "gh
+    repo set-default". Else None (two GitHub remotes, an SSH host alias, a port in the address,
+    no remote). A remote on a host without "github" in its name does not count: gh leaves a
+    remote out unless it is logged in to that host."""
+    lines = git(repo, "config", "--get-regexp", r"^remote\..*\.(url|gh-resolved)$").out.splitlines()
+    urls = [line for line in lines if not re.match(r"remote\.[^\s]+\.gh-resolved ", line)]
+    # "base" is what gh notes for the remote itself; anything else names another repository
+    elsewhere = [line for line in lines if line not in urls and line.split(" ", 1)[-1] != "base"]
+    on_github = [line for line in urls if "github" in line.split(" ", 1)[-1].lower()]
+    found = GITHUB_REMOTE.fullmatch(on_github[0]) if len(on_github) == 1 and not elsewhere else None
+    return found.groups() if found else None
+
+
+def count_ready_prs(repos):
+    """{repo: number of its open PRs labelled autopilot-ready, None when that could not be
+    read}. The repos github_slug names are counted in one GraphQL request, every other repo by
+    its own gh pr list. Says one FAIL line per repo it could not read and notes the failed
+    source."""
+    counts, slugs = {}, {}
+    for repo in repos:
+        slug = github_slug(repo)
+        if slug:
+            slugs[repo] = slug
+        else:
+            prs = list_ready_prs(repo)
+            counts[repo] = None if prs is None else len(prs)
+    if not slugs:
+        return counts
+    aliases = {repo: f"r{n}" for n, repo in enumerate(slugs)}
+    query = "query { " + " ".join(
+        f"{aliases[repo]}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
+        f"{{ pullRequests(labels: [{json.dumps(LABEL_READY)}], states: OPEN) {{ totalCount }} }}"
+        for repo, (owner, name) in slugs.items()) + " }"
+    # gh exits 1 when GitHub could not answer for one repo, with the others in its output
+    rc, text, err = capture_both([GH_BIN, "api", "graphql", "--hostname", "github.com", "-f", "query=" + query])
+    try:
+        answer = json.loads(text)
+    except ValueError:
+        answer = None
+    answer = answer if isinstance(answer, dict) else {}
+    data = answer.get("data") if isinstance(answer.get("data"), dict) else {}
+    reasons = {}
+    for error in answer.get("errors") or []:
+        path = error.get("path") if isinstance(error, dict) else None
+        if isinstance(path, list) and path:
+            reasons.setdefault(str(path[0]), str(error.get("message", "")))
+    if data:
+        request_failed = "GitHub gave no count for this repository"
+    elif rc == 124:
+        request_failed = "the request to GitHub timed out"
+    else:
+        request_failed = (err.splitlines() or [f"gh api graphql failed (exit {rc})"])[0]
+    for repo, alias in aliases.items():
+        try:
+            counts[repo] = int(data[alias]["pullRequests"]["totalCount"])
+        except (KeyError, TypeError, ValueError):
+            counts[repo] = None
+            say(f"FAIL - {repo}: labelled PRs not readable: {reasons.get(alias) or request_failed}")
+            State.source_failed = True
+    return counts
+
+
 def ensure_labels(repo):
     """Creates the three queue labels when missing; prints one line per label; False when one
     is missing and could not be created."""
@@ -2611,23 +2680,23 @@ def labelled_prs():
     """The labelled PRs as data, or None while gh cannot be asked at all (no Keychain over SSH;
     repos_pollable prints why). total and per_repo by folder name; "missing" names the
     configured repos that are no git repository, "failed" those whose gh call failed
-    (list_ready_prs reports that line itself). Asked first in a status, because the gh calls
+    (count_ready_prs reports that line itself). Asked first in a status, because the gh calls
     take a while and a run may start meanwhile: the run and lock facts are read after them."""
     os.makedirs(LOGDIR, exist_ok=True)
     repos = live_lines(REPOS)
     if not repos_pollable(repos):
         return None
     found = {"total": 0, "per_repo": {}, "missing": [], "failed": []}
-    for repo, path in resolved_repos(repos):
+    resolved = list(resolved_repos(repos))
+    counts = count_ready_prs([path for _, path in resolved if path])
+    for repo, path in resolved:
         if not path:
             found["missing"].append(repo)
-            continue
-        prs = list_ready_prs(path)
-        if prs is None:
+        elif counts[path] is None:
             found["failed"].append(repo)
-            continue
-        found["total"] += len(prs)
-        found["per_repo"][os.path.basename(path)] = len(prs)
+        else:
+            found["total"] += counts[path]
+            found["per_repo"][os.path.basename(path)] = counts[path]
     return found
 
 

@@ -288,6 +288,30 @@ if command == "pr view":
 if command == "repo view":
     say("e/r")
     sys.exit(0)
+if command == "api graphql":
+    # FAKE_GH_READY: "<owner>/<name>=<count>" per repo with labelled PRs, "=missing" for a
+    # repo GitHub does not know; every other repo of the query has none
+    import re
+    ready = dict(entry.split("=", 1) for entry in (env("FAKE_GH_READY") or "").split())
+    data, errors = {}, []
+    query = arg_after("-f")
+    asked = re.findall(r'(\w+): repository\(owner: "([^"]*)", name: "([^"]*)"\) '
+                       r'\{ pullRequests\(labels: \["autopilot-ready"\], states: OPEN\) \{ totalCount \} \}', query)
+    if arg_after("--hostname") != "github.com" or len(asked) != query.count("repository("):
+        sys.stderr.write("fake gh: not the request for the open labelled PRs on github.com\n")
+        sys.exit(1)
+    for alias, owner, name in asked:
+        count = ready.get(owner + "/" + name, "0")
+        if count == "missing":
+            data[alias] = None
+            errors.append({"type": "NOT_FOUND", "path": [alias],
+                           "message": "Could not resolve to a Repository with the name '%s/%s'." % (owner, name)})
+        else:
+            data[alias] = {"pullRequests": {"totalCount": int(count)}}
+    say(json.dumps({"data": data, "errors": errors} if errors else {"data": data}))
+    if errors:
+        sys.stderr.write("gh: %s\n" % errors[0]["message"])
+    sys.exit(1 if errors else 0)
 if command.startswith("api "):
     path, expr = ARGS[1], arg_after("--jq")
     if path == "user":
@@ -1969,6 +1993,56 @@ class MissionControl(unittest.TestCase):
                    "pr": "", "notes": ["restarts=2", "no-plan"]},
                   {"time": "2026-09-19T21:00:00Z", "repo": proj, "item": "PAUL-41", "status": "blocked",
                    "pr": "", "notes": ["runner-error"]}])
+        # repos whose one remote is on github.com are counted in one request; a repo gh may
+        # resolve differently (another host, a second remote, a local origin) is asked by itself
+        hub = [f"{S.tmp}/q-hub/repo-{n}" for n in (1, 2, 3, 4, 5)]
+        for path, origin in zip(hub, ("https://github.com/e/repo-1.git", "git@github.com:e/repo-2.git",
+                                      "https://github.com/e/repo-3/", "https://notgithub.com/e/repo-4",
+                                      "https://github.com/e/repo-5")):
+            os.makedirs(path, exist_ok=True)
+            git("-C", path, "init", "-q")
+            git("-C", path, "remote", "add", "origin", origin)
+        git("-C", hub[4], "remote", "add", "upstream", "https://github.com/u/repo-5")
+        git("-C", hub[0], "config", "remote.origin.gh-resolved", "base")   # gh's own note: still the one request
+        git("-C", hub[1], "remote", "add", "bitbucket", "git@bitbucket.org:e/repo-2.git")   # no GitHub remote: same
+        write(f"{qh}/repos.txt", "".join(path + "\n" for path in hub) + f"{proj}\n")
+        ready = {"FAKE_GH_READY": "e/repo-1=2 e/repo-2=3 e/repo-3=missing e/repo-4=7 e/repo-5=7"}
+
+        def gh_calls(start):
+            return read(f"{rec}/gh.args").split("\n")[start:-1]
+
+        def labelled(text):
+            try:
+                return json.loads(text).get("labelled_prs") or {}
+            except ValueError:
+                return {}
+        before = len(gh_calls(0))
+        out, got = mc("status", "--json", env=dict(home, **ready), stderr=False)
+        found = labelled(out)
+        check("(q) status --json counts the GitHub repos and the others, in the configured order",
+              got == 0 and list((found.get("per_repo") or {}).items())
+              == [("repo-1", 2), ("repo-2", 3), ("repo-4", 1), ("repo-5", 1), ("proj", 1)] and found.get("total") == 8)
+        check("(q) status --json names the repo GitHub does not know under failed", found.get("failed") == [hub[2]])
+        calls = gh_calls(before)
+        check("(q) status asks GitHub once for all its repos and once per repo gh may resolve differently",
+              len([line for line in calls if line.startswith("api graphql")]) == 1
+              and len([line for line in calls if line.startswith("pr list --label")]) == 3)
+        out, got = mc("status", env=dict(home, **ready))
+        check("(q) status says which repo GitHub does not know",
+              has(f"FAIL - {hub[2]}: labelled PRs not readable: Could not resolve to a Repository", out))
+        check("(q) status counts the readable repos next to the failed one",
+              has("labelled PRs: 8 (repo-1 2, repo-2 3, repo-4 1, repo-5 1, proj 1)", out) and got == 0)
+        out, got = mc("status", "--json", env=dict(home, FAKE_GH_FAIL="api graphql"), stderr=False)
+        found = labelled(out)
+        check("(q) status --json when the one request fails: its repos under failed, the others counted",
+              got == 0 and found.get("failed") == hub[:3]
+              and found.get("per_repo") == {"repo-4": 1, "repo-5": 1, "proj": 1})
+        out, got = mc("status", env=dict(home, FAKE_GH_FAIL="api graphql"))
+        check("(q) status when the one request fails: one FAIL line per repo of it, with gh's reason",
+              [line for line in out.splitlines() if "labelled PRs not readable" in line]
+              == [f"[mission-control] FAIL - {path}: labelled PRs not readable: fake gh: failing on purpose"
+                  for path in hub[:3]])
+        write(f"{qh}/repos.txt", f"{proj}\n")
         ENV.pop("FAKE_GH_PRS", None)
 
     def test_352_q3_two_slots(self):
