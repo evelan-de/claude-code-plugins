@@ -1,7 +1,8 @@
 # Codex CLI: shared procedure
 
-Used by `codex-ask`, `codex-review` and `codex-imagegen`. Every command below is
-one Bash call; note the printed values and reuse them literally in later calls.
+Used by `codex-ask`, `codex-review`, `codex-imagegen` and `invoke-agent`. Every
+command below is one Bash call; note the printed values and reuse them
+literally in later calls.
 
 ## Preflight
 

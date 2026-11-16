@@ -56,4 +56,6 @@ codex-cli exec --sandbox workspace-write -c approval_policy=on-request -c approv
 
 - Image generation: `codex-imagegen`.
 - Reviewing a diff: `codex-review`.
+- Agreement loop, blind comparison, debugging hypotheses, tests from a spec,
+  a plan: `invoke-agent`.
 - Anything the user did not tie to Codex: do it yourself.
