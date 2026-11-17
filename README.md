@@ -117,6 +117,7 @@ Adapted from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, see
 | --- | --- |
 | `/evelan:codex-ask` | hands a self-contained task or question to the Codex CLI and reports its answer and changes |
 | `/evelan:codex-imagegen` | generates images through the Codex CLI (gpt-image-2) |
+| `/evelan:invoke-agent` | works with Codex or another Claude model in a fixed mode: agree on a proposal, compare blind answers, debug, write tests from the spec, plan; checks what comes back |
 
 ### Everyday helpers
 
